@@ -68,6 +68,8 @@ void registerBuiltInRenderGraphPasses()
         []() { return builtin_pass::createLumenScreenTraceSetupPass(); });
     registerRenderGraphPassType("LumenTemporalGatherPass", "Reproject and accumulate Lumen indirect diffuse",
         []() { return builtin_pass::createLumenTemporalGatherPass(); });
+    registerRenderGraphPassType("LumenShortRangeAOPass", "Trace screen-space horizons and bent normals for Lumen",
+        []() { return builtin_pass::createLumenShortRangeAOPass(); });
     registerRenderGraphPassType("LumenSceneVisualizePass", "Visualize software Lumen scene geometry and Surface Cache coverage",
         []() { return builtin_pass::createLumenSceneVisualizePass(); });
     registerRenderGraphPassType("LumenProbeVisualizePass", "Visualize Lumen screen probes, ray sources and temporal history",

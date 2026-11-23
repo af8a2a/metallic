@@ -381,6 +381,9 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push, CameraRayBasis b
         resolveUniform(resources.positionCurrent)[pixel] = receiver.positionAndDepth;
         resolveUniform(resources.normalCurrent)[pixel] = float4(receiver.normal, 0.0f);
         resolveUniform(resources.baseColorMetalness)[pixel] = float4(receiver.diffuse, 0.0f);
+#if METALLIC_DEFERRED_LUMEN_AO_ALBEDO
+        resolveUniform(resources.noisyDiffuse)[pixel] = float4(receiver.diffuseAlbedo, receiver.positionAndDepth.w > 0.0f ? 1.0f : 0.0f);
+#endif
 #if METALLIC_DEFERRED_LUMEN_SPECULAR
         resolveUniform(resources.noisySpecular)[pixel] = receiver.specularAndRoughness;
 #endif

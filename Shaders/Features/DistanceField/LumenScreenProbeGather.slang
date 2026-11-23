@@ -9,7 +9,7 @@ import LumenAdaptiveProbes;
 #if defined(METALLIC_LUMEN_ACTIVE_PROBES)
 import LumenScreenProbeWork;
 #endif
-#if defined(METALLIC_LUMEN_SCREEN_TRACES) || defined(METALLIC_LUMEN_DETAIL_TRACING)
+#if defined(METALLIC_LUMEN_SCREEN_TRACES) || defined(METALLIC_LUMEN_DETAIL_TRACING) || defined(METALLIC_LUMEN_FULL_RESOLUTION_JITTER)
 import LumenScreenTrace;
 #endif
 #if defined(METALLIC_LUMEN_DETAIL_TRACING)
@@ -173,6 +173,12 @@ struct LumenScreenProbeGatherParams
     float screenTraceRelativeDepthThickness;
     ResourceHandle<Texture2D<float4>> shDirectional;
     uint rayDirectionFrameIndex;
+    ResourceHandle<Texture2D<float>> jitterDepth;
+    ResourceHandle<StructuredBuffer<ViewConstants>> jitterView;
+    ResourceHandle<RWStructuredBuffer<float4>> jitterOffsets;
+    float fullResolutionJitterWidth;
+    ResourceHandle<LumenSceneColorTexture> indirectIrradiance;
+    uint writeIndirectIrradiance;
 #if defined(METALLIC_LUMEN_ACTIVE_PROBES)
     ResourceHandle<StructuredBuffer<uint>> probeWorkList;
     ResourceHandle<StructuredBuffer<uint>> probeWorkState;
@@ -812,6 +818,15 @@ void lumenIntegrateScreenProbesMain(uint3 thread : SV_DispatchThreadID)
     LumenCompositeTexture color = resolveUniform(params.color);
     float4 receiver = position.Load(int3(thread.xy, 0));
     float3 indirect = 0.0f;
+#if defined(METALLIC_LUMEN_EXPORT_INDIRECT_IRRADIANCE)
+    float3 rawIndirectIrradiance = 0.0f;
+#endif
+#if defined(METALLIC_LUMEN_FINAL_GATHER)
+    float2 noiseOffset = 0.0f;
+#endif
+#if defined(METALLIC_LUMEN_FULL_RESOLUTION_JITTER)
+    float2 jitterNoiseOffset = 0.0f;
+#endif
 #if defined(METALLIC_LUMEN_PROBE_INTERPOLATION_READBACK)
     LumenProbeInterpolationReadback readback = {uint4(~0u), float4(0.0f)};
 #endif
@@ -825,13 +840,37 @@ void lumenIntegrateScreenProbesMain(uint3 thread : SV_DispatchThreadID)
         float3 normal = normalize(normalTexture.Load(int3(thread.xy, 0)).xyz);
         Texture2D<float4> diffuse = resolveUniform(params.diffuse);
 #if defined(METALLIC_LUMEN_FINAL_GATHER)
+#if defined(METALLIC_LUMEN_FULL_RESOLUTION_JITTER)
+        // UE 5.7.4 InterpolateAndIntegrate. Scene depth is in meters here.
+        if (params.fullResolutionJitterWidth > 0.0f) {
+            float effectiveJitterWidth = params.fullResolutionJitterWidth *
+                lerp(1.0f, .5f, saturate((receiver.w - 5.0f) / 5.0f));
+            ViewConstants view = resolveUniform(params.jitterView)[0];
+            float2 screenTileJitterE = lumenProbeBlueNoiseVec2(resolveUniform(params.blueNoiseVec2), thread.xy, view.frame.x);
+            jitterNoiseOffset = (screenTileJitterE * 2 - 1) * kLumenProbeDownsampleFactor * effectiveJitterWidth;
+            float2 jitteredScreenUV = clamp(float2(thread.xy) + jitterNoiseOffset, 0.0f, float2(viewSize) - 1.0f) *
+                (1.0f / float2(viewSize));
+            float depthWeight;
+            {
+                float4 scenePlane = float4(normal, dot(receiver.xyz, normal));
+                float3 jitteredPosition = lumenScenePositionAtUV(view.current, view.jitter.xy, viewSize,
+                    resolveUniform(params.jitterDepth), jitteredScreenUV);
+                float planeDistance = abs(dot(float4(jitteredPosition, -1), scenePlane));
+                float relativeDepthDifference = planeDistance / receiver.w;
+                depthWeight = exp2(-1000000.0f * (relativeDepthDifference * relativeDepthDifference));
+            }
+            if (depthWeight > .01f) {
+                noiseOffset = jitterNoiseOffset;
+            }
+        }
+#endif
         StructuredBuffer<uint2> probes = resolveUniform(params.probePositions);
 #if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
-        LumenProbeSample sample = calculateLumenPackedAdaptiveInterpolation(thread.xy, viewSize,
+        LumenProbeSample sample = calculateLumenPackedAdaptiveInterpolation(thread.xy, noiseOffset, viewSize,
             uint2(params.probeWidth, params.probeHeight), receiver, normal, position, probes,
             resolveUniform(params.probeTileAdaptiveCounts), resolveUniform(params.probeTileAdaptiveIndices), params.frameIndex);
 #else
-        LumenProbeSample sample = calculateLumenAdaptiveInterpolation(thread.xy, viewSize,
+        LumenProbeSample sample = calculateLumenAdaptiveInterpolation(thread.xy, noiseOffset, viewSize,
             uint2(params.probeWidth, params.probeHeight), receiver, normal, position, probes, params.frameIndex);
 #endif
         uint4 probeIndices = sample.indices;
@@ -889,6 +928,9 @@ void lumenIntegrateScreenProbesMain(uint3 thread : SV_DispatchThreadID)
             StructuredBuffer<float4> radiance = resolveUniform(params.traceInput);
             float3 irradianceOverPi = integrateProbeDiffuse(probeIndices, sample.weights, normal, radiance);
 #endif
+#if defined(METALLIC_LUMEN_EXPORT_INDIRECT_IRRADIANCE)
+            rawIndirectIrradiance = irradianceOverPi;
+#endif
             indirect = irradianceOverPi * diffuse.Load(int3(thread.xy, 0)).rgb;
         }
     }
@@ -897,8 +939,18 @@ void lumenIntegrateScreenProbesMain(uint3 thread : SV_DispatchThreadID)
     if (all(readbackPixel < params.interpolationReadbackPixels.zw)) {
         uint index = readbackPixel.y * params.interpolationReadbackPixels.z + readbackPixel.x;
         resolveUniform(params.interpolationReadback)[index] = readback;
+#if defined(METALLIC_LUMEN_PROBE_JITTER_READBACK)
+        if (params.fullResolutionJitterWidth > 0.0f) {
+            resolveUniform(params.jitterOffsets)[index] = float4(jitterNoiseOffset, noiseOffset);
+        }
+#endif
     }
 #endif
     indirectDiffuse[thread.xy] = float4(indirect, encodedAlpha);
+#if defined(METALLIC_LUMEN_EXPORT_INDIRECT_IRRADIANCE)
+    if (params.writeIndirectIrradiance != 0u) {
+        resolveUniform(params.indirectIrradiance)[thread.xy] = float4(rawIndirectIrradiance, encodedAlpha);
+    }
+#endif
     color[thread.xy] = float4(directColor.Load(int3(thread.xy, 0)).rgb + indirect, 1.0f);
 }

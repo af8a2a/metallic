@@ -85,6 +85,17 @@ uint2 pointClampedPixel(float2 uv, uint2 extent)
     return min(uint2(saturate(uv) * float2(extent)), extent - 1u);
 }
 
+// UE CalcSceneDepth and GetWorldPositionFromScreenUV. The depth texel is
+// point sampled, while the position is reconstructed at the same fractional UV.
+public float3 lumenScenePositionAtUV(ViewCameraConstants camera, float2 jitter, uint2 extent,
+    Texture2D<float> depth, float2 screenUV)
+{
+    ScreenTraceProjection view = makeScreenTraceProjection(camera, jitter);
+    float deviceZ = depth.Load(int3(pointClampedPixel(screenUV, extent), 0));
+    float sceneDepth = screenTraceConvertFromDeviceZ(view, deviceZ);
+    return screenTraceScreenToWorld(view, screenTraceScreenPosition(screenUV), sceneDepth);
+}
+
 // UE 5.7.4 HZB.usf RoundUpF16, with the closest pyramid stored in a packed buffer.
 public float roundUpScreenTraceDepth(float deviceZ)
 {

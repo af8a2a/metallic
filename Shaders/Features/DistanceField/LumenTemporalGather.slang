@@ -3,13 +3,22 @@ module LumenTemporalGather;
 import ShaderCore;
 import ParameterRoot;
 import ScenePathMath;
+#if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
+import LumenProbeMath;
+import LumenShortRangeAOPacking;
+import LumenShortRangeAOComposite;
+#endif
 
 using Metallic;
 using Metallic.ScenePath;
+#if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
+using Metallic.Lumen;
+#endif
 
 typealias DiffuseTexture = _Texture<float4, __Shape2D, 0, 0, 0, 1, 0, 0, 2>;
 typealias FullPrecisionTexture = _Texture<float4, __Shape2D, 0, 0, 0, 1, 0, 0, 1>;
 typealias ScalarTexture = _Texture<float, __Shape2D, 0, 0, 0, 1, 0, 0, 6>;
+typealias PackedShortRangeAOTexture = _Texture<uint, __Shape2D, 0, 0, 0, 1, 0, 0, 37>; // R32Uint
 
 struct LumenTemporalGatherParams
 {
@@ -38,10 +47,171 @@ struct LumenTemporalGatherParams
     ResourceHandle<Texture2D<float>> blueNoiseScalar;
     uint frameIndex;
     ResourceHandle<Texture2D<float4>> previousPosition;
+    ResourceHandle<Texture2D<uint>> shortRangeAORaw;
+    ResourceHandle<Texture2D<uint>> previousShortRangeAO;
+    ResourceHandle<PackedShortRangeAOTexture> shortRangeAO;
+    ResourceHandle<PackedShortRangeAOTexture> currentShortRangeAO;
+    ResourceHandle<Texture2D<float4>> diffuseAlbedo;
+    float2 currentJitter;
+    uint shortRangeAOPadding;
 };
 
 static const float kLumenHistoryDistanceThreshold = 0.01f;
 static const float kLumenHistoryNormalCosThreshold = 0.7071067811865476f;
+
+#if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
+static const uint kShortRangeAOSharedTileSize = 6u;
+groupshared half4 sharedShortRangeAO[kShortRangeAOSharedTileSize][kShortRangeAOSharedTileSize];
+
+// UE 5.7.4 LumenScreenProbeGatherTemporal.usf. Denoise cone direction and
+// openness separately. The packed history and raw AO share the RGB111110 layout.
+uint packSharedShortRangeAO(half4 bentNormalAndAO)
+{
+    half3 bentNormal = normalize(bentNormalAndAO.xyz) * bentNormalAndAO.w;
+    bentNormal = saturate(bentNormal * 0.5 + 0.5);
+    uint packed = 0u;
+    packed |= uint(bentNormal.x * 2047.0 + 0.5) << 21u;
+    packed |= uint(bentNormal.y * 2047.0 + 0.5) << 10u;
+    packed |= uint(bentNormal.z * 1023.0 + 0.5);
+    return packed;
+}
+
+half4 unpackSharedShortRangeAO(uint packed)
+{
+    half3 bentNormal;
+    bentNormal.x = half(packed >> 21u) / 2047.0;
+    bentNormal.y = half((packed >> 10u) & 2047u) / 2047.0;
+    bentNormal.z = half(packed & 1023u) / 1023.0;
+    bentNormal = bentNormal * 2.0 - 1.0;
+    half len = sqrt(dot(bentNormal, bentNormal));
+    return half4(bentNormal / max(len, half(0.0001)), len);
+}
+
+void loadSharedShortRangeAO(Texture2D<uint> shortRangeAO, uint2 group, uint2 lane, uint2 shortRangeAOSize)
+{
+    if (all(lane < kShortRangeAOSharedTileSize)) {
+        int2 loadCoord = int2(group * 4u + lane) - 1;
+        loadCoord = clamp(loadCoord, int2(0), int2(shortRangeAOSize) - 1);
+        sharedShortRangeAO[lane.x][lane.y] = unpackSharedShortRangeAO(shortRangeAO.Load(int3(loadCoord, 0)));
+    }
+    GroupMemoryBarrierWithGroupSync();
+}
+
+float shortRangeAONormalWeight(float3 sceneWorldNormal, float3 sampleWorldNormal)
+{
+    // UE StochasticLightingTileClassification.usf GetNormalWeight and FastMathThirdParty.ush acosFast.
+    float x = saturate(dot(sampleWorldNormal, sceneWorldNormal));
+    float angleBetweenNormals = (-0.156583f * x + (0.5f * kLumenProbePi)) * sqrt(1.0f - x);
+    float normalWeight = 1.0f - saturate(angleBetweenNormals);
+    return normalWeight * normalWeight;
+}
+
+// UE 5.7.4 StochasticLightingTileClassification.usf ComputeUpsampleWeights,
+// opaque 2x2 downsample branch. Read guides through the same 4-rooks sample
+// locations rather than allocating a second copy of the full-resolution guides.
+float4 computeShortRangeAOUpsampleWeights(LumenTemporalGatherParams params, uint2 pixel, uint2 shortRangeAOSize,
+    float4 surface, float3 worldNormal, Texture2D<float4> position, Texture2D<float4> normal)
+{
+    const int2 sampleOffsets[4] = {int2(0, 0), int2(1, 0), int2(0, 1), int2(1, 1)};
+    const uint2 viewSize = uint2(params.width, params.height);
+    const float2 invViewSize = 1.0f / float2(viewSize);
+    const float2 screenUV = (float2(pixel) + 0.5f) * invViewSize;
+    const int2 downsampledCoord00 = int2(floor(screenUV * float2(viewSize) / 2.0f - 0.5f));
+    const int2 screenCoordOffset = int2(pixel) - downsampledCoord00 * 2;
+
+    ViewCameraConstants camera = params.currentCamera;
+    float3 forward = cameraForwardFrom(camera.eye, camera.center);
+    float3 right = cameraRightFrom(forward, camera.upProjection.xyz);
+    float3 up = cameraUpFrom(forward, right);
+    bool orthographic = camera.upProjection.w > 0.5f;
+    float halfHeight = orthographic ? camera.clipOrtho.z * 0.5f : tan(camera.viewport.w * 0.5f);
+    float2 halfExtent = float2(camera.viewport.x * halfHeight, halfHeight);
+    float2 screenPosition = (screenUV - 0.5f) * float2(2.0f, -2.0f);
+    float2 projectionJitter = params.currentJitter * invViewSize * float2(2.0f, -2.0f);
+    float4 scenePlane = float4(worldNormal, dot(surface.xyz, worldNormal));
+
+    float4 upsampleWeights;
+    float cornerDepth00 = -1.0f;
+    [unroll]
+    for (uint corner = 0u; corner < 4u; ++corner) {
+        int2 downsampledCoord = downsampledCoord00 + sampleOffsets[corner];
+        int2 sampleScreenOffset = int2(lumenShortRangeAOJitter(uint2(downsampledCoord), params.frameIndex)) +
+            sampleOffsets[corner] * 2 - screenCoordOffset;
+        uint2 sampleScreenCoord = uint2(int2(pixel) + sampleScreenOffset);
+        float cornerDepth = -1.0f;
+        float3 cornerNormal = 0.0f;
+        if (all(sampleScreenCoord < viewSize)) {
+            cornerDepth = position.Load(int3(sampleScreenCoord, 0)).w;
+            cornerNormal = normal.Load(int3(sampleScreenCoord, 0)).xyz;
+        }
+        if (corner == 0u) { cornerDepth00 = cornerDepth; }
+
+        float weight = (2.0f - abs(sampleScreenOffset.x)) * (2.0f - abs(sampleScreenOffset.y));
+        float2 cornerScreenPosition = screenPosition + float2(sampleScreenOffset) * invViewSize * float2(2.0f, -2.0f);
+        float2 offset = (cornerScreenPosition + projectionJitter) * halfExtent * (orthographic ? 1.0f : cornerDepth);
+        // The reference's 01 corner uses the 00 depth for the view-space Z component.
+        float viewDepth = corner == 2u ? cornerDepth00 : cornerDepth;
+        float3 cornerPosition = camera.eye.xyz + forward * viewDepth + right * offset.x + up * offset.y;
+        float planeDistance = abs(dot(float4(cornerPosition, -1.0f), scenePlane));
+        float relativeDepthDifference = planeDistance / surface.w;
+        float depthWeight = cornerDepth > 0.0f ? exp2(-5000.0f * (relativeDepthDifference * relativeDepthDifference)) : 0.0f;
+        weight *= depthWeight;
+        weight *= shortRangeAONormalWeight(worldNormal, lumenShortRangeAODecodeNormal(cornerNormal));
+        upsampleWeights[corner] = all(uint2(downsampledCoord) < shortRangeAOSize) ? weight : 0.0f;
+    }
+    return upsampleWeights;
+}
+
+// UE 5.7.4 StochasticLightingUpsample.ush, 2x2 stochastic bilinear offsets.
+int2 getShortRangeAOStochasticBilinearOffset(float randomScalar, float4 upsampleWeights)
+{
+    float4 preSum;
+    preSum.x = upsampleWeights.x;
+    preSum.y = preSum.x + upsampleWeights.y;
+    preSum.z = preSum.y + upsampleWeights.z;
+    preSum.w = preSum.z + upsampleWeights.w;
+    preSum /= max(preSum.w, 0.00001f);
+    if (randomScalar <= preSum.x) { return int2(0, 0); }
+    if (randomScalar <= preSum.y) { return int2(1, 0); }
+    if (randomScalar <= preSum.z) { return int2(0, 1); }
+    return int2(1, 1);
+}
+
+struct ShortRangeAONeighborhood {
+    half4 center, extent;
+};
+
+ShortRangeAONeighborhood getShortRangeAONeighborhood(uint2 sharedCoord, half4 centerShortRangeAO)
+{
+    half4 aoSum = centerShortRangeAO;
+    half4 aoSqSum = centerShortRangeAO * centerShortRangeAO;
+    half weightSum = 1.0;
+    const int kernelSize = 1;
+    for (int neighborOffsetY = -kernelSize; neighborOffsetY <= kernelSize; ++neighborOffsetY) {
+        for (int neighborOffsetX = -kernelSize; neighborOffsetX <= kernelSize; ++neighborOffsetX) {
+            bool center = neighborOffsetX == 0 && neighborOffsetY == 0;
+            uint2 neighborSharedCoord = uint2(int2(sharedCoord) + int2(neighborOffsetX, neighborOffsetY));
+            if (!center && all(neighborSharedCoord < kShortRangeAOSharedTileSize)) {
+                half4 neighborAO = sharedShortRangeAO[neighborSharedCoord.x][neighborSharedCoord.y];
+                aoSum += neighborAO;
+                aoSqSum += neighborAO * neighborAO;
+                weightSum += 1.0;
+            }
+        }
+    }
+    half4 m1 = aoSum / weightSum;
+    half4 m2 = aoSqSum / weightSum;
+    half4 variance = max(m2 - m1 * m1, half(0.0));
+    half4 stdDev = sqrt(variance);
+    return {m1, stdDev}; // Epic default neighborhood clamp scale is 1.
+}
+
+half4 weightedAverageShortRangeAO(half4 v00, half4 v10, half4 v01, half4 v11, half4 weights)
+{
+    half4 result = v00 * weights.x + v10 * weights.y + v01 * weights.z + v11 * weights.w;
+    return result / max(dot(weights, half(1.0)), half(0.0001));
+}
+#endif
 
 // UE 5.7.4 LumenScreenProbeGatherTemporal.usf, GetBilinearCustomWeights.
 float4 getBilinearCustomWeights(float2 fraction, float4 customWeights)
@@ -106,6 +276,9 @@ float4 unpackNumFramesAccumulated(float4 packed, float maxFramesAccumulated)
 // as GetHistoryScreenPosition: previous screen UV and previous scene depth.
 void accumulateDiffuse(LumenTemporalGatherParams params, float3 worldPosition, float3 previousWorldPosition,
     float3 normal, float4 newDiffuseLighting, float randomScalar,
+#if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
+    inout half4 outShortRangeAO, uint2 shortRangeAOSharedCoord, bool validReconstruction,
+#endif
     out float3 outDiffuseIndirect, out float newNumFramesAccumulated, out float outHistoryWeight)
 {
     outDiffuseIndirect = newDiffuseLighting.rgb;
@@ -168,19 +341,41 @@ void accumulateDiffuse(LumenTemporalGatherParams params, float3 worldPosition, f
     float numFramesAccumulated = min(weightedAverage(historyNumFramesAccumulated + 1.0f, finalWeights), params.maxFramesAccumulated);
     newNumFramesAccumulated = numFramesAccumulated;
     float alpha = 1.0f / (1.0f + newNumFramesAccumulated);
-    if (newDiffuseLighting.w <= 0.0f && newNumFramesAccumulated >= 1.0f) {
+    bool lightingIsInvalid = newDiffuseLighting.w <= 0.0f;
+#if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
+    lightingIsInvalid = lightingIsInvalid || !validReconstruction;
+#endif
+    if (lightingIsInvalid && newNumFramesAccumulated >= 1.0f) {
         alpha = 1.0f / (1.0f + 4.0f * newNumFramesAccumulated);
     }
     outDiffuseIndirect = lerp(historyDiffuseIndirect, newDiffuseLighting.rgb, alpha);
     outHistoryWeight = 1.0f - alpha;
+#if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
+    Texture2D<uint> previousShortRangeAO = resolveUniform(params.previousShortRangeAO);
+    half4 historyShortRangeAO00 = unpackSharedShortRangeAO(previousShortRangeAO.Load(int3(p00, 0)));
+    half4 historyShortRangeAO10 = unpackSharedShortRangeAO(previousShortRangeAO.Load(int3(p10, 0)));
+    half4 historyShortRangeAO01 = unpackSharedShortRangeAO(previousShortRangeAO.Load(int3(p01, 0)));
+    half4 historyShortRangeAO11 = unpackSharedShortRangeAO(previousShortRangeAO.Load(int3(p11, 0)));
+    half4 historyShortRangeAO = weightedAverageShortRangeAO(historyShortRangeAO00, historyShortRangeAO10,
+        historyShortRangeAO01, historyShortRangeAO11, half4(finalWeights));
+    ShortRangeAONeighborhood neighborhood = getShortRangeAONeighborhood(shortRangeAOSharedCoord, outShortRangeAO);
+    historyShortRangeAO = clamp(historyShortRangeAO, neighborhood.center - neighborhood.extent,
+        neighborhood.center + neighborhood.extent);
+    outShortRangeAO = lerp(historyShortRangeAO, outShortRangeAO, half(alpha));
+#endif
 }
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void lumenTemporalGatherMain(uint3 thread : SV_DispatchThreadID)
+void lumenTemporalGatherMain(uint3 thread : SV_DispatchThreadID, uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID)
 {
     LumenTemporalGatherParams params = getParameters<LumenTemporalGatherParams>();
-    if (any(thread.xy >= uint2(params.width, params.height))) {
+    uint2 viewSize = uint2(params.width, params.height);
+#if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
+    uint2 shortRangeAOSize = (viewSize + 1u) / 2u;
+    loadSharedShortRangeAO(resolveUniform(params.shortRangeAORaw), group.xy, lane.xy, shortRangeAOSize);
+#endif
+    if (any(thread.xy >= viewSize)) {
         return;
     }
     int3 texel = int3(thread.xy, 0);
@@ -194,12 +389,29 @@ void lumenTemporalGatherMain(uint3 thread : SV_DispatchThreadID)
     float3 outDiffuseIndirect = newDiffuseLighting.rgb;
     float newNumFramesAccumulated = 0.0f;
     float outHistoryWeight = 0.0f;
-#if defined(METALLIC_LUMEN_DITHER_HISTORY)
+#if defined(METALLIC_LUMEN_DITHER_HISTORY) || defined(METALLIC_LUMEN_SHORT_RANGE_AO)
     // UE 5.7.4 BlueNoiseScalar(ScreenCoord, ScreenProbeGatherStateFrameIndex).
     uint3 wrapped = uint3(thread.xy, params.frameIndex) & uint3(127u, 127u, 63u);
     float randomScalar = resolveUniform(params.blueNoiseScalar).Load(int3(wrapped.x, wrapped.z * 128u + wrapped.y, 0));
 #else
     const float randomScalar = 0.0f;
+#endif
+#if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
+    // UE ShortRangeAO invalid material initialization and full-resolution reconstruction.
+    half4 outShortRangeAO = half4(0.0, 0.0, 1.0, 1.0);
+    uint2 shortRangeAOSharedCoord = 0u;
+    bool validReconstruction = false;
+    if (surface.w > 0.0f) {
+        float4 upsampleWeights = computeShortRangeAOUpsampleWeights(params, thread.xy, shortRangeAOSize,
+            surface, surfaceNormal, position, normal);
+        int2 stochasticBilinearOffset = getShortRangeAOStochasticBilinearOffset(randomScalar, upsampleWeights);
+        validReconstruction = dot(upsampleWeights, 1.0f) >= 0.01f;
+        int2 sampleCoord = (int2(thread.xy) - 1) / 2 + stochasticBilinearOffset;
+        int2 shortRangeAOCoord = clamp(sampleCoord, int2(0), int2(shortRangeAOSize) - 1);
+        shortRangeAOSharedCoord = uint2((2 + int2(lane.xy) - 1) / 2 + stochasticBilinearOffset +
+            shortRangeAOCoord - sampleCoord);
+        outShortRangeAO = sharedShortRangeAO[shortRangeAOSharedCoord.x][shortRangeAOSharedCoord.y];
+    }
 #endif
     if (params.historyValid != 0u && surface.w > 0.0f) {
         float4 previousSurface = surface;
@@ -208,6 +420,9 @@ void lumenTemporalGatherMain(uint3 thread : SV_DispatchThreadID)
 #endif
         if (previousSurface.w > 0.0f) {
             accumulateDiffuse(params, surface.xyz, previousSurface.xyz, surfaceNormal, newDiffuseLighting, randomScalar,
+#if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
+                outShortRangeAO, shortRangeAOSharedCoord, validReconstruction,
+#endif
                 outDiffuseIndirect, newNumFramesAccumulated, outHistoryWeight);
         }
     }
@@ -224,9 +439,22 @@ void lumenTemporalGatherMain(uint3 thread : SV_DispatchThreadID)
     error = asfloat(asuint(error) & ~0x007fffffu);
     storedDiffuse = outDiffuseIndirect + error * randomScalar;
 #endif
+    float3 sceneIndirect = outDiffuseIndirect;
+#if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
+    uint packedShortRangeAO = packSharedShortRangeAO(outShortRangeAO);
+    resolveUniform(params.shortRangeAO)[thread.xy] = packedShortRangeAO;
+    resolveUniform(params.currentShortRangeAO)[thread.xy] = packedShortRangeAO;
+    float4 diffuseAlbedo = resolveUniform(params.diffuseAlbedo).Load(texel);
+    // UE composites from its quantized history output. Reproduce the Metallic
+    // RGBA16F storage conversion in this fused composition.
+    float3 historyTexel = float3(half3(storedDiffuse));
+    sceneIndirect = applyLumenShortRangeAO(historyTexel, diffuseAlbedo.rgb, packedShortRangeAO) * diffuseAlbedo.a;
+    indirectOutput[thread.xy] = float4(sceneIndirect, newDiffuseLighting.w);
+#else
     indirectOutput[thread.xy] = float4(storedDiffuse, newDiffuseLighting.w);
+#endif
     float4 scene = directColor.Load(texel);
-    float4 sceneColor = float4(scene.rgb + outDiffuseIndirect, scene.a);
+    float4 sceneColor = float4(scene.rgb + sceneIndirect, scene.a);
     color[thread.xy] = sceneColor;
     // UE 5.7.4 ScreenSpaceRayTracingInput extracts resolved color and depth before postprocessing.
     if (params.publishScreenTraceHistory != 0u) {

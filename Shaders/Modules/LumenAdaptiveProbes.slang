@@ -88,9 +88,9 @@ public uint2 adaptiveProbePosition(uint2 tile, uint sampleIndex, uint frameIndex
         kLumenProbeDownsampleFactor, 0.0f, float(kLumenProbeDownsampleFactor - 1u)));
 }
 
-uint2 firstUniformCorner(uint2 pixel, uint2 viewSize, uint2 probeSize, uint frameIndex, out uint2 screenCoord)
+uint2 firstUniformCorner(uint2 pixel, float2 noiseOffset, uint2 viewSize, uint2 probeSize, uint frameIndex, out uint2 screenCoord)
 {
-    screenCoord = uint2(clamp(float2(pixel) - float2(probeTileJitter(frameIndex)), 0.0f, float2(viewSize) - 1.0f));
+    screenCoord = uint2(clamp(float2(pixel) - float2(probeTileJitter(frameIndex)) + noiseOffset, 0.0f, float2(viewSize) - 1.0f));
     return min(screenCoord / kLumenProbeDownsampleFactor, max(probeSize, 2u) - 2u);
 }
 
@@ -100,11 +100,11 @@ uint2 uniformCornerTile(uint2 firstCorner, uint corner, uint2 probeSize)
 }
 
 // UE 5.7.4 CalculateUniformUpsampleInterpolationWeights for opaque material mip 0.
-LumenProbeSample calculateUniformProbeWeights(uint2 pixel, uint2 viewSize, uint2 probeSize, float4 receiver,
+LumenProbeSample calculateUniformProbeWeights(uint2 pixel, float2 noiseOffset, uint2 viewSize, uint2 probeSize, float4 receiver,
     float3 normal, Texture2D<float4> position, uint frameIndex, out uint2 firstCorner)
 {
     uint2 screenCoord;
-    firstCorner = firstUniformCorner(pixel, viewSize, probeSize, frameIndex, screenCoord);
+    firstCorner = firstUniformCorner(pixel, noiseOffset, viewSize, probeSize, frameIndex, screenCoord);
     const uint bilinearExpand = 1u;
     float2 bilinear = float2(screenCoord - firstCorner * kLumenProbeDownsampleFactor + bilinearExpand) /
         float(kLumenProbeDownsampleFactor + 2u * bilinearExpand);
@@ -153,7 +153,7 @@ public bool markAdaptiveProbe(uint2 pixel, uint2 viewSize, uint2 probeSize, Text
         return false;
     }
     receiverNormal = normalize(normal.Load(int3(pixel, 0)).xyz);
-    LumenProbeSample sample = calculateUniformProbeWeights(pixel, viewSize, probeSize, receiver, receiverNormal,
+    LumenProbeSample sample = calculateUniformProbeWeights(pixel, float2(0.0f), viewSize, probeSize, receiver, receiverNormal,
         position, frameIndex, firstCorner);
     return dot(sample.weights, 1.0f) < kMinProbeInterpolationWeight;
 }
@@ -163,7 +163,7 @@ public bool shouldSpawnPackedAdaptiveProbe(uint2 pixel, uint sampleIndex, uint2 
     Texture2D<float4> position, Texture2D<float4> normal, RWStructuredBuffer<uint> placementMasks, uint frameIndex)
 {
     uint2 screenCoord;
-    uint2 firstCorner = firstUniformCorner(pixel, viewSize, probeSize, frameIndex, screenCoord);
+    uint2 firstCorner = firstUniformCorner(pixel, float2(0.0f), viewSize, probeSize, frameIndex, screenCoord);
     float4 receiver = position.Load(int3(pixel, 0));
     float3 receiverNormal = normalize(normal.Load(int3(pixel, 0)).xyz);
     float4 scenePlane = float4(receiverNormal, dot(receiver.xyz, receiverNormal));
@@ -244,11 +244,11 @@ void normalizeLumenProbeSample(inout LumenProbeSample sample)
 }
 
 // UE 5.7.4 CalculateUpsampleInterpolationWeights. Substitute the best adaptive probe for a weak uniform corner.
-public LumenProbeSample calculateLumenAdaptiveInterpolation(uint2 pixel, uint2 viewSize, uint2 probeSize, float4 receiver,
+public LumenProbeSample calculateLumenAdaptiveInterpolation(uint2 pixel, float2 noiseOffset, uint2 viewSize, uint2 probeSize, float4 receiver,
     float3 normal, Texture2D<float4> position, StructuredBuffer<uint2> probes, uint frameIndex)
 {
     uint2 firstCorner;
-    LumenProbeSample sample = calculateUniformProbeWeights(pixel, viewSize, probeSize, receiver, normal, position,
+    LumenProbeSample sample = calculateUniformProbeWeights(pixel, noiseOffset, viewSize, probeSize, receiver, normal, position,
         frameIndex, firstCorner);
     float4 scenePlane = float4(normal, dot(receiver.xyz, normal));
     [unroll]
@@ -277,12 +277,12 @@ public LumenProbeSample calculateLumenAdaptiveInterpolation(uint2 pixel, uint2 v
 }
 
 // UE 5.7.4 CalculateUpsampleInterpolationWeights with a global adaptive suffix and a per-tile reverse list.
-public LumenProbeSample calculateLumenPackedAdaptiveInterpolation(uint2 pixel, uint2 viewSize, uint2 probeSize,
+public LumenProbeSample calculateLumenPackedAdaptiveInterpolation(uint2 pixel, float2 noiseOffset, uint2 viewSize, uint2 probeSize,
     float4 receiver, float3 normal, Texture2D<float4> position, StructuredBuffer<uint2> probes,
     StructuredBuffer<uint> tileCounts, StructuredBuffer<uint> tileIndices, uint frameIndex)
 {
     uint2 firstCorner;
-    LumenProbeSample sample = calculateUniformProbeWeights(pixel, viewSize, probeSize, receiver, normal, position,
+    LumenProbeSample sample = calculateUniformProbeWeights(pixel, noiseOffset, viewSize, probeSize, receiver, normal, position,
         frameIndex, firstCorner);
     const uint uniformCount = probeSize.x * probeSize.y;
     float4 scenePlane = float4(normal, dot(receiver.xyz, normal));

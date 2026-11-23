@@ -114,6 +114,8 @@ constexpr LumenReceiverOutput kLumenReceiverOutputs[] = {
         METALLIC_RESOURCE_MEMBER(SceneResourceParameters, normalCurrent)},
     {"lumenDiffuse", "Diffuse response including material occlusion and view transmittance", Format::RGBA16Sfloat,
         METALLIC_RESOURCE_MEMBER(SceneResourceParameters, baseColorMetalness)},
+    {"lumenDiffuseAlbedo", "Unoccluded diffuse response and receiver validity", Format::RGBA16Sfloat,
+        METALLIC_RESOURCE_MEMBER(SceneResourceParameters, noisyDiffuse), "exportLumenDiffuseAlbedo"},
     {"lumenPreviousPosition", "Previous world position of the current receiver and validity",
         Format::RGBA32Sfloat, METALLIC_RESOURCE_MEMBER(SceneResourceParameters, positionPrevious), "exportLumenPreviousPosition"},
     {"lumenSpecular", "Integrated single-lobe specular response and perceptual roughness",
@@ -738,6 +740,7 @@ public:
                 compiledExportUpscalerGuides_ != boolProperty(properties(), "exportUpscalerGuides", false) ||
                 compiledExportLumenReceivers_ != boolProperty(properties(), "exportLumenReceivers", false) ||
                 compiledExportLumenPreviousPosition_ != boolProperty(properties(), "exportLumenPreviousPosition", false) ||
+                compiledExportLumenDiffuseAlbedo_ != boolProperty(properties(), "exportLumenDiffuseAlbedo", false) ||
                 compiledExportLumenSpecular_ != boolProperty(properties(), "exportLumenSpecular", false))) {
             return compile(context, log);
         }
@@ -865,8 +868,9 @@ public:
         const bool exportLumenReceivers = visibilityDeferred_ && boolProperty(properties(), "exportLumenReceivers", false);
         const bool exportLumenPreviousPosition = visibilityDeferred_ && boolProperty(properties(), "exportLumenPreviousPosition", false);
         const bool exportLumenSpecular = visibilityDeferred_ && boolProperty(properties(), "exportLumenSpecular", false);
-        if ((exportLumenPreviousPosition || exportLumenSpecular) && !exportLumenReceivers) {
-            log = "Deferred exportLumenPreviousPosition and exportLumenSpecular require exportLumenReceivers";
+        const bool exportLumenDiffuseAlbedo = visibilityDeferred_ && boolProperty(properties(), "exportLumenDiffuseAlbedo", false);
+        if ((exportLumenPreviousPosition || exportLumenSpecular || exportLumenDiffuseAlbedo) && !exportLumenReceivers) {
+            log = "Deferred Lumen previous position, specular and diffuse albedo outputs require exportLumenReceivers";
             return makeError(Error::InvalidArgument);
         }
         const std::string shaderKey = std::string(moduleName) + "." + entryPointName +
@@ -890,7 +894,8 @@ public:
             "|upscalerGuides=" + (boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0") +
             (exportLumenReceivers ? "|lumenReceivers=1" : "") +
             (exportLumenPreviousPosition ? "|lumenPreviousPosition=1" : "") +
-            (exportLumenSpecular ? "|lumenSpecular=1" : "");
+            (exportLumenSpecular ? "|lumenSpecular=1" : "") +
+            (exportLumenDiffuseAlbedo ? "|lumenDiffuseAlbedo=1" : "");
         if (useOpenPBR) {
             result = openPBRLuts_.prepare(*context.device, log);
             if (!result) {
@@ -1153,6 +1158,7 @@ public:
             if (exportLumenReceivers) { defines.push_back({"METALLIC_DEFERRED_LUMEN_RECEIVERS", "1"}); }
             if (exportLumenPreviousPosition) { defines.push_back({"METALLIC_DEFERRED_LUMEN_PREVIOUS_POSITION", "1"}); }
             if (exportLumenSpecular) { defines.push_back({"METALLIC_DEFERRED_LUMEN_SPECULAR", "1"}); }
+            if (exportLumenDiffuseAlbedo) { defines.push_back({"METALLIC_DEFERRED_LUMEN_AO_ALBEDO", "1"}); }
             std::array<std::pair<std::string, std::string>, 17> diagnosticDefines;
             if (pathDiagnosticsEnabled()) {
                 const auto& pixels = properties().at("diagnosticPixels");
@@ -1407,6 +1413,7 @@ public:
         compiledExportLumenReceivers_ = exportLumenReceivers;
         compiledExportLumenPreviousPosition_ = exportLumenPreviousPosition;
         compiledExportLumenSpecular_ = exportLumenSpecular;
+        compiledExportLumenDiffuseAlbedo_ = exportLumenDiffuseAlbedo;
         return {};
     }
 
@@ -3274,6 +3281,7 @@ private:
     bool compiledExportLumenReceivers_ = false;
     bool compiledExportLumenPreviousPosition_ = false;
     bool compiledExportLumenSpecular_ = false;
+    bool compiledExportLumenDiffuseAlbedo_ = false;
     bool compiledGlobalView_ = false;
     SceneLightResources lights_;
     ScenePathTraceResources sceneResources_;

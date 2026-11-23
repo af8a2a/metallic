@@ -9,6 +9,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <filesystem>
@@ -26,12 +27,19 @@ constexpr uint32_t kExtent = 384;
 constexpr uint32_t kLitFrames = 256;
 constexpr uint32_t kDarkFrames = 8;
 constexpr uint32_t kContactProbePhases = 8;
+constexpr uint32_t kJitterProbePhases = 64;
 constexpr std::string_view kOutput = "FinalBlit.color";
 constexpr uint32_t kTileSize = 16;
 constexpr uint32_t kProbesPerTile = 9;
 constexpr uint32_t kRaysPerProbe = 64;
 constexpr uint32_t kProbeCount = (kExtent / kTileSize) * (kExtent / kTileSize) * kProbesPerTile;
 constexpr uint32_t kPixelCount = kExtent * kExtent;
+constexpr std::array<uint32_t, 4> kJitterInterpolationRegion{280, 306, 16, 20};
+constexpr uint32_t kJitterInterpolationPixels = kJitterInterpolationRegion[2] * kJitterInterpolationRegion[3];
+constexpr std::array<uint32_t, 2> kJitterWitnessProbePixel{286, 334};
+constexpr std::array<uint32_t, 2> kJitterWitnessLane{3, 7};
+constexpr uint32_t kJitterWitnessFirstProbe =
+    (kJitterWitnessProbePixel[1] / kTileSize * (kExtent / kTileSize) + kJitterWitnessProbePixel[0] / kTileSize) * kProbesPerTile;
 // Full depth followed by all eight packed mips from 256x256 to 2x2.
 constexpr uint32_t kHZBElements = kExtent * kExtent + (4u * 256u * 256u - 4u) / 3u;
 
@@ -60,7 +68,12 @@ struct BaselineOptions {
     bool gdfPrefixMeshValidation = false;
     bool contactVisibility = false;
     bool contactTemporalPhases = false;
+    bool jitterPhases = false;
+    bool interpolationJitter = false;
+    bool compareInterpolationJitter = false;
 };
+
+enum class ShortRangeAOCapture { None, Live, Comparison };
 
 struct BaselineCapture final : IRenderDebugObserver {
     // Contact visibility reads the full Deferred guides and both ray buffers in one frame.
@@ -192,6 +205,8 @@ struct ContactResource {
     std::string_view layout;
     std::string_view format;
     uint32_t bytes;
+    uint32_t bufferElementSize = 0;
+    uint32_t bufferElementOffset = 0;
 };
 
 constexpr std::array kContactDeferred{
@@ -201,8 +216,8 @@ constexpr std::array kContactDeferred{
     ContactResource{"direct_color", "Deferred.color", "RGBA32F", "rgba32f", kPixelCount * 16},
 };
 constexpr std::array kContactGather{
-    ContactResource{"interpolation", "Gather.probeInterpolationReadback", "u32", "u32x4_f32x4", kPixelCount * 32},
-    ContactResource{"filtered_radiance", "Gather.filteredProbeRadiance", "u32", "rgba32f", kProbeCount * kRaysPerProbe * 16},
+    ContactResource{"interpolation", "Gather.probeInterpolationReadback", "u32", "u32x4_f32x4", kPixelCount * 32, 4},
+    ContactResource{"filtered_radiance", "Gather.filteredProbeRadiance", "u32", "rgba32f", kProbeCount * kRaysPerProbe * 16, 4},
     ContactResource{"gather_indirect", "Gather.indirectDiffuse", "RGBA16F", "rgba16f", kPixelCount * 8},
     ContactResource{"gather_color", "Gather.color", "RGBA32F", "rgba32f", kPixelCount * 16},
 };
@@ -210,7 +225,36 @@ constexpr std::array kContactTemporal{
     ContactResource{"history_weight", "Temporal.historyWeight", "f32", "f32", kPixelCount * 4},
 };
 constexpr std::array kContactRaw{
-    ContactResource{"raw_radiance", "Gather.probeRadiance", "u32", "rgba32f", kProbeCount * kRaysPerProbe * 16},
+    ContactResource{"raw_radiance", "Gather.probeRadiance", "u32", "rgba32f", kProbeCount * kRaysPerProbe * 16, 4},
+};
+constexpr std::array kJitterGather{
+    ContactResource{"gather_indirect", "Gather.indirectDiffuse", "RGBA16F", "rgba16f", kPixelCount * 8},
+    ContactResource{"gather_color", "Gather.color", "RGBA32F", "rgba32f", kPixelCount * 16},
+};
+constexpr std::array kJitterComparison{
+    ContactResource{"gather_indirect", "Gather.jitterComparisonIndirectDiffuse", "RGBA16F", "rgba16f", kPixelCount * 8},
+    ContactResource{"gather_color", "Gather.jitterComparisonColor", "RGBA32F", "rgba32f", kPixelCount * 16},
+    ContactResource{"interpolation", "Gather.probeInterpolationReadback", "u32", "u32x4_f32x4", kJitterInterpolationPixels * 32, 4},
+    ContactResource{"jittered_interpolation", "Gather.jitterComparisonInterpolationReadback", "u32", "u32x4_f32x4", kJitterInterpolationPixels * 32, 4},
+    ContactResource{"offsets", "Gather.probeJitterOffsets", "RGBA32F", "rgba32f", kJitterInterpolationPixels * 16, 16},
+    ContactResource{"witness_probe_positions", "Gather.probePositions", "u32", "u32x2", kProbesPerTile * 8,
+        4, kJitterWitnessFirstProbe * 2},
+    ContactResource{"witness_raw_radiance", "Gather.probeRadiance", "u32", "rgba32f", kProbesPerTile * kRaysPerProbe * 16,
+        4, kJitterWitnessFirstProbe * kRaysPerProbe * 4},
+    ContactResource{"witness_filtered_radiance", "Gather.filteredProbeRadiance", "u32", "rgba32f", kProbesPerTile * kRaysPerProbe * 16,
+        4, kJitterWitnessFirstProbe * kRaysPerProbe * 4},
+};
+constexpr std::array kShortRangeAORaw{
+    ContactResource{"raw_bent_normal", "ShortRangeAO.shortRangeAORaw", "u32", "u32", kPixelCount},
+};
+constexpr std::array kShortRangeAOLive{
+    ContactResource{"bent_normal", "Temporal.shortRangeAO", "u32", "u32", kPixelCount * 4},
+};
+constexpr std::array kShortRangeAOComparison{
+    ContactResource{"bent_normal", "AOTemporal.shortRangeAO", "u32", "u32", kPixelCount * 4},
+    ContactResource{"realtime", "AOTemporal.color", "RGBA32F", "rgba32f", kPixelCount * 16},
+    ContactResource{"indirect", "AOTemporal.indirectDiffuse", "RGBA16F", "rgba16f", kPixelCount * 8},
+    ContactResource{"history_weight", "AOTemporal.historyWeight", "f32", "f32", kPixelCount * 4},
 };
 
 void addContactBatch(DebugValue& batches, std::string_view pass, std::span<const ContactResource> resources,
@@ -218,8 +262,9 @@ void addContactBatch(DebugValue& batches, std::string_view pass, std::span<const
 {
     auto requests = DebugValue::array();
     for (const auto& resource : resources) {
-        if (resource.layout == "u32") {
-            requests.push_back({{"id", resource.id}, {"layout", resource.layout}, {"count", resource.bytes / sizeof(uint32_t)}});
+        if (resource.bufferElementSize != 0) {
+            requests.push_back({{"id", resource.id}, {"layout", resource.layout}, {"offset", resource.bufferElementOffset},
+                {"count", resource.bytes / resource.bufferElementSize}});
         } else {
             requests.push_back({{"id", resource.id}, {"roi", roi}});
         }
@@ -227,36 +272,43 @@ void addContactBatch(DebugValue& batches, std::string_view pass, std::span<const
     batches.push_back({{"pass", pass}, {"checkpoint", "AfterPass"}, {"resources", std::move(requests)}});
 }
 
+void saveResourceBatch(BaselineCapture& capture, const std::filesystem::path& directory, std::string_view label,
+    std::string_view kind, const debug::DebugEvidenceStamp& frame, size_t jobIndex,
+    std::span<const ContactResource> resources, DebugValue& result)
+{
+    const auto job = getCapture(capture, jobIndex);
+    checkSameFrame(frame, job->snapshot.evidence);
+    result["evidence"].push_back(job->snapshot.evidence.value());
+    for (size_t i = 0; i < resources.size(); ++i) {
+        const auto& resource = resources[i];
+        const auto file = std::string(label) + "-" + std::string(kind) + "-" + std::string(resource.key) + ".bin";
+        saveReadback(job->artifacts.at(i), directory / file, resource.layout, resource.bytes);
+        result[resource.key] = {{"file", file}, {"format", resource.format}, {"frame", frame.execution}};
+    }
+}
+
 DebugValue saveContactVisibilityCapture(BaselineCapture& capture, const std::filesystem::path& directory,
     std::string_view label, const debug::DebugEvidenceStamp& frame, size_t jobIndex, const DebugValue* rayCapture)
 {
     DebugValue result{{"frame", frame.execution}, {"evidence", DebugValue::array()}};
-    auto saveBatch = [&](std::span<const ContactResource> resources) {
-        const auto job = getCapture(capture, jobIndex++);
-        checkSameFrame(frame, job->snapshot.evidence);
-        result["evidence"].push_back(job->snapshot.evidence.value());
-        for (size_t i = 0; i < resources.size(); ++i) {
-            const auto& resource = resources[i];
-            const auto file = std::string(label) + "-contact-" + std::string(resource.key) + ".bin";
-            saveReadback(job->artifacts.at(i), directory / file, resource.layout, resource.bytes);
-            result[resource.key] = {{"file", file}, {"format", resource.format}, {"frame", frame.execution}};
-        }
-    };
-    saveBatch(kContactDeferred);
-    saveBatch(kContactGather);
-    saveBatch(kContactTemporal);
+    saveResourceBatch(capture, directory, label, "contact", frame, jobIndex++, kContactDeferred, result);
+    saveResourceBatch(capture, directory, label, "contact", frame, jobIndex++, kContactGather, result);
+    saveResourceBatch(capture, directory, label, "contact", frame, jobIndex++, kContactTemporal, result);
     if (rayCapture) {
         result["raw_radiance"] = {{"file", rayCapture->at("radiance")},
             {"format", kContactRaw[0].format}, {"frame", frame.execution}};
     } else {
-        saveBatch(kContactRaw);
+        saveResourceBatch(capture, directory, label, "contact", frame, jobIndex, kContactRaw, result);
     }
     return result;
 }
 
+enum class JitterCapture { None, Gather, Comparison };
+
 DebugValue captureFrame(BaselineCapture& capture, RenderGraph& graph,
     const std::filesystem::path& directory, std::string_view label, uint32_t accumulatedFrames,
-    DebugValue* rayCapture = nullptr, const RayCaptureRegion& region = kDetailRayRegion, bool contactVisibility = false)
+    DebugValue* rayCapture = nullptr, const RayCaptureRegion& region = kDetailRayRegion, bool contactVisibility = false,
+    JitterCapture jitterCapture = JitterCapture::None, ShortRangeAOCapture aoCapture = ShortRangeAOCapture::None)
 {
     constexpr std::array<std::string_view, 3> keys{"path_trace", "realtime", "indirect"};
     constexpr std::array<std::string_view, 3> ids{"PathTrace.color", "Temporal.color", "Temporal.indirectDiffuse"};
@@ -277,6 +329,22 @@ DebugValue captureFrame(BaselineCapture& capture, RenderGraph& graph,
         addContactBatch(batches, "Gather", kContactGather, roi);
         addContactBatch(batches, "Temporal", kContactTemporal, roi);
         if (!rayCapture) { addContactBatch(batches, "Gather", kContactRaw, roi); }
+    }
+    const size_t jitterJobIndex = batches.size();
+    if (jitterCapture != JitterCapture::None) {
+        addContactBatch(batches, "Gather", kJitterGather, roi);
+        addContactBatch(batches, "Temporal", kContactTemporal, roi);
+    }
+    if (jitterCapture == JitterCapture::Comparison) { addContactBatch(batches, "Gather", kJitterComparison, roi); }
+    const size_t aoJobIndex = batches.size();
+    if (aoCapture != ShortRangeAOCapture::None) {
+        const DebugValue halfROI{{"x", 0}, {"y", 0}, {"width", kExtent / 2}, {"height", kExtent / 2}};
+        addContactBatch(batches, "ShortRangeAO", kShortRangeAORaw, halfROI);
+        if (aoCapture == ShortRangeAOCapture::Comparison) {
+            addContactBatch(batches, "AOTemporal", kShortRangeAOComparison, roi);
+        } else {
+            addContactBatch(batches, "Temporal", kShortRangeAOLive, roi);
+        }
     }
     capture.request = {{"method", "capture.batch"}, {"params", {{"batches", std::move(batches)}}}};
     renderFrame(capture.preview, graph);
@@ -303,11 +371,73 @@ DebugValue captureFrame(BaselineCapture& capture, RenderGraph& graph,
         output["contact_visibility"] = saveContactVisibilityCapture(capture, directory, label, pathStamp,
             contactJobIndex, rayCapture);
     }
+    if (jitterCapture != JitterCapture::None) {
+        DebugValue gather{{"frame", frame}, {"evidence", DebugValue::array()}};
+        saveResourceBatch(capture, directory, label, "gather", pathStamp, jitterJobIndex, kJitterGather, gather);
+        saveResourceBatch(capture, directory, label, "gather", pathStamp, jitterJobIndex + 1, kContactTemporal, gather);
+        output["gather"] = std::move(gather);
+    }
+    if (jitterCapture == JitterCapture::Comparison) {
+        DebugValue comparison{{"frame", frame}, {"evidence", DebugValue::array()}};
+        saveResourceBatch(capture, directory, label, "jitter", pathStamp, jitterJobIndex + 2, kJitterComparison, comparison);
+        output["jitter_comparison"] = std::move(comparison);
+    }
+    if (aoCapture != ShortRangeAOCapture::None) {
+        DebugValue ao{{"frame", frame}, {"evidence", DebugValue::array()}};
+        saveResourceBatch(capture, directory, label, "ao", pathStamp, aoJobIndex, kShortRangeAORaw, ao);
+        if (aoCapture == ShortRangeAOCapture::Comparison) {
+            saveResourceBatch(capture, directory, label, "ao", pathStamp, aoJobIndex + 1, kShortRangeAOComparison, ao);
+        } else {
+            saveResourceBatch(capture, directory, label, "ao", pathStamp, aoJobIndex + 1, kShortRangeAOLive, ao);
+        }
+        output["short_range_ao"] = std::move(ao);
+    }
     std::cout << "Captured " << label << " at graph execution " << frame << std::endl;
     return output;
 }
 
-void runBaseline(const std::filesystem::path& directory, const DebugValue& regions, BaselineOptions options)
+bool configureShortRangeAO(RenderGraph& graph, ShortRangeAOCapture capture)
+{
+    const auto deferred = *graph.findNode("Deferred");
+    auto deferredProperties = deferred.properties;
+    deferredProperties["exportLumenDiffuseAlbedo"] = true;
+    if (!graph.setNodeProperties(deferred.id, std::move(deferredProperties)) ||
+        !graph.addNode("LumenShortRangeAOPass", "ShortRangeAO", {}, 665.0f, -180.0f) ||
+        !graph.addEdge("VBuffer.depth", "ShortRangeAO.depth") ||
+        !graph.addEdge("Deferred.lumenNormal", "ShortRangeAO.normal")) {
+        return false;
+    }
+
+    const auto temporal = *graph.findNode("Temporal");
+    auto temporalProperties = temporal.properties;
+    temporalProperties["shortRangeAO"] = true;
+    std::string temporalName = "Temporal";
+    if (capture == ShortRangeAOCapture::Comparison) {
+        temporalName = "AOTemporal";
+        temporalProperties["publishScreenTraceHistory"] = false;
+        if (!graph.addNode("LumenTemporalGatherPass", temporalName, std::move(temporalProperties), 990.0f, 385.0f) ||
+            !graph.addEdge("Deferred.lumenPosition", "AOTemporal.position") ||
+            !graph.addEdge("Deferred.lumenNormal", "AOTemporal.normal") ||
+            !graph.addEdge("Deferred.color", "AOTemporal.directColor") ||
+            !graph.markOutput("AOTemporal.color")) {
+            return false;
+        }
+    } else {
+        const auto oldDiffuse = std::ranges::find_if(graph.edges(), [](const auto& edge) {
+            return edge.dstPass == "Temporal" && edge.dstField == "currentIndirectDiffuse";
+        });
+        if (oldDiffuse == graph.edges().end() || !graph.removeEdge(oldDiffuse->id) ||
+            !graph.setNodeProperties(temporal.id, std::move(temporalProperties))) {
+            return false;
+        }
+    }
+    return graph.addEdge("Gather.indirectIrradiance", temporalName + ".currentIndirectDiffuse") &&
+        graph.addEdge("ShortRangeAO.shortRangeAORaw", temporalName + ".shortRangeAORaw") &&
+        graph.addEdge("Deferred.lumenDiffuseAlbedo", temporalName + ".diffuseAlbedo");
+}
+
+void runBaseline(const std::filesystem::path& directory, const DebugValue& regions, BaselineOptions options,
+    ShortRangeAOCapture aoCapture)
 {
     RenderSampleLoadResult sample;
     std::string log;
@@ -319,6 +449,9 @@ void runBaseline(const std::filesystem::path& directory, const DebugValue& regio
     auto gatherProperties = gather.properties;
     auto gdfProperties = gdf.properties;
     const auto& rayRegion = options.floorRays ? kFloorRayRegion : kDetailRayRegion;
+    const bool enableJitter = options.interpolationJitter || options.compareInterpolationJitter;
+    const auto jitterCapture = options.compareInterpolationJitter ? JitterCapture::Comparison :
+        (options.jitterPhases || enableJitter) ? JitterCapture::Gather : JitterCapture::None;
     if (options.trace) {
         // The fixed triangle and contact witnesses were captured at these tracing settings.
         gatherProperties["fixedProbeDirections"] = true;
@@ -352,8 +485,16 @@ void runBaseline(const std::filesystem::path& directory, const DebugValue& regio
         gatherProperties["detailDistanceFieldPaths"] =
             gdfProperties.at("distanceFieldPaths");
     }
+    if (enableJitter) { gatherProperties["fullResolutionJitterWidth"] = 1.0f; }
+    if (aoCapture != ShortRangeAOCapture::None) { gatherProperties["exportIndirectIrradiance"] = true; }
+    if (options.compareInterpolationJitter) {
+        gatherProperties["probeJitterComparison"] = true;
+        gatherProperties["probeInterpolationReadback"] = kJitterInterpolationRegion;
+    }
     if (!sample.graph.setNodeProperties(gather.id, gatherProperties) ||
         (options.detail && !sample.graph.addEdge("VBuffer.depth", "Gather.detailDepth")) ||
+        (enableJitter && !sample.graph.addEdge("VBuffer.depth", "Gather.jitterDepth")) ||
+        (aoCapture != ShortRangeAOCapture::None && !configureShortRangeAO(sample.graph, aoCapture)) ||
         !saveRenderGraphToFile(sample.graph, directory / "graph.metallic_graph.json", log)) {
         throw std::runtime_error("Could not configure the Cornell Box capture graph: " + log);
     }
@@ -388,6 +529,8 @@ void runBaseline(const std::filesystem::path& directory, const DebugValue& regio
     DebugValue rayCapture;
     DebugValue temporalSeed;
     DebugValue temporalPhases = DebugValue::array();
+    DebugValue jitterPhases = DebugValue::array();
+    DebugValue aoPhases = DebugValue::array();
     {
         BaselineCapture capture(options.contactVisibility);
         auto& preview = capture.preview;
@@ -403,18 +546,23 @@ void runBaseline(const std::filesystem::path& directory, const DebugValue& regio
         for (uint32_t frame = 1; frame <= kLitFrames; ++frame) {
             const bool finalLitFrame = frame == kLitFrames;
             const bool temporalPhase = options.contactTemporalPhases && frame > temporalSeedFrame;
+            const bool jitterPhase = options.jitterPhases && frame > kLitFrames - kJitterProbePhases;
+            const bool aoPhase = aoCapture != ShortRangeAOCapture::None && frame > kLitFrames - kJitterProbePhases;
             if (frame == kLitFrames / 2) {
                 captures["prior_on"] = captureFrame(capture, sample.graph, directory, "prior_on", frame);
             } else if (options.contactTemporalPhases && frame == temporalSeedFrame) {
                 temporalSeed = captureFrame(capture, sample.graph, directory, "temporal_seed", frame);
-            } else if (temporalPhase || finalLitFrame) {
-                const auto label = finalLitFrame ? "on" : "phase_" + std::to_string(frame - temporalSeedFrame - 1);
+            } else if (temporalPhase || jitterPhase || aoPhase || finalLitFrame) {
+                const auto label = finalLitFrame ? "on" : aoPhase ? "ao_" + std::to_string(frame) : jitterPhase ? "jitter_" + std::to_string(frame) :
+                    "phase_" + std::to_string(frame - temporalSeedFrame - 1);
                 DebugValue phaseRays;
                 auto phase = captureFrame(capture, sample.graph, directory, label, frame,
-                    options.trace ? &phaseRays : nullptr, rayRegion, options.contactVisibility);
+                    options.trace ? &phaseRays : nullptr, rayRegion, options.contactVisibility, jitterCapture, aoCapture);
                 if (temporalPhase) {
                     temporalPhases.push_back({{"capture", phase}, {"ray_capture", phaseRays}});
                 }
+                if (jitterPhase) { jitterPhases.push_back(phase); }
+                if (aoPhase) { aoPhases.push_back(phase); }
                 if (finalLitFrame) {
                     captures["on"] = std::move(phase);
                     rayCapture = std::move(phaseRays);
@@ -432,7 +580,7 @@ void runBaseline(const std::filesystem::path& directory, const DebugValue& regio
             if (frame == 1 || frame == kDarkFrames) {
                 const auto label = frame == 1 ? "first_off" : "off";
                 captures[label] = captureFrame(capture, sample.graph, directory, label, frame, nullptr, rayRegion,
-                    options.contactTemporalPhases || (options.contactVisibility && frame == kDarkFrames));
+                    options.contactTemporalPhases || (options.contactVisibility && frame == kDarkFrames), jitterCapture, aoCapture);
             } else {
                 renderFrame(preview, sample.graph);
             }
@@ -459,6 +607,21 @@ void runBaseline(const std::filesystem::path& directory, const DebugValue& regio
         manifest["temporal_seed"] = std::move(temporalSeed);
         manifest["temporal_phases"] = std::move(temporalPhases);
     }
+    if (jitterCapture != JitterCapture::None) {
+        manifest["interpolation_jitter"] = options.interpolationJitter;
+        manifest["compare_interpolation_jitter"] = options.compareInterpolationJitter;
+    }
+    if (options.compareInterpolationJitter) {
+        manifest["jitter_interpolation_region"] = kJitterInterpolationRegion;
+        manifest["jitter_witness_probe_pixel"] = kJitterWitnessProbePixel;
+        manifest["jitter_witness_lane"] = kJitterWitnessLane;
+        manifest["jitter_witness_first_probe"] = kJitterWitnessFirstProbe;
+    }
+    if (options.jitterPhases) { manifest["jitter_phases"] = std::move(jitterPhases); }
+    if (aoCapture != ShortRangeAOCapture::None) {
+        manifest["short_range_ao_comparison"] = aoCapture == ShortRangeAOCapture::Comparison;
+        manifest["ao_phases"] = std::move(aoPhases);
+    }
     std::ofstream stream(directory / "capture.json");
     stream << manifest.dump(2) << '\n';
     if (!stream) { throw std::runtime_error("Could not write Cornell Box capture manifest"); }
@@ -472,17 +635,28 @@ int main(int argc, char** argv)
         std::cerr << "Usage: MetallicCornellBoxGIBaseline <new-output-directory> <regions.json>"
             " [--trace|--floor-rays] [--split-trace] [--detail] [--screen-gdf-continuation|--gdf-prefix-validation]"
             " [--gdf-prefix-reject-receding|--gdf-prefix-mesh-validation]"
-            " [--contact-visibility|--contact-temporal-phases]\n";
+            " [--contact-visibility|--contact-temporal-phases] [--jitter-phases]"
+            " [--interpolation-jitter|--compare-interpolation-jitter] [--short-range-ao|--compare-short-range-ao]\n";
         return 1;
     }
     try {
         BaselineOptions options;
+        ShortRangeAOCapture aoCapture = ShortRangeAOCapture::None;
         for (int i = 3; i < argc; ++i) {
             const std::string_view argument = argv[i];
             if (argument == "--trace") { options.trace = true; }
             else if (argument == "--floor-rays") { options.trace = options.floorRays = true; }
             else if (argument == "--split-trace") { options.splitTrace = true; }
             else if (argument == "--detail") { options.detail = true; }
+            else if (argument == "--jitter-phases") { options.jitterPhases = true; }
+            else if (argument == "--interpolation-jitter") { options.interpolationJitter = true; }
+            else if (argument == "--compare-interpolation-jitter") { options.compareInterpolationJitter = true; }
+            else if (argument == "--short-range-ao" || argument == "--compare-short-range-ao") {
+                if (aoCapture != ShortRangeAOCapture::None) {
+                    throw std::runtime_error("Choose either live or same-input Short Range AO");
+                }
+                aoCapture = argument == "--short-range-ao" ? ShortRangeAOCapture::Live : ShortRangeAOCapture::Comparison;
+            }
             else if (argument == "--screen-gdf-continuation") { options.screenGDFContinuation = true; }
             else if (argument == "--gdf-prefix-validation") {
                 options.screenGDFContinuation = options.gdfPrefixValidation = true;
@@ -505,6 +679,17 @@ int main(int argc, char** argv)
         if (options.contactVisibility && options.detail) {
             throw std::runtime_error("Cornell Box contact visibility captures require group F with Detail Tracing disabled");
         }
+        if (options.interpolationJitter && options.compareInterpolationJitter) {
+            throw std::runtime_error("Choose either live or same-input interpolation jitter");
+        }
+        if (options.trace && (options.jitterPhases || options.interpolationJitter || options.compareInterpolationJitter)) {
+            throw std::runtime_error("Cornell Box jitter captures use the standard sample, without fixed-ray options");
+        }
+        if (aoCapture != ShortRangeAOCapture::None &&
+            (options.trace || options.detail || options.splitTrace || options.screenGDFContinuation || options.jitterPhases ||
+                options.interpolationJitter || options.compareInterpolationJitter)) {
+            throw std::runtime_error("Cornell Box Short Range AO captures use the standard sample without other experiments");
+        }
         if (sceneWorkingColorSpace() != SceneWorkingColorSpace::ACEScg) {
             throw std::runtime_error("Cornell Box baseline requires METALLIC_WORKING_COLOR_SPACE=acescg");
         }
@@ -519,7 +704,7 @@ int main(int argc, char** argv)
         struct SdlScope { ~SdlScope() { SDL_Quit(); } } sdl;
         if (!task::initializeTaskSystem()) { throw std::runtime_error("Could not initialize the task system"); }
         struct TaskScope { ~TaskScope() { task::shutdownTaskSystem(); } } tasks;
-        runBaseline(directory, regions, options);
+        runBaseline(directory, regions, options, aoCapture);
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

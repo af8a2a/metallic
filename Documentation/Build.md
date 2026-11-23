@@ -901,6 +901,32 @@ The tool uses a Vulkan preview device with ray queries and synchronization valid
 
 The report compares scene-linear ACEScg luminance, contact-to-floor luminance ratios and the red or green channel fraction relative to the center floor. It checks the reference's change between the two lit captures at the same probe phase and verifies exact RGB zero in the settled dark capture.
 
+#### Full-resolution probe interpolation jitter
+
+Set `Gather.fullResolutionJitterWidth` to the effective UE shader width and connect `VBuffer.depth` to `Gather.jitterDepth`. Use width `1` for the UE 5.7.4 Epic setting at standard Final Gather quality. The property defaults to zero. The depth test samples mip 0 at the proposed coordinate and reconstructs the position at the fractional UV. An accepted offset shifts the uniform probe corners and bilinear weights. Adaptive probe scoring uses the original receiver pixel.
+
+Use the standard Cornell settings to capture frames 193–256 and both dark frames. The same-input comparison runs a second integration using the baseline's screen traces, filtered probe data and irradiance. It captures the jittered Gather images, proposed and accepted offsets, and both sets of interpolation indices and weights. The live variant feeds jittered integration into Temporal and subsequent Screen Trace feedback.
+
+```powershell
+$capture = '.\build-relwithdebinfo\Source\MetallicCornellBoxGIBaseline.exe'
+& $capture build/cornell-jitter/paired Tools/CornellBoxGIRegions.json --jitter-phases --compare-interpolation-jitter
+& $capture build/cornell-jitter/live Tools/CornellBoxGIRegions.json --jitter-phases --interpolation-jitter
+```
+
+#### Short Range AO and Bent Normal
+
+The software opaque path follows UE 5.7.4 Epic's full-resolution depth horizon search. `LumenShortRangeAOPass` writes a half-resolution 11/11/10 UNORM packed world-space bent normal. `LumenTemporalGatherPass` stochastically reconstructs it at full resolution, reprojects the packed AO history with the diffuse history taps, and applies diffuse multibounce occlusion during composition. The length of the decoded vector is ambient visibility.
+
+The capture tool enables the producer with `VBuffer.depth` and `Deferred.lumenNormal`. It enables `Deferred.exportLumenDiffuseAlbedo`, `Gather.exportIndirectIrradiance`, and the consumer's `shortRangeAO` property. With AO enabled, `Temporal.currentIndirectDiffuse` takes `Gather.indirectIrradiance`, `Temporal.diffuseAlbedo` takes `Deferred.lumenDiffuseAlbedo`, and `Temporal.shortRangeAORaw` takes `ShortRangeAO.shortRangeAORaw`. This permutation composes the opaque diffuse lobe without physical aerial perspective.
+
+```powershell
+$capture = '.\build-relwithdebinfo\Source\MetallicCornellBoxGIBaseline.exe'
+& $capture build/cornell-shortao/paired Tools/CornellBoxGIRegions.json --compare-short-range-ao
+& $capture build/cornell-shortao/live Tools/CornellBoxGIRegions.json --short-range-ao
+```
+
+Both modes save frames 193–256 and the first and eighth dark frames. The paired mode evaluates AO on the same probes as the baseline and keeps its feedback isolated. The live mode publishes the AO-composited color to Screen Trace. Both record the raw half-resolution and accumulated full-resolution bent normals in `capture.json`.
+
 For a Detail Tracing comparison, use `--trace` in both groups and `--detail` in group B. The fixed-ray triangle fixtures use centered directions, the original 112³ GDF with 4,096 physical pages and a screen-trace relative depth thickness of 0.02. The capture tool saves the effective graph and reads probe placement, receiver position and normal, radiance, distance, and the per-ray handoff at the same execution as the lit images.
 
 ```powershell

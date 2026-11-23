@@ -14,11 +14,12 @@
 #include <array>
 #include <limits>
 #include <optional>
+#include <spdlog/spdlog.h>
 
 namespace metallic::render::builtin_pass {
 namespace {
 
-constexpr uint64_t kLumenTemporalGatherABI = 0x4c554d454e030005ull;
+constexpr uint64_t kLumenTemporalGatherABI = 0x4c554d454e030006ull;
 
 struct LumenTemporalGatherParams {
     ShaderSampledImage indirectDiffuse, position, normal, directColor;
@@ -35,10 +36,17 @@ struct LumenTemporalGatherParams {
     ShaderSampledImage blueNoiseScalar;
     uint32_t frameIndex;
     ShaderSampledImage previousPosition;
+    ShaderSampledImage shortRangeAORaw, previousShortRangeAO;
+    ShaderStorageImage shortRangeAO, currentShortRangeAO;
+    ShaderSampledImage diffuseAlbedo;
+    float currentJitter[2];
+    uint32_t padding;
 };
-static_assert(sizeof(LumenTemporalGatherParams) == 256 &&
+static_assert(sizeof(LumenTemporalGatherParams) == 288 &&
     offsetof(LumenTemporalGatherParams, maxFramesAccumulated) == 240 &&
-    offsetof(LumenTemporalGatherParams, previousPosition) == 252);
+    offsetof(LumenTemporalGatherParams, previousPosition) == 252 &&
+    offsetof(LumenTemporalGatherParams, shortRangeAORaw) == 256 &&
+    offsetof(LumenTemporalGatherParams, currentJitter) == 276);
 
 struct HistoryContent {
     uint64_t reprojectionRevision = 0;
@@ -60,6 +68,11 @@ class LumenTemporalGatherPass final : public ComputePass {
 public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override;
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override;
+    Result<> prepare(const RenderGraphCompileContext& context, std::string& log) override
+    {
+        const auto ao = properties().value("shortRangeAO", RenderGraphProperties(false));
+        return !ao.is_boolean() || ao != compiledShortRangeAO_ ? compile(context, log) : Result<>{};
+    }
     Result<> execute(RenderGraphExecutionContext& context) override;
     bool supportsFrameOverlap() const override { return true; }
     bool supportsExternalFrameOverlap() const override { return false; }
@@ -77,10 +90,17 @@ private:
         return value != properties().end() && *value == true;
     }
 
+    bool shortRangeAOEnabled() const
+    {
+        const auto value = properties().find("shortRangeAO");
+        return value != properties().end() && *value == true;
+    }
+
     Device* device_ = nullptr;
     ComputeKernel kernel_;
     std::unique_ptr<TextureView> blueNoiseScalar_;
     float maxFramesAccumulated_ = 10.0f;
+    bool compiledShortRangeAO_ = false;
     // The shared manager invalidates its resources during ordinary editor camera
     // motion. Retain this pass's reprojectable history across that event.
     HistoryResourceManager history_;
@@ -89,10 +109,12 @@ private:
     float previousSunIrradianceMax_ = 0.0f;
 };
 
-RenderPassReflection LumenTemporalGatherPass::reflect(const RenderGraphCompileContext&) const
+RenderPassReflection LumenTemporalGatherPass::reflect(const RenderGraphCompileContext& context) const
 {
     RenderPassReflection reflection;
-    reflection.addTextureInput("currentIndirectDiffuse", "Current unexposed indirect diffuse after receiver response")
+    const bool shortRangeAO = shortRangeAOEnabled();
+    reflection.addTextureInput("currentIndirectDiffuse", shortRangeAO ? "Current unexposed irradiance over pi before receiver response" :
+        "Current unexposed indirect diffuse after receiver response")
         .sampledRead().format = Format::RGBA16Sfloat;
     reflection.addTextureInput("position", "Receiver world position and positive linear view depth")
         .sampledRead().format = Format::RGBA32Sfloat;
@@ -106,6 +128,14 @@ RenderPassReflection LumenTemporalGatherPass::reflect(const RenderGraphCompileCo
     if (publishesScreenTraceHistory()) {
         reflection.addTextureInput("sceneDepth", "Reversed-Z depth of the composited frame")
             .sampledRead().format = Format::D32Sfloat;
+    }
+    if (shortRangeAO) {
+        reflection.addTextureInput("shortRangeAORaw", "Current half-resolution packed world-space bent normal")
+            .texture2D((context.width + 1u) / 2u, (context.height + 1u) / 2u).sampledRead().format = Format::R32Uint;
+        reflection.addTextureInput("diffuseAlbedo", "Unoccluded diffuse receiver response")
+            .sampledRead().format = Format::RGBA16Sfloat;
+        reflection.addTextureOutput("shortRangeAO", "Reprojected full-resolution packed world-space bent normal")
+            .storageWrite().transient(RenderGraphInitialization::FullOverwrite).format = Format::R32Uint;
     }
 
     auto& indirect = reflection.addTextureOutput("indirectDiffuse", "Accumulated unexposed indirect diffuse")
@@ -145,11 +175,17 @@ Result<> LumenTemporalGatherPass::compile(const RenderGraphCompileContext& conte
         log = "Lumen stochasticHistoryQuantization must be a boolean";
         return makeError(Error::InvalidArgument);
     }
+    const auto ao = properties().find("shortRangeAO");
+    if (ao != properties().end() && !ao->is_boolean()) {
+        log = "Lumen Temporal Gather shortRangeAO must be a boolean";
+        return makeError(Error::InvalidArgument);
+    }
+    compiledShortRangeAO_ = shortRangeAOEnabled();
     device_ = context.device;
     const bool ditherHistory = properties().value("stochasticHistoryQuantization", false);
-    if (ditherHistory) {
+    if (ditherHistory || compiledShortRangeAO_) {
         if (!context.graphicsQueue) {
-            log = "Lumen temporal quantization requires a graphics queue to upload blue noise";
+            log = "Lumen Temporal Gather requires a graphics queue to upload blue noise";
             return makeError(Error::InvalidArgument);
         }
         auto loaded = loadLumenBlueNoise(*device_, *context.graphicsQueue, LumenBlueNoise::Scalar, log);
@@ -158,10 +194,11 @@ Result<> LumenTemporalGatherPass::compile(const RenderGraphCompileContext& conte
     } else {
         blueNoiseScalar_.reset();
     }
-    std::array<SlangMacroDefine, 2> defines{};
+    std::array<SlangMacroDefine, 3> defines{};
     size_t defineCount = 0;
     if (ditherHistory) { defines[defineCount++] = {"METALLIC_LUMEN_DITHER_HISTORY", "1"}; }
     if (dynamicReprojection()) { defines[defineCount++] = {"METALLIC_LUMEN_DYNAMIC_REPROJECTION", "1"}; }
+    if (compiledShortRangeAO_) { defines[defineCount++] = {"METALLIC_LUMEN_SHORT_RANGE_AO", "1"}; }
     lastContent_.reset();
     if (auto result = history_.initialize(*device_); !result) { return result; }
     return ShaderRegistry::instance().getComputeKernel(*device_,
@@ -177,6 +214,11 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
     if (!registry) { return makeError(registry.error()); }
     const auto* view = context.viewConstants();
     const auto* world = context.world();
+    if (compiledShortRangeAO_ && (!view ||
+        (world && world->worldEnvironment().source == environment::EnvironmentSource::PhysicalAtmosphere))) {
+        spdlog::error("Lumen Short Range AO requires a graph view and opaque diffuse composition without physical aerial perspective");
+        return makeError(Error::InvalidArgument);
+    }
     const auto* scene = world ? world->scene() : context.runtimeScene();
     const auto* globalHistory = context.historyResources();
     const bool dynamic = dynamicReprojection();
@@ -201,15 +243,16 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
     };
 
     const std::string historyScope = "LumenTemporalGather." + context.passName() + ".";
-    const std::array names{historyScope + "diffuse", historyScope + "geometry"};
-    const std::array formats{Format::RGBA16Sfloat, Format::RGBA32Sfloat};
+    const std::array names{historyScope + "diffuse", historyScope + "geometry", historyScope + "shortRangeAO"};
+    const std::array formats{Format::RGBA16Sfloat, Format::RGBA32Sfloat, Format::R32Uint};
+    const size_t historyCount = compiledShortRangeAO_ ? names.size() : names.size() - 1;
     history_.beginFrame(context.frameIndex());
     if (lastContent_ != content || lastFrame_ + 1 != context.frameIndex() || !view || view->frame[1] == 0 ||
         lumenGlobalSunLightingChanged(previousSunIrradianceMax_, sunIrradianceMax)) {
         history_.invalidateAll();
     }
 
-    for (size_t index = 0; index < names.size(); ++index) {
+    for (size_t index = 0; index < historyCount; ++index) {
         const TextureDesc desc{
             .type = TextureType::Texture2D,
             .usage = TextureUsageBits::Sampled | TextureUsageBits::Storage,
@@ -229,7 +272,8 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
     const auto currentGeometry = history_.texture(names[1], HistorySlot::Current);
     const auto previousDiffuse = history_.texture(names[0], HistorySlot::Previous);
     const auto previousGeometry = history_.texture(names[1], HistorySlot::Previous);
-    const bool historyValid = previousDiffuse.valid && previousGeometry.valid;
+    const auto previousShortRangeAO = compiledShortRangeAO_ ? history_.texture(names[2], HistorySlot::Previous) : HistoryTextureRef{};
+    const bool historyValid = previousDiffuse.valid && previousGeometry.valid && (!compiledShortRangeAO_ || previousShortRangeAO.valid);
 
     auto& commands = context.commandBuffer();
     ParameterWriter writer(*device_, **registry, RenderFrameContext::from(commands));
@@ -258,6 +302,8 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
         params.previousCamera = view->previous;
         params.previousJitter[0] = view->jitter[2];
         params.previousJitter[1] = view->jitter[3];
+        params.currentJitter[0] = view->jitter[0];
+        params.currentJitter[1] = view->jitter[1];
     }
     using Access = RenderGraphResourceAccess;
     std::vector<RenderGraphStageUse> uses{
@@ -281,6 +327,21 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
         uses.insert(uses.end(), {{"previousDiffuse", Access::TextureSampleRead}, {"previousGeometry", Access::TextureSampleRead}});
         textures.push_back(import("previousDiffuse", previousDiffuse));
         textures.push_back(import("previousGeometry", previousGeometry));
+    }
+    if (compiledShortRangeAO_) {
+        const auto currentShortRangeAO = history_.texture(names[2], HistorySlot::Current);
+        params.shortRangeAORaw = writer.sampledImageHandle(context.inputTexture("shortRangeAORaw").view());
+        params.diffuseAlbedo = writer.sampledImageHandle(context.inputTexture("diffuseAlbedo").view());
+        params.shortRangeAO = writer.storageImageHandle(context.outputTexture("shortRangeAO").view());
+        params.currentShortRangeAO = writer.storageImageHandle(currentShortRangeAO.view);
+        params.previousShortRangeAO = historyValid ? writer.sampledImageHandle(previousShortRangeAO.view) : params.shortRangeAORaw;
+        uses.insert(uses.end(), {{"shortRangeAORaw", Access::TextureSampleRead}, {"diffuseAlbedo", Access::TextureSampleRead},
+            {"shortRangeAO", Access::TextureStorageWrite}, {"currentShortRangeAO", Access::TextureStorageWrite}});
+        textures.push_back(import("currentShortRangeAO", currentShortRangeAO));
+        if (historyValid) {
+            uses.push_back({"previousShortRangeAO", Access::TextureSampleRead});
+            textures.push_back(import("previousShortRangeAO", previousShortRangeAO));
+        }
     }
     const bool publishScreenHistory = publishesScreenTraceHistory();
     const auto screenNames = publishScreenHistory ? lumenScreenTraceHistoryNames(context.passName()) : std::array<std::string, 2>{};
@@ -311,8 +372,8 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
     auto result = context.executeStages(stages, {}, textures);
     if (!result) { return result; }
 
-    for (const auto& name : names) {
-        result = history_.publishTextureState(commands, name, HistorySlot::Current, ResourceState::ShaderRead, true);
+    for (size_t index = 0; index < historyCount; ++index) {
+        result = history_.publishTextureState(commands, names[index], HistorySlot::Current, ResourceState::ShaderRead, true);
         if (!result) { return result; }
     }
     if (publishScreenHistory) {

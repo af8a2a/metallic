@@ -47,6 +47,9 @@ public struct DeferredLumenReceiver
     public float4 positionAndDepth;
     public float3 normal;
     public float3 diffuse;
+#if METALLIC_DEFERRED_LUMEN_AO_ALBEDO
+    public float3 diffuseAlbedo;
+#endif
 #if METALLIC_DEFERRED_LUMEN_SPECULAR
     public float4 specularAndRoughness;
 #endif
@@ -309,6 +312,9 @@ internal float3 shadeSceneVisibilitySurfaceRadiance<TProgram : ISceneSurfaceMate
         float3 diffuse = float3(0.0);
         if (replaceDiffuse) {
             receiver.diffuse = lumenReceiverDiffuse(float3(diffuseColor), summary.occlusion);
+#if METALLIC_DEFERRED_LUMEN_AO_ALBEDO
+            receiver.diffuseAlbedo = float3(diffuseColor);
+#endif
         } else {
             diffuse = environmentDiffuseIrradiance(normal, push) / kPi * float3(diffuseColor);
         }
@@ -332,6 +338,9 @@ internal float3 shadeSceneVisibilitySurfaceRadiance<TProgram : ISceneSurfaceMate
                 (DeferredColor(1.0) - specularWeight);
             if (replaceDiffuse) {
                 receiver.diffuse = lumenReceiverDiffuse(float3(diffuseColor), summary.occlusion);
+#if METALLIC_DEFERRED_LUMEN_AO_ALBEDO
+                receiver.diffuseAlbedo = float3(diffuseColor);
+#endif
             } else {
                 diffuse = environmentDiffuseIrradiance(normal, push) / kPi * float3(diffuseColor);
             }
