@@ -27,6 +27,13 @@ struct LumenScreenProbeScheduleParams
 static const uint kRayCompactThreadGroupSize = 16u;
 static const uint kRayCompactThreads = kRayCompactThreadGroupSize * kRayCompactThreadGroupSize;
 static const uint kRaysPerProbe = kLumenProbeTraceResolution * kLumenProbeTraceResolution;
+#if defined(METALLIC_LUMEN_COMPACT_DETAIL_RAYS)
+static const uint kRayWorkCountIndex = 1u;
+static const uint kRayTraceDispatchOffset = 6u;
+#else
+static const uint kRayWorkCountIndex = 0u;
+static const uint kRayTraceDispatchOffset = 3u;
+#endif
 
 void writeScreenProbeRayDispatch(RWStructuredBuffer<uint> args, uint offset, uint groups)
 {
@@ -98,7 +105,11 @@ void lumenBuildScreenProbeIndirectArgsMain()
     }
 #if defined(METALLIC_LUMEN_SPLIT_PROBE_TRACING)
     const uint rayCount = state[0] * kRaysPerProbe;
-    resolveUniform(params.rayWorkCount)[0] = 0u;
+    let rayWorkCount = resolveUniform(params.rayWorkCount);
+    rayWorkCount[0] = 0u;
+#if defined(METALLIC_LUMEN_SPLIT_DETAIL_TRACING)
+    rayWorkCount[1] = 0u;
+#endif
     writeScreenProbeRayDispatch(resolveUniform(params.rayIndirectArgs), 0u,
         (rayCount + kRayCompactThreads - 1u) / kRayCompactThreads);
 #endif
@@ -113,7 +124,7 @@ groupshared uint SharedTraceTexelAllocator;
 groupshared uint SharedTraceTexels[kRayCompactThreads];
 #endif
 
-// UE ScreenProbeCompactTracesCS, using Metallic's placed probe indices and screen miss marker.
+// UE ScreenProbeCompactTracesCS, using Metallic's placed probe indices and pending trace markers.
 [shader("compute")]
 [numthreads(kRayCompactThreadGroupSize, kRayCompactThreadGroupSize, 1)]
 void lumenCompactScreenProbeRaysMain(uint3 group : SV_GroupID, uint linearThreadIndex : SV_GroupIndex)
@@ -133,7 +144,14 @@ void lumenCompactScreenProbeRaysMain(uint3 group : SV_GroupID, uint linearThread
     if (activeProbeIndex < resolveUniform(params.workState)[0]) {
         const uint probeIndex = resolveUniform(params.workList)[activeProbeIndex];
         traceTexelForThisThread = probeIndex * kRaysPerProbe + rayIndex % kRaysPerProbe;
-        bTraceValid = resolveUniform(params.traceRadiance)[traceTexelForThisThread].w == kLumenProbeRayPending;
+        const float traceState = resolveUniform(params.traceRadiance)[traceTexelForThisThread].w;
+#if defined(METALLIC_LUMEN_COMPACT_DETAIL_RAYS)
+        bTraceValid = traceState == kLumenProbeRayPendingDetail;
+#elif defined(METALLIC_LUMEN_SPLIT_DETAIL_TRACING)
+        bTraceValid = traceState == kLumenProbeRayPending || traceState == kLumenProbeRayPendingDetail;
+#else
+        bTraceValid = traceState == kLumenProbeRayPending;
+#endif
     }
 #if !defined(METALLIC_LUMEN_PROBE_COMPACTION_WAVE_OPS)
     if (bTraceValid) {
@@ -161,7 +179,7 @@ void lumenCompactScreenProbeRaysMain(uint3 group : SV_GroupID, uint linearThread
     GroupMemoryBarrierWithGroupSync();
 
     if (linearThreadIndex == 0u) {
-        InterlockedAdd(compactedTraceTexelAllocator[0], SharedGroupSum, SharedGlobalTraceTexelStartOffset);
+        InterlockedAdd(compactedTraceTexelAllocator[kRayWorkCountIndex], SharedGroupSum, SharedGlobalTraceTexelStartOffset);
     }
 
     GroupMemoryBarrierWithGroupSync();
@@ -171,7 +189,7 @@ void lumenCompactScreenProbeRaysMain(uint3 group : SV_GroupID, uint linearThread
     }
 #else
     if (linearThreadIndex == 0u) {
-        InterlockedAdd(compactedTraceTexelAllocator[0], SharedTraceTexelAllocator, SharedGlobalTraceTexelStartOffset);
+        InterlockedAdd(compactedTraceTexelAllocator[kRayWorkCountIndex], SharedTraceTexelAllocator, SharedGlobalTraceTexelStartOffset);
     }
 
     GroupMemoryBarrierWithGroupSync();
@@ -188,8 +206,8 @@ void lumenCompactScreenProbeRaysMain(uint3 group : SV_GroupID, uint linearThread
 void lumenBuildScreenProbeRayIndirectArgsMain()
 {
     let params = getParameters<LumenScreenProbeScheduleParams>();
-    const uint rayCount = resolveUniform(params.rayWorkCount)[0];
-    writeScreenProbeRayDispatch(resolveUniform(params.rayIndirectArgs), 3u,
+    const uint rayCount = resolveUniform(params.rayWorkCount)[kRayWorkCountIndex];
+    writeScreenProbeRayDispatch(resolveUniform(params.rayIndirectArgs), kRayTraceDispatchOffset,
         (rayCount + kLumenProbeFallbackGroupSize - 1u) / kLumenProbeFallbackGroupSize);
 }
 #endif

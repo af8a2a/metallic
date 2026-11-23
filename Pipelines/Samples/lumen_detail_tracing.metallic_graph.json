@@ -9,14 +9,14 @@
         {"id": 3, "name": "GlobalDistanceFieldPages", "type": "GlobalDistanceFieldPagesPass",
             "position": {"x": 50, "y": 350}, "properties": {
                 "distanceFieldPaths": [
-                    ".cache/mesh-distance-field/CornellBoxFloor.meshdf",
-                    ".cache/mesh-distance-field/CornellBoxCeiling.meshdf",
-                    ".cache/mesh-distance-field/CornellBoxBackWall.meshdf",
-                    ".cache/mesh-distance-field/CornellBoxLeftWall.meshdf",
-                    ".cache/mesh-distance-field/CornellBoxRightWall.meshdf",
-                    ".cache/mesh-distance-field/CornellBoxShortBlock.meshdf",
-                    ".cache/mesh-distance-field/CornellBoxTallBlock.meshdf",
-                    ".cache/mesh-distance-field/CornellBoxCeilingEmitter.meshdf"
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxFloor.meshdf",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxCeiling.meshdf",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxBackWall.meshdf",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxLeftWall.meshdf",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxRightWall.meshdf",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxShortBlock.meshdf",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxTallBlock.meshdf",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxCeilingEmitter.meshdf"
                 ],
                 "extent": 25, "resolution": 112,
                 "maxPhysicalPages": 4096, "quantized": true, "clipmapCount": 4, "buildObjectGrid": true
@@ -24,28 +24,28 @@
         {"id": 4, "name": "SurfaceCache", "type": "LumenSurfaceCachePass", "position": {"x": 340, "y": 350},
             "properties": {
                 "meshCardPaths": [
-                    ".cache/mesh-distance-field/CornellBoxFloor.meshcards",
-                    ".cache/mesh-distance-field/CornellBoxCeiling.meshcards",
-                    ".cache/mesh-distance-field/CornellBoxBackWall.meshcards",
-                    ".cache/mesh-distance-field/CornellBoxLeftWall.meshcards",
-                    ".cache/mesh-distance-field/CornellBoxRightWall.meshcards",
-                    ".cache/mesh-distance-field/CornellBoxShortBlock.meshcards",
-                    ".cache/mesh-distance-field/CornellBoxTallBlock.meshcards",
-                    ".cache/mesh-distance-field/CornellBoxCeilingEmitter.meshcards"
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxFloor.meshcards",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxCeiling.meshcards",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxBackWall.meshcards",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxLeftWall.meshcards",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxRightWall.meshcards",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxShortBlock.meshcards",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxTallBlock.meshcards",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxCeilingEmitter.meshcards"
                 ],
                 "atlasSize": 512, "tileResolution": 32, "shadowedLighting": true, "exportDirectIrradiance": true
             }},
         {"id": 5, "name": "Gather", "type": "LumenScreenProbeGatherPass", "position": {"x": 1315, "y": 140},
             "properties": {"maxTraceDistance": 100, "finalGather": true, "screenTraces": true, "stochasticInterpolation": true,
-                "radianceCache": true, "detailTracing": true, "detailDistanceFieldPaths": [
-                    ".cache/mesh-distance-field/CornellBoxFloor.meshdf",
-                    ".cache/mesh-distance-field/CornellBoxCeiling.meshdf",
-                    ".cache/mesh-distance-field/CornellBoxBackWall.meshdf",
-                    ".cache/mesh-distance-field/CornellBoxLeftWall.meshdf",
-                    ".cache/mesh-distance-field/CornellBoxRightWall.meshdf",
-                    ".cache/mesh-distance-field/CornellBoxShortBlock.meshdf",
-                    ".cache/mesh-distance-field/CornellBoxTallBlock.meshdf",
-                    ".cache/mesh-distance-field/CornellBoxCeilingEmitter.meshdf"
+                "activeProbeDispatch": true, "splitProbeTracing": true, "radianceCache": true, "detailTracing": true, "detailDistanceFieldPaths": [
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxFloor.meshdf",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxCeiling.meshdf",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxBackWall.meshdf",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxLeftWall.meshdf",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxRightWall.meshdf",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxShortBlock.meshdf",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxTallBlock.meshdf",
+                    "Asset/Lumen/CornellBoxBakes/CornellBoxCeilingEmitter.meshdf"
                 ]}},
         {"id": 6, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 1965, "y": 140}},
         {"id": 7, "name": "ScreenTrace", "type": "LumenScreenTraceSetupPass", "position": {"x": 340, "y": -290},

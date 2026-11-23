@@ -1210,6 +1210,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &cornellBoxRealtime,
         &cornellBoxCompare,
         &lumenLargeScene,
+        &lumenDetailTracing,
         &lumenReflection,
         &sponzaGIRealtime,
         &sponzaGIPathTracing,
@@ -1282,7 +1283,6 @@ std::vector<const RenderSample*> builtInRenderSamples()
     }
     if (std::ranges::all_of(cornellBoxMeshes, hasLumenMeshCache)) {
         samples.push_back(&lumenRadianceCache);
-        samples.push_back(&lumenDetailTracing);
     }
     // Optional local assets are read once, not on every ImGui frame.
     static const auto painter = loadLocalLookDevSamples("build/MaterialValidation/PainterLookDev/Catalog.json", "Painter Validation", "painter-");

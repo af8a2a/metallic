@@ -919,6 +919,8 @@ The fixed floor probe at pixel `[286, 302]` tests both outcomes. Lane `[2, 5]` h
 
 Group C isolates Screen-to-GDF continuation. The capture flag `--screen-gdf-continuation` sets `Gather.screenGDFContinuation` and uses the same GDF start as Detail Tracing after a rejected screen trace, `max(MinTraceDistance, ScreenEnd - 2 * SurfaceBias)`. Group C uses the existing GDF and Surface Cache without the Mesh SDF stage. Compare A to C for the effect of the Screen endpoint and C to B for the added Detail stage and its handoff.
 
+The Sponza realtime graph opts into Screen-to-GDF continuation. The Cornell Box control remains a comparison from the minimum trace distance. Its floor oracle includes an emitter edge where the screen endpoint can advance the biased software ray past the first triangle. Add `--split-trace` to a ray capture to test the active probe and split-ray dispatches at the same fixed phase.
+
 ```powershell
 & $capture "$ab/c" Tools/CornellBoxGIRegions.json --trace --screen-gdf-continuation
 python -B Tools/MeasureCornellBoxGI.py --manifest "$ab/c/capture.json" --out "$ab/c/metrics.json"
@@ -1018,7 +1020,7 @@ The radiosity path adapts UE 5.7.4's software GDF branch for a sky-disabled scen
 - Ray and filter noise use the UE rendering commandlet's black dummy inputs. Trace, SH, irradiance and outgoing lighting use the reference PF_FloatRGBA precision with scene-linear exposure. SH coefficients use packed FP16 buffers. The history count occupies the irradiance texture's alpha. Metallic exports direct irradiance in RGBA32F and uses its card normal, depth and shared GDF trace. Ray distance and bias use meters.
 - Software probe occlusion is disabled, matching the reference default. The fixed atlas consumes one resolution for each card and has no cone-driven mip selection or page feedback.
 
-To regenerate the shipped bakes with the baking loop above, set `$scene = 'Asset/Lumen/CornellBox.gltf'`, `$cache = 'Asset/Lumen/CornellBoxBakes'` and use these stems in source mesh order. Large Scene uses the shipped bakes. World Radiance Cache and Detail Tracing load copies from `.cache/mesh-distance-field/`.
+To regenerate the shipped bakes with the baking loop above, set `$scene = 'Asset/Lumen/CornellBox.gltf'`, `$cache = 'Asset/Lumen/CornellBoxBakes'` and use these stems in source mesh order. Large Scene and Detail Tracing use the shipped bakes. The standalone World Radiance Cache sample loads copies from `.cache/mesh-distance-field/`.
 
 ```powershell
 $meshes = @('CornellBoxFloor', 'CornellBoxCeiling', 'CornellBoxBackWall', 'CornellBoxLeftWall',
@@ -1089,7 +1091,7 @@ The port follows the UE 5.7.4 software, opaque, skylight-off `FORCE_UNIFORM_TRAC
 
 **Lighting / Lumen / Detail Tracing** (`lumen-detail-tracing`) uses the Large Scene and the same Cornell Box mesh bakes. Set `Gather.detailTracing` to `true`, supply `detailDistanceFieldPaths`, and connect `VBuffer.depth` to `Gather.detailDepth`. This option requires Final Gather and can run with screen traces or WRC disabled. `meshSDFTraceDistance` defaults to 1.8 m and is capped by `maxTraceDistance`.
 
-Gather preserves confirmed screen hits, then traces eligible rays against individual Mesh Distance Fields before the GDF and WRC. The per-view grid uses 64-pixel tiles, logarithmic depth slices, closest and furthest depth bounds, and the UE froxel and SDF intersection tests. `Gather.probeRadiance` alpha 9 identifies an accepted Mesh SDF hit. `Gather.probeDistance` stores the hit distance plus the receiver-to-biased-origin offset used for handoff. The 40 m view cutoff and distance fade follow UE 5.7.4. Mesh hits sample the same scene-linear Surface Cache lighting as GDF hits. WRC updates continue to trace the GDF.
+The sample enables `activeProbeDispatch` and `splitProbeTracing`. Gather writes confirmed HZB hits, compacts eligible near-field rays into an indirect Mesh SDF dispatch, then compacts all remaining rays into an indirect GDF dispatch. Both software stages resume at `max(MinTraceDistance, SavedEnd - 2 * SurfaceBias)`. An unresolved Detail ray supplies its updated endpoint after the UE centimeter-space distance encode/decode. Rays that skip Detail use the screen endpoint. The per-view grid uses 64-pixel tiles, logarithmic depth slices, closest and furthest depth bounds, and the UE froxel and SDF intersection tests. `Gather.probeRadiance` alpha 9 identifies an accepted Mesh SDF hit. The 40 m view cutoff and distance fade follow UE 5.7.4. Mesh hits sample scene-linear Surface Cache lighting. WRC updates continue to trace the GDF.
 
 This port covers opaque, uniformly scaled Mesh SDFs in perspective views with skylight disabled. Metallic builds the candidate grid with compute dispatches and reduces the current depth directly to the HZB interval inspected by the culler. The emissive exception to the object size test uses the material's emissive factor. The candidate pool reserves the full instance-cell upper bound and rejects configurations beyond its buffer limit. The stages use Metallic's baked finest SDF mip and fixed resident card tiles. Per-primitive draw-distance overrides, heightfields, hair, card feedback, and the UE moving-hit path are outside this permutation.
 

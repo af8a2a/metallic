@@ -51,6 +51,7 @@ constexpr RayCaptureRegion kFloorRayRegion{{4, 18, 15, 5}, true};
 
 struct BaselineOptions {
     bool trace = false;
+    bool splitTrace = false;
     bool detail = false;
     bool screenGDFContinuation = false;
     bool floorRays = false;
@@ -338,6 +339,10 @@ void runBaseline(const std::filesystem::path& directory, const DebugValue& regio
         }
     }
     if (options.contactVisibility) { gatherProperties["probeInterpolationReadback"] = {0, 0, kExtent, kExtent}; }
+    if (options.splitTrace) {
+        gatherProperties["activeProbeDispatch"] = true;
+        gatherProperties["splitProbeTracing"] = true;
+    }
     if (options.screenGDFContinuation) { gatherProperties["screenGDFContinuation"] = true; }
     if (options.gdfPrefixValidation) { gatherProperties["gdfPrefixValidation"] = true; }
     if (options.gdfPrefixRejectReceding) { gatherProperties["gdfPrefixRejectReceding"] = true; }
@@ -438,7 +443,8 @@ void runBaseline(const std::filesystem::path& directory, const DebugValue& regio
     const uint32_t gdfResolution = gdfProperties.at("resolution").get<uint32_t>();
     DebugValue manifest{{"sample", sample.desc.id}, {"color_space", "acescg"},
         {"resolution", {kExtent, kExtent}}, {"view", sample.graph.viewProperties()}, {"regions", regions},
-        {"detail_tracing", options.detail}, {"screen_traces", gatherProperties.at("screenTraces")},
+        {"detail_tracing", options.detail}, {"detail_continuation_encoded", options.detail},
+        {"screen_traces", gatherProperties.at("screenTraces")},
         {"screen_trace_relative_depth_thickness", gatherProperties.value("screenTraceRelativeDepthThickness", 0.02f)},
         {"gdf_extent_m", gdfExtent}, {"gdf_resolution", gdfResolution},
         {"gdf_voxel_size_m", 2.0 * gdfExtent / gdfResolution},
@@ -464,7 +470,7 @@ int main(int argc, char** argv)
 {
     if (argc < 3) {
         std::cerr << "Usage: MetallicCornellBoxGIBaseline <new-output-directory> <regions.json>"
-            " [--trace|--floor-rays] [--detail] [--screen-gdf-continuation|--gdf-prefix-validation]"
+            " [--trace|--floor-rays] [--split-trace] [--detail] [--screen-gdf-continuation|--gdf-prefix-validation]"
             " [--gdf-prefix-reject-receding|--gdf-prefix-mesh-validation]"
             " [--contact-visibility|--contact-temporal-phases]\n";
         return 1;
@@ -475,6 +481,7 @@ int main(int argc, char** argv)
             const std::string_view argument = argv[i];
             if (argument == "--trace") { options.trace = true; }
             else if (argument == "--floor-rays") { options.trace = options.floorRays = true; }
+            else if (argument == "--split-trace") { options.splitTrace = true; }
             else if (argument == "--detail") { options.detail = true; }
             else if (argument == "--screen-gdf-continuation") { options.screenGDFContinuation = true; }
             else if (argument == "--gdf-prefix-validation") {

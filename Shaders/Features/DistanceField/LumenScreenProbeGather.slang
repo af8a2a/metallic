@@ -28,6 +28,10 @@ using Metallic;
 using Metallic.Lumen;
 using Metallic.DistanceField;
 
+#if defined(METALLIC_LUMEN_PROBE_TRACE_FALLBACK_ONLY) || defined(METALLIC_LUMEN_PROBE_TRACE_DETAIL_ONLY)
+#define METALLIC_LUMEN_PROBE_TRACE_COMPACTED 1
+#endif
+
 static const uint kProbeDownsampleFactor = 16u;
 static const uint kProbeRayResolution = kLumenProbeTraceResolution;
 static const uint kRaysPerProbe = kProbeRayResolution * kProbeRayResolution;
@@ -173,7 +177,7 @@ struct LumenScreenProbeGatherParams
     ResourceHandle<StructuredBuffer<uint>> probeWorkList;
     ResourceHandle<StructuredBuffer<uint>> probeWorkState;
 #endif
-#if defined(METALLIC_LUMEN_PROBE_TRACE_FALLBACK_ONLY)
+#if defined(METALLIC_LUMEN_PROBE_TRACE_COMPACTED)
     ResourceHandle<StructuredBuffer<uint>> probeRayWorkList;
     ResourceHandle<StructuredBuffer<uint>> probeRayWorkCount;
 #endif
@@ -265,8 +269,25 @@ float3 storeTraceLighting(float3 lighting)
 #endif
 }
 
+float lumenProbeSoftwareTraceStart(float savedEnd)
+{
+    return max(kMinTraceDistance, savedEnd - kSurfaceBias * 2.0f);
+}
+
+#if defined(METALLIC_LUMEN_DETAIL_TRACING) && !defined(METALLIC_LUMEN_PROBE_TRACE_COMPACTED)
+bool shouldTraceLumenProbeDetail(LumenMeshSDFGatherBindings detail, bool sceneIdentityMatches, bool reachedRadianceCache,
+    float receiverDepth, float screenEnd)
+{
+    return detail.grid.w != 0u && sceneIdentityMatches && !reachedRadianceCache &&
+        receiverDepth < detail.cardTraceEndDistance && screenEnd < detail.maxMeshSDFTraceDistance;
+}
+#endif
+
 [shader("compute")]
-#if defined(METALLIC_LUMEN_PROBE_TRACE_FALLBACK_ONLY)
+#if defined(METALLIC_LUMEN_PROBE_TRACE_DETAIL_ONLY)
+[numthreads(kLumenProbeFallbackGroupSize, 1, 1)]
+void lumenTraceScreenProbeDetailMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID)
+#elif defined(METALLIC_LUMEN_PROBE_TRACE_FALLBACK_ONLY)
 [numthreads(kLumenProbeFallbackGroupSize, 1, 1)]
 void lumenTraceScreenProbeFallbackMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID)
 #else
@@ -275,9 +296,14 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
 #endif
 {
     LumenScreenProbeGatherParams params = getParameters<LumenScreenProbeGatherParams>();
-#if defined(METALLIC_LUMEN_PROBE_TRACE_FALLBACK_ONLY)
+#if defined(METALLIC_LUMEN_PROBE_TRACE_COMPACTED)
     const uint compactedIndex = (group.y * kLumenProbeDispatchWidth + group.x) * kLumenProbeFallbackGroupSize + lane.x;
-    if (compactedIndex >= resolveUniform(params.probeRayWorkCount)[0]) { return; }
+#if defined(METALLIC_LUMEN_PROBE_TRACE_DETAIL_ONLY)
+    const uint countIndex = 1u;
+#else
+    const uint countIndex = 0u;
+#endif
+    if (compactedIndex >= resolveUniform(params.probeRayWorkCount)[countIndex]) { return; }
     const uint denseRay = resolveUniform(params.probeRayWorkList)[compactedIndex];
     const uint probeIndex = denseRay / kRaysPerProbe;
     const uint rayIndex = denseRay % kRaysPerProbe;
@@ -301,7 +327,7 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
         lumenProbeTraceAddress(lumenProbeIndex(readbackTile, group.z, params.traceReadbackTiles.z), lane.xy) :
         kInvalidProbeTraceReadbackIndex;
     LumenProbeTraceReadback readback = {-1.0f, -1.0f, -1.0f, -1.0f, float3(0.0f), -1.0f, ~0u, ~0u, 0u, 0u};
-#if defined(METALLIC_LUMEN_PROBE_TRACE_FALLBACK_ONLY)
+#if defined(METALLIC_LUMEN_PROBE_TRACE_COMPACTED)
     if (readbackIndex != kInvalidProbeTraceReadbackIndex) {
         readback = resolveUniform(params.traceReadback)[readbackIndex];
     }
@@ -347,7 +373,7 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
         samplePosition += kSurfaceBias * receiverNormal;
         float traceDistance = params.maxTraceDistance;
         float voxelStartDistance = kMinTraceDistance;
-#if defined(METALLIC_LUMEN_RADIANCE_CACHE)
+#if defined(METALLIC_LUMEN_RADIANCE_CACHE) && !defined(METALLIC_LUMEN_PROBE_TRACE_DETAIL_ONLY)
         LumenRadianceCacheInputs cacheInputs = {resolveUniform(params.cacheIndirection), resolveUniform(params.cacheClipmaps),
             resolveUniform(params.cacheRadiance), resolveUniform(params.scene.sampler)};
         LumenRadianceCacheCoverage coverage = getLumenRadianceCacheCoverage(cacheInputs, receiver.xyz);
@@ -364,10 +390,7 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
         float screenContinuationDistance = 0.0f;
 #endif
 #if defined(METALLIC_LUMEN_SCREEN_TRACES)
-#if defined(METALLIC_LUMEN_PROBE_TRACE_FALLBACK_ONLY)
-#if defined(METALLIC_LUMEN_DETAIL_TRACING) && defined(METALLIC_LUMEN_RADIANCE_CACHE)
-        screenDistance = traceOutput[address].x;
-#endif
+#if defined(METALLIC_LUMEN_PROBE_TRACE_COMPACTED)
         screenContinuationDistance = distances[address];
 #else
         LumenScreenTraceInputs screenInputs = {resolveUniform(params.closestHZB), resolveUniform(params.previousDepth),
@@ -392,9 +415,23 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
         }
 #endif
 #if defined(METALLIC_LUMEN_PROBE_TRACE_SCREEN_ONLY)
-        // A pending ray temporarily uses the final atlas for its screen continuation state.
-        // The compacted fallback overwrites both outputs at this original address.
-        traceOutput[address] = float4(screenDistance, 0.0f, 0.0f, kLumenProbeRayPending);
+        // Use the final atlas for temporary continuation state. Detail eligibility follows
+        // UE ScreenProbeCompactTracesCS and stays separate from final GDF eligibility.
+        float pendingClass = kLumenProbeRayPending;
+#if defined(METALLIC_LUMEN_SPLIT_DETAIL_TRACING)
+        bool reachedRadianceCache = false;
+#if defined(METALLIC_LUMEN_RADIANCE_CACHE)
+        reachedRadianceCache = coverage.valid && screenDistance >= traceDistance;
+#endif
+        let cardScene = resolveUniform(params.scene.cardScene);
+        let objectGridScene = resolveUniform(params.scene.objectGridScene);
+        const bool identityMatches = cardScene[2] == objectGridScene[0] && cardScene[3] == objectGridScene[1];
+        if (shouldTraceLumenProbeDetail(params.detail, identityMatches, reachedRadianceCache, receiver.w,
+                screenContinuationDistance)) {
+            pendingClass = kLumenProbeRayPendingDetail;
+        }
+#endif
+        traceOutput[address] = float4(0.0f, 0.0f, 0.0f, pendingClass);
         distances[address] = screenContinuationDistance;
 #if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
         writeProbeTraceReadback(params.traceReadback, readbackIndex, readback);
@@ -402,26 +439,30 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
         return;
 #else
 #if defined(METALLIC_LUMEN_DETAIL_TRACING) || defined(METALLIC_LUMEN_SCREEN_GDF_CONTINUATION)
-        voxelStartDistance = max(kMinTraceDistance, screenContinuationDistance - kSurfaceBias * 2.0f);
+        voxelStartDistance = lumenProbeSoftwareTraceStart(screenContinuationDistance);
 #elif defined(METALLIC_LUMEN_RADIANCE_CACHE)
         if (coverage.valid) {
             // TraceVoxels also handles unresolved screen rays that reached the cache interval.
-            voxelStartDistance = max(kMinTraceDistance, screenContinuationDistance - kSurfaceBias * 2.0f);
+            voxelStartDistance = lumenProbeSoftwareTraceStart(screenContinuationDistance);
         }
 #endif
 #endif
 #endif
 #if !defined(METALLIC_LUMEN_PROBE_TRACE_SCREEN_ONLY)
         LumenGlobalTraceScene scene = resolveLumenGlobalTraceScene(params.scene, params.clipmapCount);
-#if defined(METALLIC_LUMEN_DETAIL_TRACING)
+#if defined(METALLIC_LUMEN_DETAIL_TRACING) && !defined(METALLIC_LUMEN_PROBE_TRACE_FALLBACK_ONLY)
         const LumenMeshSDFGatherBindings detail = params.detail;
+#if defined(METALLIC_LUMEN_PROBE_TRACE_DETAIL_ONLY)
+        {
+#else
         bool reachedRadianceCache = false;
 #if defined(METALLIC_LUMEN_RADIANCE_CACHE)
         reachedRadianceCache = coverage.valid && screenDistance >= traceDistance;
 #endif
         // UE ScreenProbeCompactTracesCS tests the screen endpoint and view depth before TraceMeshSDFs.
-        if (detail.grid.w != 0u && scene.identityMatches && !reachedRadianceCache &&
-            receiver.w < detail.cardTraceEndDistance && screenContinuationDistance < detail.maxMeshSDFTraceDistance) {
+        if (shouldTraceLumenProbeDetail(detail, scene.identityMatches, reachedRadianceCache, receiver.w,
+                screenContinuationDistance)) {
+#endif
             uint cellIndex = lumenMeshSDFGridCellIndex(probePixel, receiver.w, detail.grid.xyz);
             uint2 cell = resolveUniform(detail.gridCells)[cellIndex];
             MeshDistanceFieldResources meshes = {resolveUniform(detail.mips), resolveUniform(detail.indirection),
@@ -448,9 +489,20 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
 #endif
                 return;
             }
-            voxelStartDistance = max(kMinTraceDistance, detailDistance - kSurfaceBias * 2.0f);
+            const float detailContinuationDistance = decodeLumenTraceContinuationDistance(detailDistance * 100.0f);
+#if defined(METALLIC_LUMEN_PROBE_TRACE_DETAIL_ONLY)
+            traceOutput[address] = float4(0.0f, 0.0f, 0.0f, kLumenProbeRayPending);
+            distances[address] = detailContinuationDistance;
+#if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
+            writeProbeTraceReadback(params.traceReadback, readbackIndex, readback);
+#endif
+            return;
+#else
+            voxelStartDistance = lumenProbeSoftwareTraceStart(detailContinuationDistance);
+#endif
         }
 #endif
+#if !defined(METALLIC_LUMEN_PROBE_TRACE_DETAIL_ONLY)
         LumenGlobalTraceRay ray = {float4(samplePosition, voxelStartDistance), float4(rayDirection, traceDistance)};
         LumenGlobalTraceResult hit;
 #if defined(METALLIC_LUMEN_GDF_PREFIX_VALIDATION)
@@ -546,6 +598,7 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
             // TraceVoxels with USE_VOXEL_TRACE_HIT_DISTANCE and SCREEN_PROBE_EXTRA_AO disabled.
             distances[address] = transparency <= 0.5f ? traceDistance : params.maxTraceDistance;
         }
+#endif
 #endif
 #endif
 #endif

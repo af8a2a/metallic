@@ -91,6 +91,13 @@ public float roundUpScreenTraceDepth(float deviceZ)
     return f16tof32(f32tof16(deviceZ) + 1u);
 }
 
+// UE EncodeProbeRayDistance / DecodeProbeRayDistance, with flags stored separately.
+public float decodeLumenTraceContinuationDistance(float hitDistanceCm)
+{
+    const uint encodedDistance = asuint(max(hitDistanceCm, 0.0f)) & 0x7ffffffcu;
+    return asfloat(encodedDistance & 0x7ffffffcu) * 0.01f;
+}
+
 float sampleClosestHZB(StructuredBuffer<float> hzb, uint2 fullExtent, uint2 baseExtent,
     uint mipCount, float2 uv, float mipLevel)
 {
@@ -281,8 +288,7 @@ public bool traceLumenScreenRay(LumenScreenTraceInputs inputs, uint2 receiverPix
     float hitDistanceCm = min(sqrt(dot(receiverToHitCm, receiverToHitCm)) + hitDistanceOffset,
         maxTraceDistance * 100.0f);
     distance = hitDistanceCm * 0.01f;
-    uint encodedDistance = asuint(max(hitDistanceCm, 0.0f)) & 0x7ffffffcu;
-    continuationDistance = asfloat(encodedDistance & 0x7ffffffcu) * 0.01f;
+    continuationDistance = decodeLumenTraceContinuationDistance(hitDistanceCm);
     if (!hit) {
         return false;
     }

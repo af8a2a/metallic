@@ -63,6 +63,8 @@ PROBE_POSITION = struct.Struct("<2I")
 FLOAT4 = struct.Struct("<4f")
 HALF4 = struct.Struct("<4e")
 FLOAT = struct.Struct("<f")
+UINT = struct.Struct("<I")
+METERS_PER_CENTIMETER_F32 = FLOAT.unpack(FLOAT.pack(0.01))[0]
 RECEIVER_VALID, SCREEN_INVOKED, SCREEN_ACCEPTED, DETAIL_INVOKED, DETAIL_ACCEPTED, GDF_INVOKED = (
     1 << bit for bit in range(6)
 )
@@ -396,7 +398,16 @@ def classify(ray):
     return None
 
 
-def count_trace_transitions(counts, a, b):
+def detail_continuation_distance(distance, encoded):
+    if not encoded:
+        return distance
+    centimeters = FLOAT.pack(distance * 100.0)
+    encoded_bits = UINT.unpack(centimeters)[0] & 0x7FFFFFFC
+    decoded_centimeters = FLOAT.unpack(UINT.pack(encoded_bits))[0]
+    return FLOAT.unpack(FLOAT.pack(decoded_centimeters * METERS_PER_CENTIMETER_F32))[0]
+
+
+def count_trace_transitions(counts, a, b, detail_continuation_encoded):
     a_flags, b_flags = a["flags"], b["flags"]
     counts["a_screen_accepted"] += bool(a_flags & SCREEN_ACCEPTED)
     counts["b_screen_accepted"] += bool(b_flags & SCREEN_ACCEPTED)
@@ -410,7 +421,9 @@ def count_trace_transitions(counts, a, b):
     if a_flags & b_flags & GDF_INVOKED:
         used_detail = bool(b_flags & DETAIL_INVOKED)
         stage = "detail" if used_detail else "screen"
-        expected = max(MIN_TRACE_DISTANCE, b[f"{stage}_end"] - 2.0 * SURFACE_BIAS)
+        endpoint = (detail_continuation_distance(b["detail_end"], detail_continuation_encoded)
+            if used_detail else b["screen_end"])
+        expected = max(MIN_TRACE_DISTANCE, endpoint - 2.0 * SURFACE_BIAS)
         counts[f"gdf_after_{stage}"] += 1
         counts[f"gdf_after_{stage}_endpoint_matches"] += abs(b["gdf_min"] - expected) <= HANDOFF_TOLERANCE
         counts[f"gdf_after_{stage}_start_changed"] += a["gdf_min"] != b["gdf_min"]
@@ -979,6 +992,7 @@ def measure(a_path, b_path, scene_path, detail_limit, trace_limit, pin_path, c_p
     b, b_probes, b_counts, b_buffers = read_capture(b_path)
     check_capture_alignment(a, b, "B")
     a_info = a["ray_capture"]
+    detail_continuation_encoded = b.get("detail_continuation_encoded", False)
     if c_path:
         c, c_probes, c_counts, c_buffers = read_capture(c_path)
         check_capture_alignment(a, c, "C")
@@ -1046,7 +1060,7 @@ def measure(a_path, b_path, scene_path, detail_limit, trace_limit, pin_path, c_p
                     counts["paired_rays"] += 1
                     counts["cpu_first_hits"] += int(hit is not None)
                     counts["receiver_hemisphere_rays"] += int(ray["receiver_cosine"] > 0.0)
-                    count_trace_transitions(counts, ca, cb)
+                    count_trace_transitions(counts, ca, cb, detail_continuation_encoded)
                     if case:
                         counts[case] += 1
 
@@ -1088,7 +1102,8 @@ def measure(a_path, b_path, scene_path, detail_limit, trace_limit, pin_path, c_p
         else:
             checks["continuation_triangle_is_beyond_detail"] = hit["distance"] > detail_limit
             checks["detail_reached_its_limit"] = abs(detail_distance - detail_limit) <= HANDOFF_TOLERANCE
-            expected_start = max(MIN_TRACE_DISTANCE, b_capture["detail_end"] - 2.0 * SURFACE_BIAS)
+            endpoint = detail_continuation_distance(b_capture["detail_end"], detail_continuation_encoded)
+            expected_start = max(MIN_TRACE_DISTANCE, endpoint - 2.0 * SURFACE_BIAS)
             checks["gdf_start_uses_detail_endpoint"] = abs(b_capture["gdf_min"] - expected_start) <= HANDOFF_TOLERANCE
 
     result = {

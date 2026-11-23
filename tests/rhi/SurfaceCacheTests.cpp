@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -1043,8 +1044,10 @@ debug::DebugValue cardBufferCapture(std::string id, uint32_t count)
 
 class LumenProbeDispatchComparison : public RHITest {
 protected:
-    LumenProbeDispatchComparison(const char* testName, bool splitTracing)
-        : splitTracing_(splitTracing), candidatePass_(splitTracing ? "SplitGather" : "ActiveGather")
+    enum class Variant { ActiveProbes, SplitTracing, SplitDetail };
+
+    LumenProbeDispatchComparison(const char* testName, Variant variant)
+        : variant_(variant), candidatePass_(splitTracing() ? "SplitGather" : "ActiveGather")
     {
         name = testName;
         type = RHITestType::Rendering;
@@ -1066,7 +1069,7 @@ public:
         camera.orthographic = true;
         camera.orthoHeight = 1.25f;
         camera.farPlane = 8.0f;
-        if (splitTracing_) {
+        if (splitTracing()) {
             // Frame the receiver, emitter and blocker together so valid history supplies screen hits.
             camera.eye = {1.1f, 0.72f, 3.0f};
             camera.center = {0.1f, 0.66f, 0.48f};
@@ -1100,9 +1103,9 @@ public:
         emptyCamera.eye[0] += 20.0f;
         emptyCamera.center[0] += 20.0f;
         constexpr size_t kInitial = 0;
-        const size_t emptyFrame = splitTracing_ ? 4 : 2;
+        const size_t emptyFrame = splitTracing() ? 4 : 2;
         const size_t restoredFrame = emptyFrame + 1;
-        bool sawMixedRayWork = false;
+        RayHandoffCoverage coverage;
         for (size_t frame = kInitial; frame <= restoredFrame; ++frame) {
             const bool empty = frame == emptyFrame;
             if (frame >= emptyFrame) {
@@ -1112,22 +1115,34 @@ public:
             if (!preview.render(graph, kSingleBounceEdge, kSingleBounceEdge, "Gather.indirectDiffuse", false)) {
                 return RHITestResult::fail(preview.lastLog());
             }
-            log = compareFrame(inspector, empty, frame > kInitial && frame < emptyFrame, sawMixedRayWork);
+            log = compareFrame(inspector, empty, frame > kInitial && frame < emptyFrame, coverage);
             if (!log.empty()) { return RHITestResult::fail("Frame " + std::to_string(frame) + ": " + log); }
         }
-        if (splitTracing_ && !sawMixedRayWork) {
+        if (splitTracing() && !coverage.mixedScreenAndGDF) {
             return RHITestResult::fail("Expected both accepted screen rays and compacted GDF rays with valid history");
+        }
+        if (splitDetail() && (!coverage.detailHit || !coverage.detailMiss)) {
+            return RHITestResult::fail("Expected both accepted and rejected Mesh SDF rays");
         }
         if (validation.failed()) {
             return RHITestResult::fail("Probe dispatch Vulkan validation: " + validation.snapshot().dump());
         }
-        if (splitTracing_) {
+        if (splitDetail()) {
+            return RHITestResult::pass("Fused and split Detail matched across Screen, Mesh SDF and compacted GDF");
+        }
+        if (splitTracing()) {
             return RHITestResult::pass("Fused and split Gather matched with invalid history, mixed tracing and zero rays");
         }
         return RHITestResult::pass("Dense and active Gather matched through repeated frames and zero valid probes");
     }
 
 private:
+    struct RayHandoffCoverage {
+        bool mixedScreenAndGDF = false;
+        bool detailHit = false;
+        bool detailMiss = false;
+    };
+
     static constexpr uint32_t kTileAxis = render::builtin_pass::lumenScreenProbeTiles(kSingleBounceEdge);
     static constexpr uint32_t kSlotsPerTile = render::builtin_pass::kLumenScreenProbeSlotsPerTile;
     static constexpr uint32_t kProbeSlots = kTileAxis * kTileAxis * kSlotsPerTile;
@@ -1135,7 +1150,7 @@ private:
     static constexpr uint32_t kProbeRays = kProbeSlots * kRaysPerSlot;
     static constexpr uint32_t kSHAtlasEdge = kTileAxis * 3;
     static constexpr std::array<uint32_t, 4> kReadbackROI{1, 1, 6, 6};
-    static constexpr uint32_t kReadbackRays = kReadbackROI[2] * kReadbackROI[3] * kSlotsPerTile * kRaysPerSlot;
+    static constexpr std::array<uint32_t, 4> kFullReadbackROI{0, 0, kTileAxis, kTileAxis};
     static constexpr size_t kReadbackStride = sizeof(render::LumenProbeTraceReadbackRecord);
     static constexpr std::array kBufferedResources{
         std::pair{"probePositions", 2 * kProbeSlots}, std::pair{"probeRadiance", 4 * kProbeRays},
@@ -1147,6 +1162,15 @@ private:
         std::pair{"indirectDiffuse", std::array{kSingleBounceEdge, kSingleBounceEdge, 8u}},
         std::pair{"color", std::array{kSingleBounceEdge, kSingleBounceEdge, 16u}}};
 
+    bool splitTracing() const { return variant_ != Variant::ActiveProbes; }
+    bool splitDetail() const { return variant_ == Variant::SplitDetail; }
+
+    uint32_t readbackRayCount() const
+    {
+        const auto& roi = splitDetail() ? kFullReadbackROI : kReadbackROI;
+        return roi[2] * roi[3] * kSlotsPerTile * kRaysPerSlot;
+    }
+
     bool prepareGraph(render::RenderGraph& graph) const
     {
         using render::makeRenderGraphFieldName;
@@ -1157,12 +1181,18 @@ private:
         properties["screenTraces"] = true;
         properties["irradianceFormat"] = "SH3";
         properties["tracingOctahedronResolution"] = 8;
-        properties["probeTraceReadback"] = kReadbackROI;
-        properties["activeProbeDispatch"] = splitTracing_;
-        if (splitTracing_) { properties["screenGDFContinuation"] = true; }
+        properties["probeTraceReadback"] = splitDetail() ? kFullReadbackROI : kReadbackROI;
+        properties["activeProbeDispatch"] = splitTracing();
+        if (splitTracing()) { properties["screenGDFContinuation"] = true; }
+        if (splitDetail()) {
+            const auto* fields = graph.findNode("GlobalDistanceFieldPages");
+            if (!fields || !graph.addEdge("VBuffer.depth", "Gather.detailDepth")) { return false; }
+            properties["detailTracing"] = true;
+            properties["detailDistanceFieldPaths"] = fields->properties.at("distanceFieldPaths");
+        }
         if (!graph.setNodeProperties(gather->id, properties)) { return false; }
         properties["activeProbeDispatch"] = true;
-        if (splitTracing_) { properties["splitProbeTracing"] = true; }
+        if (splitTracing()) { properties["splitProbeTracing"] = true; }
         if (!graph.addNode("LumenScreenProbeGatherPass", candidatePass_, properties) ||
             !graph.markOutput(makeRenderGraphFieldName(candidatePass_, "indirectDiffuse")) ||
             !graph.addNode("LumenScreenTraceSetupPass", "ScreenTrace", {{"historySource", "deferred"}}) ||
@@ -1197,13 +1227,13 @@ private:
                 {"roi", {{"x", 0}, {"y", 0}, {"width", layout[0]}, {"height", layout[1]}}}});
         }
         resources.push_back({{"id", makeRenderGraphFieldName(pass, "probeTraceReadback")},
-            {"layout", render::kLumenProbeTraceReadbackLayout}, {"count", kReadbackRays}});
+            {"layout", render::kLumenProbeTraceReadbackLayout}, {"count", readbackRayCount()}});
         if (pass == candidatePass_) {
             resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "probeWorkState"), 2));
             resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "probeIndirectArgs"), 6));
-            if (splitTracing_) {
-                resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "probeRayWorkCount"), 1));
-                resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "probeRayIndirectArgs"), 6));
+            if (splitTracing()) {
+                resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "probeRayWorkCount"), splitDetail() ? 2 : 1));
+                resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "probeRayIndirectArgs"), splitDetail() ? 9 : 6));
             }
         }
         return resources;
@@ -1211,8 +1241,8 @@ private:
 
     using DispatchArgs = std::array<uint32_t, 3>;
 
-    static std::string compareRayDispatch(const std::vector<uint8_t>& rayCountBytes,
-        const std::vector<uint8_t>& rayArgsBytes, uint32_t validProbes, uint32_t acceptedScreenRays)
+    std::string compareRayDispatch(const std::vector<uint8_t>& rayCountBytes,
+        const std::vector<uint8_t>& rayArgsBytes, uint32_t validRays, uint32_t gdfRays, uint32_t detailRays) const
     {
         constexpr uint32_t kCompactThreads = 256;
         constexpr uint32_t kTraceThreads = 64;
@@ -1221,21 +1251,22 @@ private:
             const uint32_t groupCount = (rays + groupSize - 1u) / groupSize;
             return {std::min(groupCount, kDispatchWidth), (groupCount + kDispatchWidth - 1u) / kDispatchWidth, 1u};
         };
-        const uint32_t validRays = validProbes * kRaysPerSlot;
-        const uint32_t unresolvedRays = validRays - acceptedScreenRays;
-        if (rayCountBytes.size() != sizeof(uint32_t) || readSurfaceValue<uint32_t>(rayCountBytes, 0) != unresolvedRays) {
-            return "Compacted ray count differs from the number of rays without a screen hit";
+        const size_t rayQueues = splitDetail() ? 2 : 1;
+        if (rayCountBytes.size() != rayQueues * sizeof(uint32_t) || readSurfaceValue<uint32_t>(rayCountBytes, 0) != gdfRays ||
+            (splitDetail() && readSurfaceValue<uint32_t>(rayCountBytes, 1) != detailRays)) {
+            return "Compacted ray counts differ from the measured GDF or Mesh SDF work";
         }
-        if (rayArgsBytes.size() != 2 * sizeof(DispatchArgs) ||
+        if (rayArgsBytes.size() != (1 + rayQueues) * sizeof(DispatchArgs) ||
             readSurfaceValue<DispatchArgs>(rayArgsBytes, 0) != args(validRays, kCompactThreads) ||
-            readSurfaceValue<DispatchArgs>(rayArgsBytes, 1) != args(unresolvedRays, kTraceThreads)) {
-            return "Indirect ray dispatches do not match the compact and GDF ray counts";
+            readSurfaceValue<DispatchArgs>(rayArgsBytes, 1) != args(gdfRays, kTraceThreads) ||
+            (splitDetail() && readSurfaceValue<DispatchArgs>(rayArgsBytes, 2) != args(detailRays, kTraceThreads))) {
+            return "Indirect ray dispatches do not match the compacted ray counts";
         }
         return {};
     }
 
     std::string compareFrame(CardUpdateInspector& inspector, bool empty, bool historyExpected,
-        bool& sawMixedRayWork) const
+        RayHandoffCoverage& coverage) const
     {
         inspector.runtime.poll();
         if (inspector.response.value("status", "") != "ok") { return inspector.response.dump(); }
@@ -1246,7 +1277,7 @@ private:
             const auto id = jobs.at(index).at("job").get<std::string>();
             captures[index] = core.completedCapture(id);
             if (!captures[index]) { return core.dispatch({{"method", "jobs.get"}, {"params", {{"job", id}}}}).dump(); }
-            const size_t modeResources = index == 1 ? (splitTracing_ ? 4 : 2) : 0;
+            const size_t modeResources = index == 1 ? (splitTracing() ? 4 : 2) : 0;
             if (captures[index]->artifacts.size() != kBufferedResources.size() + kTextures.size() + 1 + modeResources) {
                 return "Unexpected Gather artifact count";
             }
@@ -1260,6 +1291,26 @@ private:
             const auto mismatch = std::mismatch(baseline[index].bytes.begin(), baseline[index].bytes.end(),
                 candidate[index].bytes.begin());
             if (mismatch.first != baseline[index].bytes.end()) {
+                if (splitDetail() && field == "probeTraceReadback") {
+                    using Record = render::LumenProbeTraceReadbackRecord;
+                    // A UAV handoff rounds before the next kernel starts. The Cornell oracle
+                    // uses the same tolerance for the two arithmetic endpoints.
+                    constexpr float endpointTolerance = 1.0e-6f;
+                    for (size_t ray = 0; ray < expectedBytes / sizeof(Record); ++ray) {
+                        auto first = readSurfaceValue<Record>(baseline[index].bytes, ray);
+                        const auto second = readSurfaceValue<Record>(candidate[index].bytes, ray);
+                        if (!(std::abs(first.detailEnd - second.detailEnd) <= endpointTolerance &&
+                                std::abs(first.gdfMin - second.gdfMin) <= endpointTolerance)) {
+                            return "Detail handoff distance differs at ray " + std::to_string(ray);
+                        }
+                        first.detailEnd = second.detailEnd;
+                        first.gdfMin = second.gdfMin;
+                        if (std::memcmp(&first, &second, sizeof(Record)) != 0) {
+                            return "Detail trace readback differs at ray " + std::to_string(ray);
+                        }
+                    }
+                    return {};
+                }
                 return "Gather outputs differ in " + std::string(field) + " at byte " +
                     std::to_string(mismatch.first - baseline[index].bytes.begin());
             }
@@ -1273,7 +1324,7 @@ private:
             if (auto error = compare(index++, field, layout[0] * layout[1] * layout[2]); !error.empty()) { return error; }
         }
         const auto& traceReadback = candidate[index].bytes;
-        if (auto error = compare(index++, "probeTraceReadback", kReadbackRays * kReadbackStride); !error.empty()) { return error; }
+        if (auto error = compare(index++, "probeTraceReadback", readbackRayCount() * kReadbackStride); !error.empty()) { return error; }
 
         uint32_t valid = 0;
         uint32_t acceptedScreenRays = 0;
@@ -1282,7 +1333,7 @@ private:
             const auto pixel = readSurfaceValue<std::array<uint32_t, 2>>(candidate[0].bytes, probe);
             const bool validProbe = pixel[0] != std::numeric_limits<uint32_t>::max();
             valid += validProbe;
-            if (validProbe && !splitTracing_) { continue; }
+            if (validProbe && !splitTracing()) { continue; }
             for (uint32_t ray = probe * kRaysPerSlot; ray < (probe + 1) * kRaysPerSlot; ++ray) {
                 const auto radiance = readSurfaceValue<std::array<float, 4>>(candidate[1].bytes, ray);
                 if (validProbe) {
@@ -1312,43 +1363,73 @@ private:
                 return "Indirect dispatch does not match the compacted probe count";
             }
         }
-        if (splitTracing_) {
+        if (splitTracing()) {
             if (!historyExpected && acceptedScreenRays != 0u) { return "Screen rays hit without valid history"; }
-            sawMixedRayWork |= historyExpected && acceptedScreenRays != 0u && acceptedScreenRays < valid * kRaysPerSlot;
             constexpr uint32_t kReceiverValid = 1u << 0u;
             constexpr uint32_t kScreenInvoked = 1u << 1u;
             constexpr uint32_t kScreenAccepted = 1u << 2u;
+            constexpr uint32_t kDetailInvoked = 1u << 3u;
+            constexpr uint32_t kDetailAccepted = 1u << 4u;
             constexpr uint32_t kGDFInvoked = 1u << 5u;
-            for (size_t ray = 0; ray < kReadbackRays; ++ray) {
+            uint32_t detailRays = 0;
+            uint32_t acceptedDetailRays = 0;
+            for (size_t ray = 0; ray < readbackRayCount(); ++ray) {
                 const auto record = readSurfaceValue<render::LumenProbeTraceReadbackRecord>(traceReadback, ray);
                 if ((record.flags & kReceiverValid) == 0u) { continue; }
                 const bool screenAccepted = (record.flags & kScreenAccepted) != 0u;
+                const bool detailInvoked = (record.flags & kDetailInvoked) != 0u;
+                const bool detailAccepted = (record.flags & kDetailAccepted) != 0u;
                 const bool gdfInvoked = (record.flags & kGDFInvoked) != 0u;
-                if ((record.flags & kScreenInvoked) == 0u || screenAccepted == gdfInvoked) {
-                    return "A valid ROI ray must be completed by either the screen pass or the GDF pass";
+                if ((record.flags & kScreenInvoked) == 0u || int(screenAccepted) + int(detailAccepted) + int(gdfInvoked) != 1 ||
+                    (detailAccepted && !detailInvoked) || (detailInvoked && screenAccepted)) {
+                    return "A valid ROI ray must be completed by exactly one of Screen, Mesh SDF or GDF";
                 }
+                if (gdfInvoked) {
+                    float end = record.screenEnd;
+                    if (detailInvoked) {
+                        const uint32_t encoded = std::bit_cast<uint32_t>(record.detailEnd * 100.0f) & 0x7ffffffcu;
+                        end = std::bit_cast<float>(encoded) * 0.01f;
+                    }
+                    const float expected = std::max(0.0001f, end - 0.1f); // Minimum trace distance and twice the surface bias, in meters.
+                    if (std::abs(record.gdfMin - expected) > 0.000001f) {
+                        return "GDF start did not continue from the preceding trace endpoint";
+                    }
+                }
+                detailRays += detailInvoked;
+                acceptedDetailRays += detailAccepted;
             }
-            return compareRayDispatch(candidate[index].bytes, candidate[index + 1].bytes, valid, acceptedScreenRays);
+            const uint32_t validRays = valid * kRaysPerSlot;
+            const uint32_t gdfRays = validRays - acceptedScreenRays - acceptedDetailRays;
+            coverage.mixedScreenAndGDF |= historyExpected && acceptedScreenRays != 0u && gdfRays != 0u;
+            coverage.detailHit |= acceptedDetailRays != 0u;
+            coverage.detailMiss |= detailRays > acceptedDetailRays;
+            return compareRayDispatch(candidate[index].bytes, candidate[index + 1].bytes, validRays, gdfRays, detailRays);
         }
         return {};
     }
 
-    bool splitTracing_;
+    Variant variant_;
     const char* candidatePass_;
 };
 
 class LumenActiveProbeDispatchTest final : public LumenProbeDispatchComparison {
 public:
-    LumenActiveProbeDispatchTest() : LumenProbeDispatchComparison("lumen_active_probe_dispatch", false) {}
+    LumenActiveProbeDispatchTest() : LumenProbeDispatchComparison("lumen_active_probe_dispatch", Variant::ActiveProbes) {}
 };
 
 class LumenSplitProbeTracingTest final : public LumenProbeDispatchComparison {
 public:
-    LumenSplitProbeTracingTest() : LumenProbeDispatchComparison("lumen_split_probe_tracing", true) {}
+    LumenSplitProbeTracingTest() : LumenProbeDispatchComparison("lumen_split_probe_tracing", Variant::SplitTracing) {}
+};
+
+class LumenSplitDetailTracingTest final : public LumenProbeDispatchComparison {
+public:
+    LumenSplitDetailTracingTest() : LumenProbeDispatchComparison("lumen_split_detail_tracing", Variant::SplitDetail) {}
 };
 
 METALLIC_REGISTER_RHI_TEST(LumenActiveProbeDispatchTest);
 METALLIC_REGISTER_RHI_TEST(LumenSplitProbeTracingTest);
+METALLIC_REGISTER_RHI_TEST(LumenSplitDetailTracingTest);
 
 debug::DebugValue surfaceUpdateCaptures(std::string_view pass)
 {
