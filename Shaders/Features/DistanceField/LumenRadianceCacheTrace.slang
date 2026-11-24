@@ -28,6 +28,8 @@ struct LumenRadianceCacheTraceParams
     uint gdfClipmapCount;
     float3 cameraPosition;
     float maxTraceDistance;
+    ResourceHandle<RWStructuredBuffer<uint>> directionHistory;
+    uint frameNumber;
 };
 
 struct RadianceCacheTraceData
@@ -36,13 +38,15 @@ struct RadianceCacheTraceData
     uint clipmapIndex;
     uint probeIndex;
     bool forceDownsample;
+    bool resetDirectionHistory;
 };
 
 // UE 5.7.4 LumenRadianceCacheTracingCommon.ush, GetProbeTraceData.
 RadianceCacheTraceData unpackProbeTraceData(float4 packed)
 {
     uint word = asuint(packed.w);
-    return {packed.xyz, (word >> 24u) & 0x7fu, word & 0xffffffu, (word >> 31u) != 0u};
+    return {packed.xyz, (word >> 24u) & 0x3fu, word & 0xffffffu, (word >> 31u) != 0u,
+        (word & kLumenRadianceResetDirectionHistory) != 0u};
 }
 
 static const uint kTraceTileSize = 8u;
@@ -53,6 +57,8 @@ static const float kMinTraceDistance = 0.05f;
 static const float kDownsampleDistanceSquared = 40.0f * 40.0f;
 static const float kSpatialFilterMaxRadianceHitAngle = 0.2f;
 static const float kMaxHalfFloat = 65504.0f;
+static const uint kMaxDirectionHistorySamples = 8u;
+static const uint kMixedDirectionHitClass = ~0u;
 
 groupshared uint globalTraceTileOffset;
 
@@ -124,8 +130,34 @@ float4 unpackRadianceDepth(uint2 packed)
     return float4(unpackHalf2x16ToFloat(packed.x), unpackHalf2x16ToFloat(packed.y));
 }
 
+float3 accumulateDirectionRadiance(RWStructuredBuffer<uint2> rawAtlas, RWStructuredBuffer<uint> history,
+    uint address, float3 radiance, float hitDistance, uint hitClass, bool reset, float minTraceDistance)
+{
+    if (hitClass == kMixedDirectionHitClass) {
+        history[address] = 0u;
+        return radiance;
+    }
+    uint sampleCount = 0u;
+    if (!reset) {
+        uint previous = history[address];
+        if ((previous & 0xffu) != 0u && (previous >> 8u) == hitClass) {
+            float4 old = unpackRadianceDepth(rawAtlas[address]);
+            // Angular jitter changes hit depth along the same surface. Keep
+            // nearby transitions out of the average and retain the new depth.
+            float distanceTolerance = max(0.05f * min(hitDistance, old.w), 0.1f * minTraceDistance);
+            if (abs(hitDistance - old.w) <= distanceTolerance && all(isfinite(old.xyz))) {
+                sampleCount = min(previous & 0xffu, kMaxDirectionHistorySamples - 1u);
+                radiance = lerp(old.xyz, radiance, rcp(float(sampleCount + 1u)));
+            }
+        }
+    }
+    history[address] = (hitClass << 8u) | (sampleCount + 1u);
+    return radiance;
+}
+
 groupshared float3 sharedTraceRadiance[8][8];
 groupshared float sharedTraceHitDistance[8][8];
+groupshared uint sharedTraceHitClass[8][8];
 
 // UE 5.7.4 LumenRadianceCache.usf, TraceForProbeTexel and TraceFromProbesCS.
 [shader("compute")]
@@ -149,7 +181,17 @@ void lumenRadianceCacheTraceMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
 
     // The uniform tile allocator issues only complete 8x8 tiles. It uses level
     // one if a half-resolution probe would produce zero trace tiles.
-    float2 probeUV = (float2(traceTexel) + 0.5f) / float(traceResolution);
+#if defined(METALLIC_LUMEN_WRC_PROGRESSIVE)
+    const bool progressive = true;
+#else
+    const bool progressive = false;
+#endif
+    float2 directionOffset = 0.5f;
+    if (progressive && traceResolution >= probeResolution) {
+        uint seed = (params.frameNumber * 0x9e3779b9u) ^ trace.probeIndex;
+        directionOffset = (float2(lumenRand3DPCG16(int3(traceTexel, seed)).xy) + 0.5f) * (1.0f / 65536.0f);
+    }
+    float2 probeUV = (float2(traceTexel) + directionOffset) / float(traceResolution);
     float3 direction = lumenEquiAreaSphericalMapping(probeUV);
     float minTraceDistance = max(kMinTraceDistance, clipmap.traceSettings.x);
     LumenGlobalTraceScene scene = resolveLumenGlobalTraceScene(params.scene, params.gdfClipmapCount);
@@ -157,8 +199,12 @@ void lumenRadianceCacheTraceMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
     LumenGlobalTraceResult hit = traceLumenGlobalRay(scene, ray);
     const bool opaqueHit = hit.state.x == kGlobalDistanceFieldHit;
     // LumenSoftwareRayTracing.ush, the cache's bZeroRadianceIfRayStartsInsideGeometry branch.
-    sharedTraceRadiance[lane.y][lane.x] = opaqueHit && hit.metrics.x > minTraceDistance ? hit.radiance.xyz : 0.0f;
+    const bool sampleHitRadiance = opaqueHit && hit.metrics.x > minTraceDistance;
+    sharedTraceRadiance[lane.y][lane.x] = sampleHitRadiance ? hit.radiance.xyz : 0.0f;
     sharedTraceHitDistance[lane.y][lane.x] = opaqueHit ? hit.metrics.x : params.maxTraceDistance;
+    if (progressive) {
+        sharedTraceHitClass[lane.y][lane.x] = (hit.state.x << 8u) | (hit.state.w << 1u) | uint(sampleHitRadiance);
+    }
     GroupMemoryBarrierWithGroupSync();
 
     RWStructuredBuffer<uint2> rawAtlas = resolveUniform(params.rawAtlas);
@@ -170,7 +216,10 @@ void lumenRadianceCacheTraceMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
         uint2 packedSample = packRadianceDepth(radiance, hitDistance);
         for (uint y = 0u; y < upsampleFactor; ++y) {
             for (uint x = 0u; x < upsampleFactor; ++x) {
-                rawAtlas[rawProbeAddress(trace.probeIndex, probeTexelBase + uint2(x, y), probeResolution)] = packedSample;
+                uint address = rawProbeAddress(trace.probeIndex, probeTexelBase + uint2(x, y), probeResolution);
+                rawAtlas[address] = packedSample;
+                // Replication fills bins without adding independent samples.
+                if (progressive) { resolveUniform(params.directionHistory)[address] = 0u; }
             }
         }
     } else {
@@ -185,13 +234,23 @@ void lumenRadianceCacheTraceMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
             }
             radiance /= float(downsampleFactor * downsampleFactor);
             float hitDistance = kMaxHalfFloat;
+            uint2 sampleBase = lane.xy * downsampleFactor;
+            uint hitClass = progressive ? sharedTraceHitClass[sampleBase.y][sampleBase.x] : 0u;
             for (uint y = 0u; y < downsampleFactor; ++y) {
                 for (uint x = 0u; x < downsampleFactor; ++x) {
-                    hitDistance = min(hitDistance, sharedTraceHitDistance[lane.y * downsampleFactor + y][lane.x * downsampleFactor + x]);
+                    hitDistance = min(hitDistance, sharedTraceHitDistance[sampleBase.y + y][sampleBase.x + x]);
+                    if (progressive && hitClass != sharedTraceHitClass[sampleBase.y + y][sampleBase.x + x]) {
+                        hitClass = kMixedDirectionHitClass;
+                    }
                 }
             }
             uint2 probeTexel = writeTileSize * tile + lane.xy;
-            rawAtlas[rawProbeAddress(trace.probeIndex, probeTexel, probeResolution)] = packRadianceDepth(radiance, hitDistance);
+            uint address = rawProbeAddress(trace.probeIndex, probeTexel, probeResolution);
+            if (progressive) {
+                radiance = accumulateDirectionRadiance(rawAtlas, resolveUniform(params.directionHistory), address,
+                    radiance, hitDistance, hitClass, trace.resetDirectionHistory, minTraceDistance);
+            }
+            rawAtlas[address] = packRadianceDepth(radiance, hitDistance);
         }
     }
 }

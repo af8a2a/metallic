@@ -5,6 +5,7 @@ namespace Metallic.Lumen
 
 public static const uint kLumenRadianceInvalidProbe = 0xffffffffu;
 public static const uint kLumenRadianceUsedProbe = 0xfffffffeu;
+public static const uint kLumenRadianceResetDirectionHistory = 1u << 30u;
 
 public struct LumenRadianceCacheClipmap
 {

@@ -30,6 +30,7 @@ struct LumenRadianceCacheUpdateParams
     uint probeTraceBudget;
     uint probeResolution;
     float3 cameraPosition;
+    uint historyFirstFrame;
 };
 
 struct LumenCompactRadianceCacheMarkParams
@@ -356,6 +357,11 @@ void lumenSelectRadianceCacheTraceProbesMain(uint3 thread : SV_DispatchThreadID)
     // UE PackProbeTraceData, LumenRadianceCacheTracingCommon.ush.
     uint packedTrace = (clipmapIndex << 24u) | probeIndex;
     packedTrace |= forceDownsample ? 1u << 31u : 0u;
+#if defined(METALLIC_LUMEN_WRC_PROGRESSIVE)
+    if (frames.x < params.historyFirstFrame) {
+        packedTrace |= kLumenRadianceResetDirectionHistory;
+    }
+#endif
     resolveUniform(params.traceData)[traceIndex] = float4(worldPosition, asfloat(packedTrace));
     frames.x = params.frameNumber;
     probeFrames[probeIndex] = frames;
@@ -394,6 +400,14 @@ void lumenSaveRadianceCacheIndirectionMain(uint3 thread : SV_DispatchThreadID)
 {
     LumenRadianceCacheUpdateParams params = getParameters<LumenRadianceCacheUpdateParams>();
     if (thread.x < cacheGridCellCount(params)) {
-        resolveUniform(params.previousIndirection)[thread.x] = resolveUniform(params.indirection)[thread.x];
+        RWStructuredBuffer<uint> indirection = resolveUniform(params.indirection);
+        uint probeIndex = indirection[thread.x];
+        resolveUniform(params.previousIndirection)[thread.x] = probeIndex;
+#if defined(METALLIC_LUMEN_WRC_PROGRESSIVE)
+        if (probeIndex < params.maxProbes &&
+            resolveUniform(params.probeFrames)[probeIndex].x < params.historyFirstFrame) {
+            indirection[thread.x] = kLumenRadianceInvalidProbe;
+        }
+#endif
     }
 }

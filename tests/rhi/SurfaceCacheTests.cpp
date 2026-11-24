@@ -2062,13 +2062,9 @@ METALLIC_REGISTER_RHI_TEST(LumenCompactProbeAtlasSaturationTest);
 METALLIC_REGISTER_RHI_TEST(LumenSharedCachePlacementTest);
 METALLIC_REGISTER_RHI_TEST(LumenSharedCachePlacementSaturationTest);
 
-class LumenWRCSunRefreshTest final : public RHITest {
+class LumenWRCSunRefreshTest : public RHITest {
 public:
-    LumenWRCSunRefreshTest()
-    {
-        name = "lumen_wrc_sun_refresh";
-        type = RHITestType::Rendering;
-    }
+    LumenWRCSunRefreshTest() : LumenWRCSunRefreshTest("lumen_wrc_sun_refresh", false) {}
 
     RHITestResult run(RHITestContext& context) override
     {
@@ -2077,7 +2073,7 @@ public:
         RenderGraph graph;
         std::string log;
         if (!loadSingleBounceFixture(context, document, graph, log)) { return RHITestResult::fail(log); }
-        if (!prepareGraph(graph)) { return RHITestResult::fail("Could not wire the compact WRC refresh fixture"); }
+        if (!prepareGraph(graph, progressive_)) { return RHITestResult::fail("Could not wire the compact WRC refresh fixture"); }
 
         RenderView view;
         ViewCamera camera;
@@ -2100,10 +2096,16 @@ public:
         preview.setEnvironment({.enabled = false, .visible = false});
         preview.setDebugObserver(&inspector);
         preview.setRecordingWorkerLimit(1);
+        auto cacheResources = debug::DebugValue::array({
+            cardBufferCapture("RadianceCache.updateState", 32),
+            cardBufferCapture("RadianceCache.cacheIndirection", kGridCells)});
+        if (progressive_) {
+            cacheResources.push_back(cardBufferCapture("RadianceCache.savedIndirection", kGridCells));
+            cacheResources.push_back(cardBufferCapture("RadianceCache.probeFrames", 2u * kAtlasSlots));
+            cacheResources.push_back(cardBufferCapture("RadianceCache.directionHistory", kAtlasSlots * kDirectionsPerProbe));
+        }
         inspector.request = {{"method", "capture.batch"}, {"params", {{"batches", debug::DebugValue::array({
-            {{"pass", "RadianceCache"}, {"resources", debug::DebugValue::array({
-                cardBufferCapture("RadianceCache.updateState", 32),
-                cardBufferCapture("RadianceCache.cacheIndirection", kGridCells)})}},
+            {{"pass", "RadianceCache"}, {"resources", std::move(cacheResources)}},
             {{"pass", "GlobalDistanceFieldPages"}, {"resources", debug::DebugValue::array({
                 cardBufferCapture("GlobalDistanceFieldPages.updateStatistics", 4)})}},
         })}}}};
@@ -2120,7 +2122,11 @@ public:
         }
 
         std::vector<uint8_t> previousIndirection;
-        const auto check = [&](std::string_view stage, bool retain, bool globalChange, bool first = false) -> std::string {
+        uint32_t firstFrameOfLighting = 0;
+        bool accumulated = false;
+        bool pruned = false;
+        const auto check = [&](std::string_view stage, bool retain, bool globalChange, bool first = false,
+                               bool lightEdited = false) -> std::string {
             if (!preview.render(graph, kSingleBounceEdge, kSingleBounceEdge, "RadianceCache.cacheRadiance", false)) {
                 return "WRC refresh rendering failed: " + preview.lastLog();
             }
@@ -2131,7 +2137,7 @@ public:
             const auto& jobs = response.at("result").at("jobs");
             const auto cache = core.completedCapture(jobs.at(0).at("job").get<std::string>());
             const auto gdf = core.completedCapture(jobs.at(1).at("job").get<std::string>());
-            if (!cache || !gdf || cache->artifacts.size() != 2u || gdf->artifacts.size() != 1u ||
+            if (!cache || !gdf || cache->artifacts.size() != (progressive_ ? 5u : 2u) || gdf->artifacts.size() != 1u ||
                     cache->snapshot.evidence.execution != gdf->snapshot.evidence.execution ||
                     cache->snapshot.evidence.generation != gdf->snapshot.evidence.generation) {
                 return std::string(stage) + ": Missing same-frame cache or GDF evidence";
@@ -2139,8 +2145,10 @@ public:
             using CacheStatistics = std::array<uint32_t, 32>;
             using GdfStatistics = std::array<uint32_t, 4>;
             const auto& counters = cache->artifacts[0].bytes;
-            const auto& indirection = cache->artifacts[1].bytes;
+            const auto& publishedIndirection = cache->artifacts[1].bytes;
+            const auto& indirection = progressive_ ? cache->artifacts[2].bytes : publishedIndirection;
             if (counters.size() != sizeof(CacheStatistics) || indirection.size() != kGridCells * sizeof(uint32_t) ||
+                    publishedIndirection.size() != indirection.size() ||
                     gdf->artifacts[0].bytes.size() != sizeof(GdfStatistics)) {
                 return std::string(stage) + ": Unexpected cache or GDF readback size";
             }
@@ -2158,6 +2166,51 @@ public:
                     stats[31] != uint32_t(globalChange)) {
                 return std::string(stage) + ": Unexpected WRC scheduling or residency " +
                     nlohmann::json(stats).dump();
+            }
+            if (progressive_) {
+                const auto& frames = cache->artifacts[3].bytes;
+                const auto& directions = cache->artifacts[4].bytes;
+                if (frames.size() != 2u * kAtlasSlots * sizeof(uint32_t) ||
+                    directions.size() != kAtlasSlots * kDirectionsPerProbe * sizeof(uint32_t)) {
+                    return std::string(stage) + ": Missing per-probe and directional history";
+                }
+                // At this fixture's 8x8 resolution each probe uses exactly one tile,
+                // including new probes whose requested half resolution cannot form a tile.
+                if (stats[29] != stats[2] || (retain && allocated == 0u && stats[29] > kTraceBudget)) {
+                    return std::string(stage) + ": Progressive resolve changed the trace cost";
+                }
+                uint32_t traceFrame = 0;
+                for (uint32_t cell = 0; cell < kGridCells; ++cell) {
+                    const uint32_t slot = readSurfaceValue<uint32_t>(indirection, cell);
+                    if (slot < kAtlasSlots) {
+                        traceFrame = std::max(traceFrame, readSurfaceValue<uint32_t>(frames, slot * 2u));
+                    }
+                }
+                const bool reset = !retain || lightEdited;
+                if (reset) { firstFrameOfLighting = traceFrame; }
+
+                for (uint32_t cell = 0; cell < kGridCells; ++cell) {
+                    const uint32_t slot = readSurfaceValue<uint32_t>(indirection, cell);
+                    if (slot >= kAtlasSlots) { continue; }
+                    const uint32_t lastTraced = readSurfaceValue<uint32_t>(frames, slot * 2u);
+                    const bool fresh = lastTraced >= firstFrameOfLighting;
+                    const uint32_t published = readSurfaceValue<uint32_t>(publishedIndirection, cell);
+                    if (published != (fresh ? slot : std::numeric_limits<uint32_t>::max())) {
+                        return std::string(stage) + ": Published indirection disagrees with slot lighting freshness";
+                    }
+                    if (!fresh) {
+                        pruned |= retain && lightEdited;
+                        continue;
+                    }
+                    for (uint32_t direction = 0; direction < kDirectionsPerProbe; ++direction) {
+                        const uint32_t count = readSurfaceValue<uint32_t>(directions,
+                            slot * kDirectionsPerProbe + direction) & 0xffu;
+                        if (count == 0u || count > 8u || (reset && count != 1u)) {
+                            return std::string(stage) + ": Invalid directional sample count " + std::to_string(count);
+                        }
+                        accumulated |= count > 1u;
+                    }
+                }
             }
             if (retain) {
                 uint32_t overlap = 0;
@@ -2177,6 +2230,27 @@ public:
         if (auto message = check("Cold start with active Sun", false, true, true); !message.empty()) {
             return RHITestResult::fail(message);
         }
+        if (progressive_) {
+            for (uint32_t frame = 0; frame <= kAtlasSlots / kTraceBudget && !accumulated; ++frame) {
+                if (auto message = check("Stable direction refresh", true, false); !message.empty()) {
+                    return RHITestResult::fail(message);
+                }
+            }
+            if (!accumulated) {
+                return RHITestResult::fail("No resident direction accumulated a second sample under stable lighting");
+            }
+            world.sun.direction = {0.0f, -1.6f, -1.2f};
+            if (!preview.setWorldEnvironment(world)) {
+                return RHITestResult::fail("Could not edit the authored Sun direction magnitude");
+            }
+            accumulated = false;
+            if (auto message = check("Equivalent Sun direction", true, false); !message.empty()) {
+                return RHITestResult::fail(message);
+            }
+            if (!accumulated) {
+                return RHITestResult::fail("An equivalent Sun direction discarded directional history");
+            }
+        }
         struct SunEdit {
             const char* label;
             float3 direction;
@@ -2195,7 +2269,7 @@ public:
             if (!preview.setWorldEnvironment(world)) {
                 return RHITestResult::fail(std::string("Could not edit the WRC fixture Sun: ") + edit.label);
             }
-            if (auto message = check(edit.label, !edit.globalChange, edit.globalChange); !message.empty()) {
+            if (auto message = check(edit.label, !edit.globalChange, edit.globalChange, false, true); !message.empty()) {
                 return RHITestResult::fail(message);
             }
         }
@@ -2212,7 +2286,18 @@ public:
         if (!preview.setLighting(std::move(lighting))) { return RHITestResult::fail("Could not add the WRC fixture point light"); }
         if (auto message = check("Point-light edit", false, false); !message.empty()) { return RHITestResult::fail(message); }
         if (validation.failed()) { return RHITestResult::fail("WRC refresh Vulkan validation: " + validation.snapshot().dump()); }
+        if (progressive_) {
+            if (!pruned) { return RHITestResult::fail("A budgeted light edit did not exercise stale published probes"); }
+            return RHITestResult::pass("Verified directional accumulation, lighting invalidation, and budgeted probe publication");
+        }
         return RHITestResult::pass("Verified Sun-only reuse, the 4x threshold and boosted budget, normal recovery, and point-light reset");
+    }
+
+protected:
+    LumenWRCSunRefreshTest(const char* testName, bool progressive) : progressive_(progressive)
+    {
+        name = testName;
+        type = RHITestType::Rendering;
     }
 
 private:
@@ -2221,8 +2306,11 @@ private:
     static constexpr uint32_t kAtlasProbeAxis = 16;
     static constexpr uint32_t kAtlasSlots = kAtlasProbeAxis * kAtlasProbeAxis;
     static constexpr uint32_t kTraceBudget = 16;
+    static constexpr uint32_t kProbeResolution = 8;
+    static constexpr uint32_t kDirectionsPerProbe = kProbeResolution * kProbeResolution;
+    bool progressive_;
 
-    static bool prepareGraph(render::RenderGraph& graph)
+    static bool prepareGraph(render::RenderGraph& graph, bool progressive)
     {
         using render::makeRenderGraphFieldName;
         const auto* fields = graph.findNode("GlobalDistanceFieldPages");
@@ -2231,8 +2319,9 @@ private:
         if (!graph.setNodeProperties(fields->id, std::move(fieldProperties)) ||
             !graph.addNode("LumenScreenProbePlacementPass", "Placement", {}) ||
             !graph.addNode("LumenRadianceCachePass", "RadianceCache", {{"gridResolution", kGridResolution},
-                {"clipmapCount", 1u}, {"probeResolution", 8u}, {"atlasProbesPerAxis", kAtlasProbeAxis},
-                {"traceBudget", kTraceBudget}, {"worldExtent", 4.0f}, {"maxTraceDistance", 5.0f}, {"compactProbeAtlas", true}}) ||
+                {"clipmapCount", 1u}, {"probeResolution", kProbeResolution}, {"atlasProbesPerAxis", kAtlasProbeAxis},
+                {"traceBudget", kTraceBudget}, {"worldExtent", 4.0f}, {"maxTraceDistance", 5.0f},
+                {"compactProbeAtlas", true}, {"progressiveAccumulation", progressive}}) ||
             !graph.addEdge("Deferred.lumenPosition", "Placement.position") ||
             !graph.addEdge("Deferred.lumenNormal", "Placement.normal") ||
             !graph.addEdge("Placement.probePositions", "RadianceCache.probePositions") ||
@@ -2254,6 +2343,13 @@ private:
 };
 
 METALLIC_REGISTER_RHI_TEST(LumenWRCSunRefreshTest);
+
+class LumenWRCProgressiveRefreshTest final : public LumenWRCSunRefreshTest {
+public:
+    LumenWRCProgressiveRefreshTest() : LumenWRCSunRefreshTest("lumen_wrc_progressive_refresh", true) {}
+};
+
+METALLIC_REGISTER_RHI_TEST(LumenWRCProgressiveRefreshTest);
 
 debug::DebugValue surfaceUpdateCaptures(std::string_view pass, bool captureStochasticHistory = false)
 {

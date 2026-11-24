@@ -6,6 +6,7 @@
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
+#include "Runtime/Render/Environment/CelestialLighting.h"
 #include "Runtime/Render/GAPI/CommandSubmission.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Scene/Scene.h"
@@ -19,9 +20,9 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
-constexpr uint64_t kUpdateABI = 0x4c554d454e050001ull;
-constexpr uint64_t kTraceABI = 0x4c554d454e050002ull;
-constexpr uint64_t kCompactMarkABI = 0x4c554d454e050003ull;
+constexpr uint64_t kUpdateABI = 0x4c554d454e050005ull;
+constexpr uint64_t kTraceABI = 0x4c554d454e050006ull;
+constexpr uint64_t kCompactMarkABI = 0x4c554d454e050007ull;
 constexpr uint64_t kPriorityABI = 0x4c554d454e050004ull;
 constexpr uint32_t kGlobalLightingTraceBudgetScale = 4;
 constexpr uint32_t kMaxClipmaps = 6;
@@ -46,15 +47,16 @@ struct RadianceCacheUpdateParams {
     uint32_t gridResolution, clipmapCount, maxProbes, screenProbeCount;
     uint32_t frameNumber, historyValid, probeTraceBudget, probeResolution;
     std::array<float, 3> cameraPosition;
+    uint32_t historyFirstFrame;
 };
-static_assert(sizeof(RadianceCacheUpdateParams) == 88);
+static_assert(sizeof(RadianceCacheUpdateParams) == 92);
 
 struct CompactRadianceCacheMarkParams {
     RadianceCacheUpdateParams update;
     ShaderBuffer adaptiveCount;
     uint32_t uniformCount;
 };
-static_assert(sizeof(CompactRadianceCacheMarkParams) == 96 && offsetof(CompactRadianceCacheMarkParams, adaptiveCount) == 88);
+static_assert(sizeof(CompactRadianceCacheMarkParams) == 100 && offsetof(CompactRadianceCacheMarkParams, adaptiveCount) == 92);
 
 struct RadianceCachePriorityParams {
     ShaderBuffer updateState;
@@ -70,8 +72,10 @@ struct RadianceCacheTraceParams {
     uint32_t gdfClipmapCount;
     std::array<float, 3> cameraPosition;
     float maxTraceDistance;
+    ShaderBuffer directionHistory;
+    uint32_t frameNumber;
 };
-static_assert(sizeof(RadianceCacheTraceParams) == 100);
+static_assert(sizeof(RadianceCacheTraceParams) == 108);
 
 struct RadianceCacheLayout {
     uint32_t gridResolution = 48;
@@ -161,6 +165,8 @@ struct SunLightingSample {
     const scene::Scene* scene = nullptr;
     uint64_t sceneLifetime = 0;
     float maximum = 0.0f;
+    std::array<float, 7> effectiveLight{};
+    uint32_t flags = 0;
 };
 
 class LumenRadianceCachePass final : public ComputePass {
@@ -182,12 +188,14 @@ private:
     Device* device_ = nullptr;
     RadianceCacheLayout layout_;
     bool compactProbeAtlas_ = false;
+    bool progressiveAccumulation_ = false;
     std::optional<CacheContent> previousContent_;
     std::shared_ptr<SubmissionTransaction> previousSubmission_;
     SunLightingSample recordedSunLighting_;
     std::optional<SunLightingSample> submittedSunLighting_;
     std::array<RadianceCacheClipmap, kMaxClipmaps> previousClipmaps_{};
     uint64_t previousFrame_ = 0;
+    uint32_t historyFirstFrame_ = 0;
     ComputeKernel place_, clear_, mark_, remap_, allocate_, priority_, select_, setupArgs_, save_;
     ComputeKernel generateTiles_, traceArgs_, trace_, filter_, borders_;
 };
@@ -250,7 +258,11 @@ RenderPassReflection LumenRadianceCachePass::reflect(const RenderGraphCompileCon
     addBuffer("traceTiles", "Compacted directional trace tiles", layout.maxTraceTiles(), 8);
     addBuffer("indirectArgs", "Per-stage dispatch arguments", kIndirectDispatchCount * 3u, 4)
         .stageAccess(RenderGraphResourceAccess::BufferIndirectRead);
-    addBuffer("rawAtlas", "Raw directional radiance and hit distance in FP16", layout.atlasTexels(), 8);
+    addBuffer("rawAtlas", "Unfiltered directional radiance and latest hit distance in FP16", layout.atlasTexels(), 8);
+    if (properties().value("progressiveAccumulation", RenderGraphProperties(false)) == true) {
+        addBuffer("directionHistory", "Effective sample count and hit class per world probe direction", layout.atlasTexels(), 4)
+            .bufferLayout("u32");
+    }
     addBuffer("filteredAtlas", "Spatially filtered probe radiance", layout.atlasTexels(), 8);
     auto& radiance = reflection.addTextureOutput("cacheRadiance", "Persistent bordered directional radiance atlas")
         .texture2D(layout.borderedAtlasEdge(), layout.borderedAtlasEdge()).storageWrite();
@@ -271,14 +283,23 @@ Result<> LumenRadianceCachePass::compile(const RenderGraphCompileContext& contex
         log = "Lumen Radiance Cache compactProbeAtlas must be a boolean";
         return makeError(Error::InvalidArgument);
     }
+    const auto progressive = properties().find("progressiveAccumulation");
+    if (progressive != properties().end() && !progressive->is_boolean()) {
+        log = "Lumen Radiance Cache progressiveAccumulation must be a boolean";
+        return makeError(Error::InvalidArgument);
+    }
     device_ = context.device;
     layout_ = *layout;
     compactProbeAtlas_ = compact != properties().end() && *compact == true;
+    progressiveAccumulation_ = progressive != properties().end() && *progressive == true;
     // A cache rebuild ends residency without creating a new Sun lighting change.
     previousContent_.reset();
+    const SlangMacroDefine progressiveDefine{"METALLIC_LUMEN_WRC_PROGRESSIVE", "1"};
     const auto compileKernel = [&](const char* module, const char* entry, ParameterABI abi, ComputeKernel& kernel) {
+        const std::span defines = progressiveAccumulation_ && std::string_view(module).starts_with("Features/DistanceField/LumenRadianceCache") ?
+            std::span<const SlangMacroDefine>(&progressiveDefine, 1) : std::span<const SlangMacroDefine>{};
         return ShaderRegistry::instance().getComputeKernel(*device_,
-            {.moduleName = module, .entryPointName = entry, .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+            {.moduleName = module, .entryPointName = entry, .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = defines},
             {.parameters = abi, .debugName = entry}, kernel, log);
     };
     if (!compactProbeAtlas_) {
@@ -343,7 +364,7 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
         world ? world->nonSunLightingRevision() : 0, world ? world->environmentRevision() : 0};
     const bool previousSubmitted = previousSubmission_ && previousSubmission_->resolved() && !previousSubmission_->cancelled();
     if (previousSubmitted) { submittedSunLighting_ = recordedSunLighting_; }
-    const SunLightingSample currentSunLighting{world, scene, scene ? scene->sceneGraph().lifetimeRevision() : 0,
+    SunLightingSample currentSunLighting{world, scene, scene ? scene->sceneGraph().lifetimeRevision() : 0,
         world ? world->sunIrradianceMax() : 0.0f};
     const bool sameLightingScene = submittedSunLighting_ && submittedSunLighting_->world == world &&
         submittedSunLighting_->scene == scene && submittedSunLighting_->sceneLifetime == currentSunLighting.sceneLifetime;
@@ -353,6 +374,19 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
         !world->worldEnvironment().moon.enabled && lumenGlobalSunLightingChanged(previousSunMax, currentSunLighting.maximum);
     const bool historyValid = previousContent_ == content && previousFrame_ + 1u == context.frameIndex() &&
         context.temporalValid("previousIndirection") && previousSubmitted && !globalLightingChanged;
+    const uint32_t frameNumber = uint32_t(context.frameIndex() + 1u);
+    uint32_t historyFirstFrame = 0u;
+    if (progressiveAccumulation_) {
+        const auto sun = buildCelestialLightRecords(resolveWorldEnvironment(scene, world))[0];
+        currentSunLighting.effectiveLight = {sun.direction[0], sun.direction[1], sun.direction[2],
+            sun.irradiance[0], sun.irradiance[1], sun.irradiance[2], sun.angularRadius};
+        currentSunLighting.flags = sun.flags;
+        // Compare the same normalized light used by Surface Cache shading.
+        const bool keepRadiance = historyValid && sameLightingScene &&
+            currentSunLighting.effectiveLight == submittedSunLighting_->effectiveLight &&
+            currentSunLighting.flags == submittedSunLighting_->flags;
+        historyFirstFrame = keepRadiance ? historyFirstFrame_ : frameNumber;
+    }
     const std::array eye{view->current.eye[0], view->current.eye[1], view->current.eye[2]};
     const auto clipmaps = makeClipmaps(layout_, eye);
     const uint64_t clipmapBytes = layout_.clipmapCount * sizeof(RadianceCacheClipmap);
@@ -419,7 +453,7 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
         bind("cacheIndirection"), bind("previousIndirection"), bind("freeList"), bind("probeFrames"),
         bind("updateState"), bind("traceData"), bind("indirectArgs"),
         layout_.gridResolution, layout_.clipmapCount, layout_.probeCapacity(), uint32_t(probeCount),
-        uint32_t(context.frameIndex() + 1u), historyValid, layout_.traceBudget, layout_.probeResolution, eye};
+        frameNumber, historyValid, layout_.traceBudget, layout_.probeResolution, eye, historyFirstFrame};
     const auto update = writer.encode(updateParams, kUpdateABI);
     if (!update) { return makeError(update.error()); }
     // UE boosts the priority histogram only. New-probe downsampling still uses the input budget.
@@ -438,7 +472,8 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
         bindLumenGlobalTrace(context, writer), bind("cacheClipmaps"), bind("cacheIndirection"), bind("traceData"),
         bind("updateState"), bind("traceTiles"), bind("indirectArgs"),
         bind("rawAtlas"), bind("filteredAtlas"), writer.storageImageHandle(context.outputTexture("cacheRadiance").view()),
-        *gdfClipmaps, eye, layout_.maxTraceDistance}, kTraceABI);
+        *gdfClipmaps, eye, layout_.maxTraceDistance, progressiveAccumulation_ ? bind("directionHistory") : ShaderBuffer{},
+        frameNumber}, kTraceABI);
     if (!trace) { return makeError(trace.error()); }
 
     using Access = RenderGraphResourceAccess;
@@ -485,10 +520,11 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
         }});
     };
     const auto dispatchIndirect = [&](const char* name, ComputeKernel& kernel, uint32_t argumentIndex,
-        std::initializer_list<Use> uses) {
+        std::initializer_list<Use> uses, bool appendDirectionHistory = false) {
         auto& ownedUses = stageUses[useIndex++];
         ownedUses.assign(uses);
         ownedUses.push_back({"indirectArgs", indirect});
+        if (appendDirectionHistory) { ownedUses.push_back({"directionHistory", rw}); }
         stages.push_back({name, ownedUses, [&, argumentIndex, kernelPtr = &kernel](CommandBuffer& cmd) -> Result<> {
             constexpr uint32_t stride = 3 * sizeof(uint32_t);
             const auto args = buffer("indirectArgs")->slice({argumentIndex * stride, stride});
@@ -520,17 +556,26 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
         {{"cacheClipmaps", read}, {"traceData", read}, {"traceTiles", write}, {"updateState", rw}});
     dispatch("Set up directional trace dispatch", traceArgs_, *trace, 1, {{"updateState", read}, {"indirectArgs", rw}});
     dispatchIndirect("Trace world probe radiance", trace_, 3,
-        {{"cacheClipmaps", read}, {"traceData", read}, {"traceTiles", read}, {"updateState", read}, {"rawAtlas", write},
+        {{"cacheClipmaps", read}, {"traceData", read}, {"traceTiles", read}, {"updateState", read},
+            {"rawAtlas", progressiveAccumulation_ ? rw : write},
             {"pageTable", sample}, {"pageAtlas", sample}, {"coarseMip", sample}, {"domain", read},
             {"objectGrid", read}, {"objectGridScene", read}, {"cards", read}, {"cardScene", read},
-            {"cardDepth", sample}, {"cardLighting", sample}});
+            {"cardDepth", sample}, {"cardLighting", sample}}, progressiveAccumulation_);
+    if (progressiveAccumulation_) {
+        // Keep private residency for the scheduler and publish only probes
+        // traced in this lighting epoch before filtering or Gather can read them.
+        dispatch("Save and publish fresh world probe indirection", save_, *saveUpdate, groups,
+            {{"cacheIndirection", rw}, {"probeFrames", read}, {"savedIndirection", write}});
+    }
     dispatchIndirect("Filter directional probe radiance", filter_, 1,
         {{"cacheClipmaps", read}, {"cacheIndirection", read}, {"traceData", read},
             {"rawAtlas", read}, {"filteredAtlas", write}});
     dispatchIndirect("Fix up octahedral atlas borders", borders_, 2,
         {{"cacheClipmaps", read}, {"traceData", read}, {"filteredAtlas", read}, {"cacheRadiance", Access::TextureStorageWrite}});
-    dispatch("Save world probe indirection", save_, *saveUpdate, groups,
-        {{"cacheIndirection", read}, {"savedIndirection", write}});
+    if (!progressiveAccumulation_) {
+        dispatch("Save world probe indirection", save_, *saveUpdate, groups,
+            {{"cacheIndirection", read}, {"savedIndirection", write}});
+    }
 
     if (auto result = context.executeStages(stages); !result) { return result; }
     context.setTemporalWritten("savedIndirection", true);
@@ -541,6 +586,7 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
     previousContent_ = content;
     previousClipmaps_ = clipmaps;
     previousFrame_ = context.frameIndex();
+    historyFirstFrame_ = historyFirstFrame;
     return {};
 }
 
