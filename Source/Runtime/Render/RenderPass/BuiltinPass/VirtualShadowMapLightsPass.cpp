@@ -16,6 +16,7 @@
 #include <bit>
 #include <cassert>
 #include <numeric>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -27,6 +28,15 @@ struct ManagedLight
     uint64_t stableId = 0;
     VirtualShadowMapLight light;
     VirtualShadowMapLightEntry entry{};
+    float movingLodBias = 0.0f;
+};
+
+constexpr uint64_t kDirectionalLODRecoveryFrames = 10;
+
+struct DirectionalLightMotion
+{
+    std::array<float, 3> direction;
+    std::optional<uint64_t> lastChangeFrame;
 };
 
 uint64_t temporalContentKey(const VirtualShadowMapCasterResources& casters, const VisibilityBufferFrameInfo& raster)
@@ -198,6 +208,7 @@ public:
             runtimeFloatSetting("firstClipmapExtent", "First Directional Half-width (m)", 4, 0.01f, 10000),
             runtimeFloatSetting("maxPagePoolLoadFactor", "Target Page Pool Load (0 Off)", VirtualShadowMapResolutionController::kDefaultLoadFactor, 0, 1),
             runtimeFloatSetting("maxResolutionLodBias", "Maximum Resolution LOD Bias", VirtualShadowMapResolutionController::kDefaultMaxBias, 0, 12),
+            runtimeIntSetting("directionalMovingResolutionLodBias", "Moving Directional LOD Bias (Levels)", 0, 0, 11),
             runtimeFloatSetting("rasterTimeBudgetMs", "GPU Shadow Raster Budget in ms (0 Off)", 0, 0, 100),
             runtimeFloatSetting("shadowBias", "Shadow Bias (m)", 0.002f, 0, 1),
             runtimeEnumSetting("filter", "Shadow Filter", "hard", {{"Hard", "hard"}, {"PCF", "pcf"}, {"SMRT", "smrt"}}),
@@ -241,6 +252,7 @@ public:
         }
         if (device_ != context.device) {
             casterCache_ = {}; histories_.clear(); caches_.clear();
+            directionalMotion_.clear();
             physicalPool_ = {};
             resolution_ = {};
         }
@@ -395,7 +407,9 @@ public:
         const uint32_t budget = properties.value("physicalPageBudget", 256u);
         const bool demandDriven = boolProperty(&properties, "demandDrivenBudget", true);
         const float nearPlane = properties.value("nearPlane", 0.001f);
-        if (budget > 262144 || settings.maxLightCacheAge > 65535 || !std::isfinite(nearPlane) || nearPlane <= 0) {
+        const int32_t movingLodBias = properties.value("directionalMovingResolutionLodBias", 0);
+        if (budget > 262144 || settings.maxLightCacheAge > 65535 || !std::isfinite(nearPlane) || nearPlane <= 0 ||
+            movingLodBias < 0 || movingLodBias > 11) {
             return makeError(Error::InvalidArgument);
         }
         const auto celestials = buildCelestialLightRecords(resolveWorldEnvironment(scene, context.world()));
@@ -475,6 +489,7 @@ public:
         if (sceneIdentity_ != info.sceneIdentity) {
             caches_.clear();
             histories_.clear();
+            directionalMotion_.clear();
             physicalPool_ = {};
             resolution_ = {};
             casterCache_ = {};
@@ -500,6 +515,30 @@ public:
             properties.value("rasterTimeBudgetMs", 0.f), device_->capabilities().timestampQueries);
         if (!resolutionWords) { return makeError(resolutionWords.error()); }
         settings.resolutionLodBias = resolution_.bias();
+        bool motionBiased = false;
+        if (movingLodBias > 0) {
+            const float maxClipmapBias = float(std::max(settings.clipmapCount, 1u) - 1u);
+            const float headroom = std::max(0.0f, maxClipmapBias - settings.resolutionLodBias);
+            const float maxMovingBias = std::min(float(movingLodBias), headroom);
+            std::erase_if(directionalMotion_, [&](const auto& motion) { return !identities.contains(motion.first); });
+            for (auto& item : lights) {
+                if (item.entry.status != kVirtualShadowMapLightAdmitted || item.light.type != VirtualShadowMapLightType::Directional) { continue; }
+                auto& motion = directionalMotion_.try_emplace(item.stableId,
+                    DirectionalLightMotion{item.light.direction, std::nullopt}).first->second;
+                if (motion.direction != item.light.direction) {
+                    motion.direction = item.light.direction;
+                    motion.lastChangeFrame = info.frameIndex;
+                }
+                if (motion.lastChangeFrame) {
+                    const uint64_t stillFrames = info.frameIndex - *motion.lastChangeFrame;
+                    const float remaining = float(kDirectionalLODRecoveryFrames - std::min(stillFrames, kDirectionalLODRecoveryFrames));
+                    item.movingLodBias = maxMovingBias * (remaining / float(kDirectionalLODRecoveryFrames));
+                    motionBiased |= item.movingLodBias > 0.0f;
+                }
+            }
+        } else {
+            directionalMotion_.clear();
+        }
         const auto& rasterResolutionWords = resolution_.rasterDiagnostics();
         std::vector<uint32_t> budgetData(8 + capacity_ * 6 * 8, 0);
         // Version 2 describes current-frame GPU demand and grants. The shared
@@ -721,7 +760,8 @@ public:
                         light.face = face;
                         faceRequests.push_back({faces[face].get(), light,
                             {output.texture(), debugOutput_ ? debug.texture() : nullptr,
-                                item.entry.baseLayer + (compact_ ? 0u : face), compact_ && item.entry.faceCount == 6}, index});
+                                item.entry.baseLayer + (compact_ ? 0u : face), compact_ && item.entry.faceCount == 6},
+                            index, item.movingLodBias});
                         publicationFaces.push_back(index * 6 + face);
                     }
                 }
@@ -732,7 +772,9 @@ public:
                     budget, demandDriven, log, cpu, gpuProfiler, receiver.stream ? &receiver : nullptr, projectionGrid.grid,
                     *rasterFeedback);
                 if (!sharedResults) { spdlog::error("VirtualShadowMapLightsPass: {}", log); return makeError(sharedResults.error()); }
-                if (auto recorded = resolution_.record(*device_, commands, *sharedResults, budget, &physicalPool_); !recorded) { return recorded; }
+                if (auto recorded = resolution_.record(*device_, commands, *sharedResults, budget, &physicalPool_, motionBiased); !recorded) {
+                    return recorded;
+                }
                 auto aggregatedLOD = VirtualShadowMaps::aggregateLODStatistics(*device_, commands, *sharedResults, log);
                 if (!aggregatedLOD) { spdlog::error("VirtualShadowMapLightsPass LOD statistics: {}", log); return makeError(aggregatedLOD.error()); }
                 gpuLODStatistics = *aggregatedLOD;
@@ -1014,6 +1056,7 @@ public:
                     if (!history) { history = std::make_unique<VirtualShadowMapTemporal>(); }
                     auto temporalSettings = settings;
                     temporalSettings.physicalPageCount = budget;
+                    temporalSettings.resolutionLodBias += item.movingLodBias;
                     const auto group = std::find_if(projections.begin(), projections.end(),
                         [index](const auto& projection) { return projection.lightIndex == index; });
                     assert(group != projections.end());
@@ -1063,6 +1106,7 @@ private:
     uint64_t sceneIdentity_ = 0;
     VirtualShadowMapPhysicalPool physicalPool_;
     VirtualShadowMapResolutionController resolution_;
+    std::unordered_map<uint64_t, DirectionalLightMotion> directionalMotion_;
     std::unordered_map<uint64_t, std::array<std::unique_ptr<VirtualShadowMaps>, 6>> caches_;
     std::unordered_map<uint64_t, std::unique_ptr<VirtualShadowMapTemporal>> histories_;
 };

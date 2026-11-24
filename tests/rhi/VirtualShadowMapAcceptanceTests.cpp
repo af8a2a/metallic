@@ -117,7 +117,7 @@ public:
                 actualRenderHeight = binding.texture->desc().height;
             }
             const bool stats = binding.id == "Shadows.statistics" || binding.id == "Shadows.lights" || binding.id == "Shadows.memory" ||
-                binding.id == "Shadows.budgetDiagnostics" ||
+                binding.id == "Shadows.budgetDiagnostics" || binding.id == "Shadows.resolutionDiagnostics" ||
                 binding.id == "Shadows.lodStatistics" ||
                 (captureCacheDiagnostics && binding.id == "Shadows.cacheDiagnostics") ||
                 (collectGPUWork && (binding.id == "Shadows.workload" || binding.id == "Shadows.buildDiagnostics" ||
@@ -288,6 +288,13 @@ public:
                 budgetFaces.push_back(values);
             }
             result["budgetDiagnostics"] = {{"header", budgetHeader}, {"faces", std::move(budgetFaces)}};
+        }
+        if (captured.contains("Shadows.resolutionDiagnostics")) {
+            const auto bytes = read("Shadows.resolutionDiagnostics");
+            std::array<uint32_t, 8> words;
+            requireAcceptance(bytes.size() == sizeof(words), "Unexpected VSM resolution diagnostic layout");
+            std::memcpy(words.data(), bytes.data(), sizeof(words));
+            result["resolutionDiagnostics"] = words;
         }
         return result;
     }
@@ -701,6 +708,8 @@ public:
                     requireAcceptance(!event.contains("casterTranslations") || (worldBinding && !spec.at("scene").is_null() &&
                         event.at("casterTranslations").is_array() && event.at("frame").get<uint32_t>() < frames),
                         "casterTranslations requires a bound world scene, an event array and an in-range frame");
+                    requireAcceptance(!event.contains("sunDirection") || ((spec.contains("lighting") || !spec.at("scene").is_null()) &&
+                        event.at("frame").get<uint32_t>() < frames), "sunDirection requires a world sun and an in-range frame");
                 }
                 requireAcceptance(!shadows->properties.value("forceRedraw", false), "Acceptance begins with ordinary caching");
                 const std::string displayOutput = spec.value("output", std::string("FinalBlit.color"));
@@ -742,6 +751,7 @@ public:
                 view.setTemporalJitter(temporalJitter);
                 output["temporalJitter"] = temporalJitter;
                 preview.bindRenderView(&view);
+                environment::WorldEnvironment world;
                 const auto loadScene = [&]() {
                     if (spec.at("scene").is_null()) { preview.bindRuntimeScene(nullptr); return; }
                     auto document = std::make_unique<scene::SceneDocument>();
@@ -749,6 +759,7 @@ public:
                     requireAcceptance(spec.value("metadataOnly", false) ? document->loadStreamMetadata(path) : document->load(path),
                         "Acceptance scene load: " + path.string());
                     requireAcceptance(document->documentWarning().empty(), document->documentWarning());
+                    world = document->worldEnvironment();
                     preview.bindRuntimeScene(document.get());
                     preview.setEnvironment(document->environment());
                     auto lighting = document->lighting(); lighting.autoExposure.enabled = false;
@@ -767,7 +778,7 @@ public:
                         const auto& sun = spec.at("lighting").at("sun");
                         const auto direction = sun.at("direction").get<std::array<float, 3>>();
                         const auto color = sun.value("color", std::array<float, 3>{1, 1, 1});
-                        environment::WorldEnvironment world;
+                        world = {};
                         world.sun.enabled = true; world.sun.direction = {direction[0], direction[1], direction[2]};
                         world.sun.color = {color[0], color[1], color[2]}; world.sun.illuminance = sun.at("illuminance");
                         world.sun.angularRadius = sun.value("angularRadius", 0.00465f);
@@ -795,6 +806,14 @@ public:
                         if (event.contains("camera")) { camera = event.at("camera"); }
                         if (event.value("cameraCut", false)) { view.cameraCut(); }
                         if (event.value("reloadScene", false)) { loadScene(); setLighting(); graph.markDirty(); sceneHandoff = true; }
+                        if (event.contains("sunDirection")) {
+                            const auto direction = event.at("sunDirection").get<std::array<float, 3>>();
+                            const float3 target{direction[0], direction[1], direction[2]};
+                            if (world.sun.direction.x != target.x || world.sun.direction.y != target.y || world.sun.direction.z != target.z) {
+                                world.sun.direction = target;
+                                requireAcceptance(preview.setWorldEnvironment(world), "Invalid acceptance sun direction");
+                            }
+                        }
                         if (event.contains("casterTranslations")) {
                             auto& doc = *documents.back();
                             for (const auto& edit : event.at("casterTranslations")) {

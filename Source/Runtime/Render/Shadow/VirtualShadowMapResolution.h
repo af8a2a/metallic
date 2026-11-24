@@ -100,6 +100,9 @@ public:
                     belowTargetSamples_ = 0;
                     if (rasterEnabled_) { target = std::max(pageBias_, target); }
                     pageBias_ = std::lerp(pageBias_, target, 0.5f);
+                } else if (last_.motionBiased) {
+                    // Temporary per-light coarsening hides demand that can return when the light stops.
+                    belowTargetSamples_ = 0;
                 } else {
                     belowTargetSamples_ = std::min(belowTargetSamples_ + 1, 11u);
                     if (rasterEnabled_) { target = std::min(pageBias_, target); }
@@ -121,10 +124,10 @@ public:
     const Diagnostics& rasterDiagnostics() const { return rasterDiagnostics_; }
 
     Result<> record(Device& device, CommandBuffer& commands, std::span<const VirtualShadowMapResult> faces,
-        uint32_t capacity, const VirtualShadowMapPhysicalPool* pool = nullptr)
+        uint32_t capacity, const VirtualShadowMapPhysicalPool* pool = nullptr, bool motionBiased = false)
     {
         if (!pageEnabled_) { return {}; }
-        return feedback_.record(device, commands, faces, capacity, bias(), pool);
+        return feedback_.record(device, commands, faces, capacity, bias(), pool, motionBiased);
     }
 
     Result<VirtualShadowMapRasterFeedback*> prepareRaster(Device& device, CommandBuffer& commands, uint32_t rangeCount)

@@ -23,7 +23,7 @@ implementing VirtualShadowMaps;
 
 #if VSM_ONE_PASS_PROJECTION
 // Common filter settings stay in push constants. Only face-specific values
-// come from this table; its 80-byte layout matches ShadowProjectionJob in C++.
+// come from this table; its layout matches ShadowProjectionJob in C++.
 struct ShadowProjectionJob
 {
     uint pages, statistics, projections, atlas;
@@ -31,7 +31,7 @@ struct ShadowProjectionJob
     uint clipmapCount, enabled, lightType, projectionFace;
     uint pointFaces, projectionFlags, samplePhase;
     float lightRange, sourceRadius, angularRadius, lodScreenRayLength;
-    uint receiverGeometry;
+    uint receiverGeometry, receiverLOD;
 };
 
 #endif
@@ -422,6 +422,7 @@ void vsmProjectOnePassJob(uint3 id, ShadowPush common, ShadowProjectionJob job, 
     push.pointFaces = job.pointFaces; push.projectionFlags = job.projectionFlags;
     push.lodScreenRayLength = job.lodScreenRayLength;
     push.receiverGeometry = job.receiverGeometry;
+    push.receiverLOD = job.receiverLOD;
     push.samplePhase = job.samplePhase; push.lightRange = job.lightRange;
     push.sourceRadius = job.sourceRadius; push.angularRadius = job.angularRadius;
     uint3 counts = uint3(0u);

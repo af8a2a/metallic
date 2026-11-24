@@ -160,6 +160,7 @@ struct VirtualShadowMapPressureSample
     uint64_t sequence = 0, frameIndex = 0;
     uint32_t requestedPages = 0, capacity = 0;
     float appliedBias = 0;
+    bool motionBiased = false;
 };
 
 // Pass-owned across frames and reset with its device. Only completed copies
@@ -168,7 +169,7 @@ class VirtualShadowMapPressureFeedback
 {
 public:
     Result<> record(Device& device, CommandBuffer& commands, std::span<const VirtualShadowMapResult> faces,
-        uint32_t capacity, float appliedBias, const VirtualShadowMapPhysicalPool* pool = nullptr);
+        uint32_t capacity, float appliedBias, const VirtualShadowMapPhysicalPool* pool = nullptr, bool motionBiased = false);
     Result<std::optional<VirtualShadowMapPressureSample>> poll();
 
 private:
@@ -194,6 +195,7 @@ struct VirtualShadowMapFaceRequest
     VirtualShadowMapLight light;
     VirtualShadowMapProjectionTarget output;
     uint32_t sourceSlot = UINT32_MAX; // 0/1 for Sun/Moon, 2 + local GPUScene index for grid Mark.
+    float additionalResolutionLodBias = 0.0f;
 };
 
 // Ordered per-light projections. Point lights contain all six canonical faces;

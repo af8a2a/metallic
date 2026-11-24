@@ -373,6 +373,13 @@ public:
             (void)uniform("ScreenRayLengthChange", 53, 255, 1, 0);
             (void)uniform("AfterScreenRayLength", 54, 0, .5);
 
+            settings.resolutionLodBias = 1;
+            (void)uniform("MovingResolutionRejectsHistory", 55, 255, 1, 0);
+            (void)uniform("MovingResolutionAccumulates", 56, 0, .5);
+            settings.resolutionLodBias = 0;
+            (void)uniform("RestoredResolutionRejectsCoarseHistory", 57, 0, 0, 0);
+            (void)uniform("RestoredResolutionAccumulates", 58, 255, .5);
+
             // GPU cut changes must reject history even though the CPU caster
             // content key and all temporal settings remain unchanged.
             history = VirtualShadowMapTemporal();

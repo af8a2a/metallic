@@ -54,9 +54,9 @@ struct ShadowProjectionJob
     uint32_t clipmapCount, enabled, lightType, projectionFace;
     uint32_t pointFaces, projectionFlags, samplePhase;
     float lightRange, sourceRadius, angularRadius, lodScreenRayLength;
-    uint32_t receiverGeometry;
+    uint32_t receiverGeometry, receiverLOD;
 };
-static_assert(sizeof(ShadowProjectionJob) == 80);
+static_assert(sizeof(ShadowProjectionJob) == 84);
 
 struct ShadowReceiverGeometry
 {
@@ -842,7 +842,7 @@ Result<std::optional<VirtualShadowMapRasterSample>> VirtualShadowMapRasterFeedba
 
 Result<> VirtualShadowMapPressureFeedback::record(Device& device, CommandBuffer& commands,
     std::span<const VirtualShadowMapResult> faces, uint32_t capacity, float appliedBias,
-    const VirtualShadowMapPhysicalPool* pool)
+    const VirtualShadowMapPhysicalPool* pool, bool motionBiased)
 {
     auto* frame = RenderFrameContext::from(commands);
     if (!frame || !frame->recording()) { return makeError(Error::InvalidArgument); }
@@ -903,7 +903,7 @@ Result<> VirtualShadowMapPressureFeedback::record(Device& device, CommandBuffer&
                 .after = {PipelineStageBits::Host, AccessBits::HostRead}}};
         if (auto r = commands.synchronize({.buffers = after}); !r) { return r; }
     }
-    slot->sample = {nextSequence_++, frame->frameIndex(), uint32_t(faces.size()), capacity, appliedBias};
+    slot->sample = {nextSequence_++, frame->frameIndex(), uint32_t(faces.size()), capacity, appliedBias, motionBiased};
     return {};
 }
 
@@ -1193,10 +1193,12 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
         if (auto r = commands.synchronize({.buffers = previousReady}); !r) { return std::unexpected(r.error()); }
     }
     CasterChangeContext casterChanges;
+    auto faceSettings = settings;
     for (uint32_t index = 0; index < faces.size(); ++index) {
         const auto& face = faces[index];
+        faceSettings.resolutionLodBias = settings.resolutionLodBias + face.additionalResolutionLodBias;
         auto result = face.shadow->recordInternal(device, commands, depth, view, face.light, casters,
-            materials, alphaTextures, settings, log, true, &face.output, profiler, gpuProfiler, receiver, &physicalPool, index,
+            materials, alphaTextures, faceSettings, log, true, &face.output, profiler, gpuProfiler, receiver, &physicalPool, index,
             &casterChanges, rasterFeedback);
         if (!result) { return std::unexpected(result.error()); }
         results.push_back(*result); states.push_back(face.shadow->state_);
@@ -4005,14 +4007,14 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
                 state.programs->refinedReceiver == programs.refinedReceiver);
             assert(p.depth == push.depth && p.pageSize == push.pageSize && p.virtualPagesPerAxis == push.virtualPagesPerAxis && p.pcfRadius == push.pcfRadius &&
                 p.rayLength == push.rayLength && p.rayLengthScale == push.rayLengthScale && p.maxRayAngle == push.maxRayAngle &&
-                p.rayCount == push.rayCount && p.samplesPerRay == push.samplesPerRay && p.receiverLOD == push.receiverLOD);
+                p.rayCount == push.rayCount && p.samplesPerRay == push.samplesPerRay && ((p.receiverLOD ^ push.receiverLOD) & 1u) == 0u);
             assert(state.outputTextures[0]->desc().width == outputDesc.width &&
                 state.outputTextures[0]->desc().height == outputDesc.height);
             jobs.push_back({p.pages, p.statistics, p.projections, p.atlas,
                 p.filterMode, p.shadow, p.debug, p.physicalPagesX,
                 p.clipmapCount, p.enabled, p.lightType, p.projectionFace,
                 p.pointFaces, p.projectionFlags | (face == 0 && selectPointFace ? kVSMPointGroupFirst : 0u), p.samplePhase,
-                p.lightRange, p.sourceRadius, p.angularRadius, p.lodScreenRayLength, p.receiverGeometry});
+                p.lightRange, p.sourceRadius, p.angularRadius, p.lodScreenRayLength, p.receiverGeometry, p.receiverLOD});
         }
     }
     auto* frame = RenderFrameContext::from(commands);
