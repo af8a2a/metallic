@@ -16,6 +16,7 @@ using PostStorage3D = PostStorage2D;
 using PostSampler = GPUSamplerHandle;
 using PostUIntData = GPUBufferSpan;
 using PostFloat4Data = GPUBufferSpan;
+using PostStorageBuffer = ShaderBuffer;
 #else
 import ShaderCore;
 import ColorGrading;
@@ -31,6 +32,7 @@ typealias PostStorage3D = ResourceHandle<RWTexture3D<float4>>;
 typealias PostSampler = SamplerHandle;
 typealias PostUIntData = RWBufferSpan<uint>;
 typealias PostFloat4Data = RWBufferSpan<float4>;
+typealias PostStorageBuffer = ResourceHandle<RWStructuredBuffer<float4>>;
 #endif
 
 struct DisplayOutputPush {
@@ -76,7 +78,7 @@ struct AutoExposureParams {
     PostUIntData histogram;
     PostFloat4Data history, exposure;
     AutoExposurePush display;
-    PostUInt padding;
+    PostStorageBuffer savedProbeExposure;
 };
 
 struct GradingPush {
@@ -101,7 +103,8 @@ struct ColorGradingLUTParams {
 #ifdef __cplusplus
 inline constexpr uint64_t kFinalBlitABI = 0x46424c4954000002ull;
 inline constexpr uint64_t kSliderDebugABI = 0x534c494445000002ull;
-inline constexpr uint64_t kAutoExposureABI = 0x4558504f53000003ull;
+inline constexpr uint64_t kAutoExposureABI = 0x4558504f53000004ull;
+inline constexpr char kLumenProbeExposureHistory[] = "lumenProbeExposure";
 inline constexpr uint64_t kColorGradingLUTABI = 0x4752414445000002ull;
 static_assert(sizeof(FinalBlitParams) == 56 && offsetof(FinalBlitParams, display) == 16);
 static_assert(sizeof(SliderDebugParams) == 28 && offsetof(SliderDebugParams, display) == 12);

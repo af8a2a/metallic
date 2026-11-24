@@ -36,6 +36,11 @@ public:
             .storageReadWrite();
         reflection.addBufferOutput("exposure", "float4: multiplier, adapted EV100, target EV100, luminance")
             .buffer(16, 16).bufferLayout("AutoExposureState").storageReadWrite();
+        if (boolProperty(&properties(), "publishProbeExposure", false)) {
+            reflection.addBufferOutput("savedProbeExposure", "Metered exposure for next frame's Lumen screen probes")
+                .buffer(16, 16).bufferLayout("AutoExposureState").storageWrite()
+                .temporalWrite(kLumenProbeExposureHistory, /*graphOwned=*/true, /*perPassScope=*/false);
+        }
         return reflection;
     }
 
@@ -155,6 +160,11 @@ public:
         params.history = writer.bufferSpan(state_->history.get(), {}, 16, 16);
         params.exposure = writer.bufferSpan(exposure.buffer(), {}, 16, 16);
         params.display = push;
+        const bool publishProbeExposure = boolProperty(&context.properties(), "publishProbeExposure", false);
+        const bool saveProbeExposure = publishProbeExposure && settings.enabled && !bypass;
+        if (saveProbeExposure) {
+            params.savedProbeExposure = writer.buffer(context.temporalBuffer("savedProbeExposure").buffer.buffer());
+        }
         auto encoded = writer.encode(params, kAutoExposureABI, ParameterTransport::InlinePush);
         if (!encoded) { return makeError(encoded.error()); }
         const auto record = [&](size_t program, CommandBuffer& stageCommands, uint32_t x, uint32_t y) {
@@ -172,6 +182,7 @@ public:
         };
         const RenderGraphStageUse reduceUses[] = {
             {"history", Access::BufferStorageReadWrite}, {"exposure", Access::BufferStorageWrite},
+            {"savedProbeExposure", Access::BufferStorageWrite},
         };
         const RenderGraphStageUse applyUses[] = {
             {"source", Access::TextureSampleRead}, {"exposure", Access::BufferStorageRead},
@@ -184,7 +195,8 @@ public:
             {"ReducePartial", reducePartialUses, [&](CommandBuffer& stageCommands) {
                 return record(1, stageCommands, partialGroupCount, 1);
             }},
-            {"Reduce", reduceUses, [&](CommandBuffer& stageCommands) { return record(2, stageCommands, 1, 1); }},
+            {"Reduce", std::span(reduceUses).first(saveProbeExposure ? 3 : 2),
+                [&](CommandBuffer& stageCommands) { return record(2, stageCommands, 1, 1); }},
             {"Apply", applyUses, [&](CommandBuffer& stageCommands) {
                 return record(3, stageCommands, (push.width + 7) / 8, (push.height + 7) / 8);
             }},
@@ -196,6 +208,7 @@ public:
         const RenderGraphBufferImport imports[] = {{"history", *history, Access::BufferStorageReadWrite}};
         result = context.executeComputeStages(stages, imports);
         if (!result) { return result; }
+        if (publishProbeExposure) { context.setTemporalWritten("savedProbeExposure", saveProbeExposure); }
         state_->valid = !bypass;
         width_ = context.width();
         height_ = context.height();

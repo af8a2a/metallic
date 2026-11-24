@@ -13,11 +13,15 @@ namespace metallic::render::detail {
 using RealtimeGIProperties = std::unordered_map<uint32_t, RenderGraphProperties>;
 inline constexpr std::array<std::string_view, 7> kRealtimeGIPasses{"GlobalDistanceFieldPages", "SurfaceCache",
     "Radiosity", "ScreenTrace", "Gather", "Temporal", "Reflections"};
+// Graphs saved before these passes were enabled can still select scene realtime GI.
+inline constexpr std::array<std::string_view, 3> kOptionalRealtimeGIPasses{
+    "ScreenProbePlacement", "RadianceCache", "ShortRangeAO"};
 
 inline bool isRealtimeGIOutput(std::string_view output)
 {
     const auto pass = output.substr(0, output.find('.'));
-    return output.starts_with("Deferred.lumen") || std::ranges::find(kRealtimeGIPasses, pass) != kRealtimeGIPasses.end();
+    return output.starts_with("Deferred.lumen") || std::ranges::find(kRealtimeGIPasses, pass) != kRealtimeGIPasses.end() ||
+        std::ranges::find(kOptionalRealtimeGIPasses, pass) != kOptionalRealtimeGIPasses.end();
 }
 
 inline bool hasSceneRealtimeGIRoute(const RenderGraph& graph)
@@ -93,6 +97,9 @@ inline bool resolveSceneRealtimeGI(RenderGraph& graph, const scene::Scene* scene
             }
         }
         for (std::string_view name : kRealtimeGIPasses) { graph.removeNode(graph.findNode(name)->id); }
+        for (std::string_view name : kOptionalRealtimeGIPasses) {
+            if (const auto* node = graph.findNode(name)) { graph.removeNode(node->id); }
+        }
         for (const auto& consumer : consumers) {
             if (!graph.addEdge("Deferred.color", consumer)) {
                 log = "Could not connect direct lighting to " + consumer;
@@ -100,7 +107,10 @@ inline bool resolveSceneRealtimeGI(RenderGraph& graph, const scene::Scene* scene
             }
         }
         overrides[graph.findNode("Deferred")->id] = {{"exportLumenReceivers", false},
-            {"exportLumenPreviousPosition", false}, {"exportLumenSpecular", false}};
+            {"exportLumenPreviousPosition", false}, {"exportLumenSpecular", false}, {"exportLumenDiffuseAlbedo", false}};
+        if (const auto* exposure = graph.findNode("AutoExposure"); exposure && exposure->properties.contains("publishProbeExposure")) {
+            overrides[exposure->id] = {{"publishProbeExposure", false}};
+        }
     }
 
     for (const auto& entry : overrides) {

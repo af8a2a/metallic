@@ -3,15 +3,17 @@ module LumenTemporalGather;
 import ShaderCore;
 import ParameterRoot;
 import ScenePathMath;
-#if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
+#if defined(METALLIC_LUMEN_DITHER_HISTORY) || defined(METALLIC_LUMEN_SHORT_RANGE_AO)
 import LumenProbeMath;
+#endif
+#if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
 import LumenShortRangeAOPacking;
 import LumenShortRangeAOComposite;
 #endif
 
 using Metallic;
 using Metallic.ScenePath;
-#if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
+#if defined(METALLIC_LUMEN_DITHER_HISTORY) || defined(METALLIC_LUMEN_SHORT_RANGE_AO)
 using Metallic.Lumen;
 #endif
 
@@ -462,8 +464,7 @@ void lumenTemporalGatherMain(uint3 thread : SV_DispatchThreadID, uint3 group : S
     float outFastUpdateAmount = 0.0f;
 #if defined(METALLIC_LUMEN_DITHER_HISTORY) || defined(METALLIC_LUMEN_SHORT_RANGE_AO)
     // UE 5.7.4 BlueNoiseScalar(ScreenCoord, ScreenProbeGatherStateFrameIndex).
-    uint3 wrapped = uint3(thread.xy, params.frameIndex) & uint3(127u, 127u, 63u);
-    float randomScalar = resolveUniform(params.blueNoiseScalar).Load(int3(wrapped.x, wrapped.z * 128u + wrapped.y, 0));
+    float randomScalar = lumenProbeBlueNoiseScalar(resolveUniform(params.blueNoiseScalar), thread.xy, params.frameIndex);
 #else
     const float randomScalar = 0.0f;
 #endif

@@ -871,6 +871,10 @@ To enable the baked path for another scene, add `world.realtimeGI` to its `.meta
 
 The standard realtime graphs use their existing Deferred lighting route when the scene has no GI settings, HDRI or Physical Atmosphere lighting is active, or the device lacks the required storage image support. Changing the bound scene or compatible lighting mode selects the appropriate route. Offline bakers remain the source of the world-space GI assets.
 
+The realtime GI route shares compact screen-probe placement between Gather and the World Radiance Cache. When all neighboring cache probes are resident, Gather shortens its software ray and samples the cache on a miss. It retains the 40 m limit when coverage is unavailable. The realtime cache uses a 32 × 32 physical atlas and a 40 m trace limit. Gather uses octahedral irradiance, blue-noise single-probe interpolation, a full-resolution jitter width of 1 in units of probe tiles, and eight ray-direction phases. Temporal accumulates up to ten frames and applies Short Range AO during diffuse composition. The composition stage allows OCT to remain enabled with bent normals.
+
+Screen-probe trace quantization applies the brightness limit of 10 in the exposed domain and decodes the result back to scene-linear radiance. Manual exposure uses the effective EV100 and compensation. With automatic exposure enabled, `AutoExposure.publishProbeExposure` publishes the metered multiplier for `Gather.probeExposureHistory` on the next frame. Gather uses a multiplier of one until the first valid meter result.
+
 ### Cornell Box GI Playground
 
 In the **Render Graph Editor**, open **Built-in Sample** and select a Cornell Box variant.
@@ -1111,7 +1115,7 @@ Sponza realtime, Sponza GI Comparison and Detail Tracing enable diffuse fast lig
 
 Gather scatters the ray motion into R8-equivalent gather bins, reduces the moving fraction, and widens the spatial filter above `0.01`. It interpolates the moving fraction with the same probe taps as indirect light. The diffuse alpha stores motion on valid receivers. Temporal uses the maximum of the current amount and the weighted reprojected amount to cap the frame count. `Temporal.fastUpdateAmount` records the current amount on pixels with eligible geometry history. `Gather.probeTraceMoving` and `Gather.probeMoving` expose the motion flags per ray and reduced fractions per active probe. Metallic obtains velocity from Deferred world positions and a Mesh SDF instance companion. Motion bins are quantized to the UE format in linear buffers, and the packed temporal state occupies the existing FP16 history alpha. This opaque software path takes its motion from accepted Screen and Mesh SDF hits.
 
-The graph enables `stochasticInterpolation` on Gather. This uses UE's single-probe selection and unit sample weight with the rendering commandlet's black dummy noise input.
+The graph enables `stochasticInterpolation` on Gather. It uses UE's scalar blue-noise lookup to select a single probe and assign it unit sample weight.
 
 At the opening camera, the first four rays in `Trace.results` target the tall blocks in near-to-far order. The next four target the emitters. The second component of each ray's `state` identifies the GDF hit level. `GlobalDistanceFieldPages.statistics` reports page residency and overflow. To inspect recentering after a camera cut, move to eye `[156, 12.36, 20]` and look at `[156, 11.76, 0]` with a 60-degree vertical field of view. The far room is then covered by the finest clipmap. Inspect `Temporal.indirectDiffuse` for the scene output and `Temporal.historyWeight` for camera history.
 

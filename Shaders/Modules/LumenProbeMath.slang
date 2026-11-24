@@ -1,5 +1,7 @@
 module LumenProbeMath;
 
+import ShaderCore;
+
 namespace Metallic.Lumen
 {
 public static const float kLumenProbePi = 3.14159265358979323846f;
@@ -81,7 +83,24 @@ public float2 lumenProbeBlueNoiseVec2(Texture2D<float2> noise, uint2 screenTileC
     return noise.Load(int3(wrapped.x, wrapped.z * 128u + wrapped.y, 0));
 }
 
-// UE 5.7.4 LumenScreenProbeFiltering.usf, equal trace and gather resolutions.
+// UE 5.7.4 BlueNoise.ush:11. The scalar LUT uses the same layout.
+public float lumenProbeBlueNoiseScalar(Texture2D<float> noise, uint2 screenCoord, uint frameIndex)
+{
+    uint3 wrapped = uint3(screenCoord, frameIndex) & uint3(127u, 127u, 63u);
+    return noise.Load(int3(wrapped.x, wrapped.z * 128u + wrapped.y, 0));
+}
+
+public float lumenProbePreExposure(ResourceHandle<StructuredBuffer<float4>> previousExposure, float fallback)
+{
+    if (previousExposure.index != 0xffffffffu) {
+        float4 metered = resolveUniform(previousExposure)[0];
+        // The producer clears metered luminance when a histogram is empty.
+        if (metered.w > 0.0f) { return metered.x; }
+    }
+    return fallback;
+}
+
+// UE 5.7.4 LumenScreenProbeFiltering.usf. Lighting here includes pre-exposure.
 public uint3 lumenQuantizeProbeLighting(float3 lighting, uint raysPerProbe)
 {
     float maxLighting = max(lighting.x, max(lighting.y, lighting.z));

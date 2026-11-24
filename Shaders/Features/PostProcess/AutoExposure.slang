@@ -188,6 +188,9 @@ void autoExposureReduceMain(uint index : SV_GroupIndex)
     if (total == 0.0) { history.w = 0.0; }
     gHistory.store(0, history);
     gExposure.store(0, exposure);
+    if (gParams.savedProbeExposure.index != 0xffffffffu) {
+        resolveUniform(gParams.savedProbeExposure)[0] = history;
+    }
 }
 
 [shader("compute")]

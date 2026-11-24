@@ -3104,12 +3104,14 @@ public:
             if (!detail::resolveSceneRealtimeGI(direct, nullptr, directProperties, log) || !direct.validate(log)) {
                 return RHITestResult::fail(prefix + log);
             }
-            constexpr std::array<const char*, 7> giPasses{"GlobalDistanceFieldPages", "SurfaceCache", "Radiosity",
-                "ScreenTrace", "Gather", "Temporal", "Reflections"};
+            constexpr std::array<const char*, 10> giPasses{"GlobalDistanceFieldPages", "SurfaceCache", "Radiosity",
+                "ScreenTrace", "Gather", "Temporal", "Reflections", "ScreenProbePlacement", "RadianceCache", "ShortRangeAO"};
             const auto& directDeferred = direct.findNode("Deferred")->properties;
             if (std::ranges::any_of(giPasses, [&](const char* name) { return direct.findNode(name) != nullptr; }) ||
                 directDeferred.value("exportLumenReceivers", true) ||
                 directDeferred.value("exportLumenPreviousPosition", true) ||
+                directDeferred.value("exportLumenDiffuseAlbedo", true) ||
+                direct.findNode("AutoExposure")->properties.value("publishProbeExposure", true) ||
                 directDeferred.value("exportLumenSpecular", true) || !hasPresentation(direct, "Deferred.color")) {
                 return RHITestResult::fail(prefix + "a scene without GI bakes must keep the direct HDR presentation route");
             }
@@ -3131,6 +3133,23 @@ public:
                 !hasEdge(baked, "Deferred.lumenPreviousPosition", "Temporal.previousPosition") ||
                 !hasEdge(baked, "Deferred.lumenSpecular", "Reflections.specular") || !hasPresentation(baked, "Reflections.color")) {
                 return RHITestResult::fail(prefix + "baked Sponza must resolve its assets and connect Lumen before post processing");
+            }
+            const auto& gather = baked.findNode("Gather")->properties;
+            const auto& temporal = baked.findNode("Temporal")->properties;
+            if (!gather.value("radianceCache", false) || !gather.value("stochasticInterpolation", false) ||
+                !gather.value("probeExposureHistory", false) ||
+                !baked.findNode("AutoExposure")->properties.value("publishProbeExposure", false) ||
+                gather.value("irradianceFormat", "") != "OCT" || gather.value("maxRayDirections", 0) != 8 ||
+                gather.value("fullResolutionJitterWidth", 0.0) != 1.0 || !temporal.value("shortRangeAO", false) ||
+                temporal.value("maxFramesAccumulated", 0) != 10 ||
+                !hasEdge(baked, "ScreenProbePlacement.probePositions", "RadianceCache.probePositions") ||
+                !hasEdge(baked, "ScreenProbePlacement.probePositions", "Gather.probePositions") ||
+                !hasEdge(baked, "RadianceCache.cacheRadiance", "Gather.cacheRadiance") ||
+                !hasEdge(baked, "VBuffer.depth", "Gather.jitterDepth") ||
+                !hasEdge(baked, "Gather.indirectIrradiance", "Temporal.currentIndirectDiffuse") ||
+                !hasEdge(baked, "ShortRangeAO.shortRangeAORaw", "Temporal.shortRangeAORaw") ||
+                !hasEdge(baked, "Deferred.lumenDiffuseAlbedo", "Temporal.diffuseAlbedo")) {
+                return RHITestResult::fail(prefix + "baked GI must bind the shared placement, cache, jitter and AO paths");
             }
 
             auto withoutDetail = sample.graph;

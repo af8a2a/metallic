@@ -186,6 +186,9 @@ struct LumenScreenProbeGatherParams
     float fullResolutionJitterWidth;
     ResourceHandle<LumenSceneColorTexture> indirectIrradiance;
     uint writeIndirectIrradiance;
+    ResourceHandle<Texture2D<float>> blueNoiseScalar;
+    ResourceHandle<StructuredBuffer<float4>> previousProbeExposure;
+    float probeExposureFallback;
 #if defined(METALLIC_LUMEN_ACTIVE_PROBES)
     ResourceHandle<StructuredBuffer<uint>> probeWorkList;
     ResourceHandle<StructuredBuffer<uint>> probeWorkState;
@@ -335,13 +338,15 @@ float3 probeRayDirection(uint2 ray, float2 probeTexelCenter)
     return lumenEquiAreaSphericalMapping((float2(ray) + probeTexelCenter) / float(kProbeRayResolution));
 }
 
-float3 storeTraceLighting(float3 lighting)
+float3 storeTraceLighting(float3 lighting, LumenScreenProbeGatherParams params)
 {
 #if defined(METALLIC_LUMEN_JITTER_PROBE_DIRECTIONS)
     // The composite pass clamps and quantizes each raw trace before scattering.
     return lighting;
 #else
-    return lumenDecodeProbeLighting(lumenQuantizeProbeLighting(lighting, kRaysPerProbe), kRaysPerProbe);
+    float preExposure = lumenProbePreExposure(params.previousProbeExposure, params.probeExposureFallback);
+    return lumenDecodeProbeLighting(lumenQuantizeProbeLighting(lighting * preExposure, kRaysPerProbe),
+        kRaysPerProbe) / preExposure;
 #endif
 }
 
@@ -505,7 +510,7 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
         readback.screenEnd = screenContinuationDistance;
 #endif
         if (screenHit) {
-            traceOutput[address] = float4(storeTraceLighting(screenRadiance), 5.0f);
+            traceOutput[address] = float4(storeTraceLighting(screenRadiance, params), 5.0f);
             distances[address] = screenDistance;
 #if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
             if (hitWorldVelocity.w > 0.0f) {
@@ -587,7 +592,7 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
             readback.detailEnd = detailDistance;
 #endif
             if (transparency < screenTraceNoise(float2(traceBufferCoord) + 0.5f, 0.0f)) {
-                traceOutput[address] = float4(storeTraceLighting(detailHit.radiance * (1.0f - distanceFade)), 9.0f);
+                traceOutput[address] = float4(storeTraceLighting(detailHit.radiance * (1.0f - distanceFade), params), 9.0f);
                 distances[address] = detailDistance;
 #if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
                 const uint hitObject = detailHit.instanceIndex;
@@ -704,7 +709,7 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
             lighting += cacheRadiance * transparency;
         }
 #endif
-        trace = float4(storeTraceLighting(lighting), traceClass);
+        trace = float4(storeTraceLighting(lighting, params), traceClass);
 #if defined(METALLIC_LUMEN_FINAL_GATHER)
         bool unresolved = hit.state.x == kGlobalDistanceFieldUnavailable || hit.state.x == kGlobalDistanceFieldStepLimit;
         distances[address] = hit.state.x == kGlobalDistanceFieldHit ? hit.metrics.x :
@@ -1041,9 +1046,10 @@ void lumenIntegrateScreenProbesMain(uint3 thread : SV_DispatchThreadID)
         // UE 5.7.4 InterpolateAndIntegrate, static lighting with zero moving fraction.
         encodedAlpha = sample.lightingValid ? 0.004f : 0.0f;
 #if defined(METALLIC_LUMEN_STOCHASTIC_INTERPOLATION)
-        // UE 5.7.4 STOCHASTIC_PROBE_INTERPOLATION and the rendering-commandlet BlackDummy.
+        // UE 5.7.4 STOCHASTIC_PROBE_INTERPOLATION and SCREEN_PROBE_JITTER_INDEX.
         bool sampleProbes = any(sample.weights > 0.0f);
-        float randomValue = min(0.0f, 0.99f);
+        float randomValue = min(lumenProbeBlueNoiseScalar(resolveUniform(params.blueNoiseScalar),
+            thread.xy, params.frameIndex), 0.99f);
         float weightSum = dot(sample.weights, 1.0f);
         randomValue *= weightSum;
         uint pickedProbe;

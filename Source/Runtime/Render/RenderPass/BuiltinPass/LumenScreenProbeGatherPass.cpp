@@ -4,6 +4,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/LumenMeshSDFGrid.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/LumenScreenProbePlacement.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/PostProcessParameters.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
@@ -23,18 +24,18 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
-constexpr uint64_t kScreenProbeGatherABI = 0x4c554d454e010026ull;
-constexpr uint64_t kActiveScreenProbeGatherABI = 0x4c554d454e010027ull;
-constexpr uint64_t kActiveScreenProbeFilterABI = 0x4c554d454e010016ull;
+constexpr uint64_t kScreenProbeGatherABI = 0x4c554d454e010031ull;
+constexpr uint64_t kActiveScreenProbeGatherABI = 0x4c554d454e010032ull;
+constexpr uint64_t kActiveScreenProbeFilterABI = 0x4c554d454e010037ull;
 constexpr uint64_t kScreenProbeScheduleABI = 0x4c554d454e010017ull;
 constexpr uint64_t kScreenProbeClearABI = 0x4c554d454e010018ull;
 constexpr uint64_t kScreenProbeRayScheduleABI = 0x4c554d454e010019ull;
-constexpr uint64_t kScreenProbeFallbackABI = 0x4c554d454e010028ull;
+constexpr uint64_t kScreenProbeFallbackABI = 0x4c554d454e010033ull;
 constexpr uint64_t kCompactScreenProbeScheduleABI = 0x4c554d454e01001bull;
 constexpr uint64_t kCompactScreenProbeRayScheduleABI = 0x4c554d454e01001cull;
-constexpr uint64_t kCompactScreenProbeGatherABI = 0x4c554d454e010029ull;
-constexpr uint64_t kCompactScreenProbeFallbackABI = 0x4c554d454e01002aull;
-constexpr uint64_t kCompactScreenProbeFilterABI = 0x4c554d454e01001full;
+constexpr uint64_t kCompactScreenProbeGatherABI = 0x4c554d454e010034ull;
+constexpr uint64_t kCompactScreenProbeFallbackABI = 0x4c554d454e010035ull;
+constexpr uint64_t kCompactScreenProbeFilterABI = 0x4c554d454e010038ull;
 constexpr uint64_t kScreenProbeImportanceABI = 0x4c554d454e010030ull;
 constexpr uint64_t kStructuredImportanceABIBit = 0x0000000000800000ull;
 constexpr uint64_t kFastLightingUpdateABIBit = 0x0000000000400000ull;
@@ -108,19 +109,23 @@ struct LumenScreenProbeGatherParams {
     float fullResolutionJitterWidth;
     ShaderStorageImage indirectIrradiance;
     uint32_t writeIndirectIrradiance;
+    ShaderSampledImage blueNoiseScalar;
+    ShaderBuffer previousProbeExposure;
+    float probeExposureFallback;
 };
-static_assert(sizeof(LumenScreenProbeGatherParams) == 296 && offsetof(LumenScreenProbeGatherParams, detail) == 140 &&
+static_assert(sizeof(LumenScreenProbeGatherParams) == 308 && offsetof(LumenScreenProbeGatherParams, detail) == 140 &&
     offsetof(LumenScreenProbeGatherParams, traceReadback) == 208 &&
     offsetof(LumenScreenProbeGatherParams, interpolationReadback) == 228 &&
-    offsetof(LumenScreenProbeGatherParams, blueNoiseVec2) == 248);
+    offsetof(LumenScreenProbeGatherParams, blueNoiseVec2) == 248 &&
+    offsetof(LumenScreenProbeGatherParams, blueNoiseScalar) == 296);
 
 template <typename Params>
 struct LumenActiveScreenProbeParams {
     Params base;
     ShaderBuffer workList, workState;
 };
-static_assert(sizeof(LumenActiveScreenProbeParams<LumenScreenProbeGatherParams>) == 304);
-static_assert(sizeof(LumenActiveScreenProbeParams<LumenScreenProbeFilterParams>) == 76);
+static_assert(sizeof(LumenActiveScreenProbeParams<LumenScreenProbeGatherParams>) == 316);
+static_assert(sizeof(LumenActiveScreenProbeParams<LumenScreenProbeFilterParams>) == 84);
 
 struct LumenScreenProbeScheduleParams {
     ShaderBuffer probePositions, workList, workState, indirectArgs;
@@ -138,7 +143,7 @@ struct LumenScreenProbeFallbackParams {
     LumenActiveScreenProbeParams<LumenScreenProbeGatherParams> gather;
     ShaderBuffer rayWorkList, rayWorkCount;
 };
-static_assert(sizeof(LumenScreenProbeFallbackParams) == 312);
+static_assert(sizeof(LumenScreenProbeFallbackParams) == 324);
 
 template <typename Params>
 struct CompactScreenProbeScheduleParams {
@@ -210,9 +215,9 @@ static_assert(sizeof(LumenScreenProbeImportanceParams) == 104 && offsetof(LumenS
 using ActiveGatherParams = LumenActiveScreenProbeParams<LumenScreenProbeGatherParams>;
 static_assert(sizeof(CompactScreenProbeScheduleParams<LumenScreenProbeScheduleParams>) == 28);
 static_assert(sizeof(CompactScreenProbeScheduleParams<LumenScreenProbeRayScheduleParams>) == 44);
-static_assert(sizeof(CompactScreenProbeGatherParams<ActiveGatherParams>) == 316);
-static_assert(sizeof(CompactScreenProbeGatherParams<LumenScreenProbeFallbackParams>) == 324);
-static_assert(sizeof(CompactScreenProbeFilterParams) == 80);
+static_assert(sizeof(CompactScreenProbeGatherParams<ActiveGatherParams>) == 328);
+static_assert(sizeof(CompactScreenProbeGatherParams<LumenScreenProbeFallbackParams>) == 336);
+static_assert(sizeof(CompactScreenProbeFilterParams) == 88);
 
 struct LumenScreenProbeClearParams {
     ShaderBuffer workList, workState, traceRadiance, traceDistance, filteredRadiance, scratch, compositedDistance;
@@ -314,6 +319,7 @@ private:
     LumenCompactProbePlacement placement_;
     ComputeKernel clearCompactReadback_;
     std::unique_ptr<TextureView> blueNoise_;
+    std::unique_ptr<TextureView> blueNoiseScalar_;
     MeshDistanceFieldGPU meshFields_;
     LumenMeshSDFGrid meshGrid_;
     uint32_t compiledTraceResolution_ = 0;
@@ -340,6 +346,11 @@ RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompil
 {
     RenderPassReflection reflection;
     reflectLumenGlobalTraceInputs(reflection);
+    if (optionEnabled("probeExposureHistory")) {
+        reflection.addBufferInput("previousProbeExposure", "Last metered exposure for screen-probe quantization")
+            .buffer(16, 16).bufferLayout("AutoExposureState").storageRead()
+            .temporalRead(kLumenProbeExposureHistory, -1, /*graphOwned=*/true, /*perPassScope=*/false);
+    }
     reflection.addTextureInput("position", "Receiver world position and positive linear view depth")
         .sampledRead().format = Format::RGBA32Sfloat;
     reflection.addTextureInput("normal", "Receiver shading normal").sampledRead().format = Format::RGBA16Sfloat;
@@ -720,14 +731,21 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     if (finalGather) { defines.push_back({"METALLIC_LUMEN_FINAL_GATHER", "1"}); }
     if (activeProbeDispatch) { defines.push_back({"METALLIC_LUMEN_ACTIVE_PROBES", "1"}); }
     if (compactAtlas) { defines.push_back({"METALLIC_LUMEN_COMPACT_PROBE_ATLAS", "1"}); }
-    if (jitterDirections || fullResolutionJitterWidth_ > 0.0f) {
-        if (!context.graphicsQueue) {
-            log = "Lumen Screen Probe Gather requires a graphics queue to upload blue noise";
-            return makeError(Error::InvalidArgument);
-        }
+    const bool needsVectorNoise = jitterDirections || fullResolutionJitterWidth_ > 0.0f;
+    if ((needsVectorNoise || stochasticInterpolation) && !context.graphicsQueue) {
+        log = "Lumen Screen Probe Gather requires a graphics queue to upload blue noise";
+        return makeError(Error::InvalidArgument);
+    }
+    if (needsVectorNoise) {
         auto blueNoise = loadLumenBlueNoise(*device_, *context.graphicsQueue, LumenBlueNoise::Vec2, log);
         if (!blueNoise) { return makeError(blueNoise.error()); }
         blueNoise_ = std::move(*blueNoise);
+    }
+    blueNoiseScalar_.reset();
+    if (stochasticInterpolation) {
+        auto blueNoise = loadLumenBlueNoise(*device_, *context.graphicsQueue, LumenBlueNoise::Scalar, log);
+        if (!blueNoise) { return makeError(blueNoise.error()); }
+        blueNoiseScalar_ = std::move(*blueNoise);
     }
     if (jitterDirections) { defines.push_back({"METALLIC_LUMEN_JITTER_PROBE_DIRECTIONS", "1"}); }
     if (compiledStructuredImportance_) { defines.push_back({kStructuredImportanceDefine, "1"}); }
@@ -971,6 +989,19 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
     auto& commands = context.commandBuffer();
     ParameterWriter writer(*device_, **registry, RenderFrameContext::from(commands));
     LumenScreenProbeGatherParams params{};
+    params.probeExposureFallback = 1.0f;
+    bool readProbeExposure = false;
+    if (const auto* world = context.world()) {
+        const auto& lighting = world->lighting();
+        if (lighting.autoExposure.enabled) {
+            readProbeExposure = optionEnabled("probeExposureHistory") && context.temporalValid("previousProbeExposure");
+            if (readProbeExposure) {
+                params.previousProbeExposure = writer.buffer(context.temporalBuffer("previousProbeExposure").buffer.buffer());
+            }
+        } else {
+            params.probeExposureFallback = std::exp2(lighting.autoExposure.compensation - lighting.exposureEV100);
+        }
+    }
     params.scene = bindLumenGlobalTrace(context, writer);
     params.position = writer.sampledImageHandle(context.inputTexture("position").view());
     params.normal = writer.sampledImageHandle(context.inputTexture("normal").view());
@@ -1016,6 +1047,9 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
         scratch = writer.buffer(context.outputBuffer("probeFilterScratch").buffer());
         if (jitterDirections || fullResolutionJitterWidth_ > 0.0f) {
             params.blueNoiseVec2 = writer.sampledImageHandle(blueNoise_.get());
+        }
+        if (blueNoiseScalar_) {
+            params.blueNoiseScalar = writer.sampledImageHandle(blueNoiseScalar_.get());
         }
         if (jitterDirections) {
             compositedDistance = writer.buffer(context.outputBuffer("compositedProbeDistance").buffer());
@@ -1244,6 +1278,11 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
         {"position", Access::TextureSampleRead}, {"normal", Access::TextureSampleRead},
         {"diffuse", Access::TextureSampleRead}, {"directColor", Access::TextureSampleRead},
     };
+    if (readProbeExposure && !jitterDirections) {
+        traceUses.push_back({"previousProbeExposure", Access::BufferStorageRead});
+        if (splitProbeTracing) { screenUses.push_back({"previousProbeExposure", Access::BufferStorageRead}); }
+        if (splitDetailTracing) { detailUses.push_back({"previousProbeExposure", Access::BufferStorageRead}); }
+    }
     if (fullResolutionJitterWidth_ > 0.0f) { integrateUses.push_back({"jitterDepth", Access::TextureSampleRead}); }
     if (jitterDirections) {
         integrateUses.push_back({irradianceName, Access::TextureSampleRead});
@@ -1298,6 +1337,7 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
     std::vector<RenderGraphStageUse> compositeUses = {{probePositionsName, Access::BufferStorageRead},
         {"probeRadiance", Access::BufferStorageRead}, {"probeDistance", Access::BufferStorageRead},
         {"probeFilterScratch", Access::BufferStorageWrite}, {"compositedProbeDistance", Access::BufferStorageWrite}};
+    if (readProbeExposure) { compositeUses.push_back({"previousProbeExposure", Access::BufferStorageRead}); }
     std::vector<RenderGraphStageUse> reduceMotionUses;
     if (fastLightingUpdate) {
         compositeUses.insert(compositeUses.end(), {{"probeTraceMoving", Access::BufferStorageRead},
@@ -1343,6 +1383,8 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
             params.probePositions, {}, params.traceDistance, {}, params.width, params.height, params.probeWidth,
             params.probeHeight, params.frameIndex, params.blueNoiseVec2, {}};
         filterParams.rayDirectionFrameIndex = params.rayDirectionFrameIndex;
+        filterParams.previousProbeExposure = params.previousProbeExposure;
+        filterParams.probeExposureFallback = params.probeExposureFallback;
         const auto encodeFilter = [&] {
             const LumenActiveScreenProbeParams<LumenScreenProbeFilterParams> bindings{filterParams, schedule.workList, schedule.workState};
             if (compactAtlas) {

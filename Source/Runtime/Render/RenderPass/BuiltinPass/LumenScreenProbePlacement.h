@@ -6,7 +6,7 @@
 
 namespace metallic::render::builtin_pass {
 
-inline constexpr uint64_t kScreenProbeFilterABI = 0x4c554d454e010014ull;
+inline constexpr uint64_t kScreenProbeFilterABI = 0x4c554d454e010036ull;
 inline constexpr uint32_t kLumenScreenProbeSlotsPerTile = 9;
 inline constexpr uint32_t kLumenScreenProbeDownsampleFactor = 16;
 inline constexpr double kLumenAdaptiveProbeAllocationFraction = 0.5;
@@ -25,8 +25,10 @@ struct LumenScreenProbeFilterParams {
     ShaderBuffer outputDistance;
     ShaderStorageImage irradianceOutput, shDirectionalOutput;
     uint32_t rayDirectionFrameIndex;
+    ShaderBuffer previousProbeExposure;
+    float probeExposureFallback;
 };
-static_assert(sizeof(LumenScreenProbeFilterParams) == 68 && offsetof(LumenScreenProbeFilterParams, irradianceOutput) == 56);
+static_assert(sizeof(LumenScreenProbeFilterParams) == 76 && offsetof(LumenScreenProbeFilterParams, irradianceOutput) == 56);
 
 std::optional<double> lumenAdaptiveProbeFraction(const RenderGraphProperties& properties);
 uint32_t lumenAdaptiveProbeCapacity(const RenderGraphProperties& properties, uint32_t uniformCount);

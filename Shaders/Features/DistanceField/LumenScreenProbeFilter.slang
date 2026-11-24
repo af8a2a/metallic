@@ -41,6 +41,8 @@ struct LumenScreenProbeFilterParams
     ResourceHandle<ProbeIrradianceImage> irradianceOutput;
     ResourceHandle<SHDirectionalImage> shDirectionalOutput;
     uint rayDirectionFrameIndex;
+    ResourceHandle<StructuredBuffer<float4>> previousProbeExposure;
+    float probeExposureFallback;
 #if defined(METALLIC_LUMEN_ACTIVE_PROBES)
     ResourceHandle<StructuredBuffer<uint>> probeWorkList;
     ResourceHandle<StructuredBuffer<uint>> probeWorkState;
@@ -139,6 +141,7 @@ void lumenCompositeScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Gr
     }
     GroupMemoryBarrierWithGroupSync();
 
+    float preExposure = lumenProbePreExposure(params.previousProbeExposure, params.probeExposureFallback);
     float hitDistance = resolveUniform(params.inputDistance)[traceAddress];
     if (hitDistance >= 0.0f) {
         Texture2D<float2> noise = resolveUniform(params.blueNoiseVec2);
@@ -162,10 +165,11 @@ void lumenCompositeScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Gr
         uint2 gatherCoord = wrapOctahedralBorder(uint2(quantizedCoord + 1), kLumenProbeGatherResolution + 2u, 1u);
         uint dest = gatherCoord.y * kLumenProbeGatherResolution + gatherCoord.x;
         float sampleWeight = float(kLumenProbeGatherResolution) / mipSize * kLumenProbeGatherResolution / mipSize;
-        uint3 lighting = lumenQuantizeProbeLighting(resolveUniform(params.inputRadiance)[traceAddress].xyz * sampleWeight, kTraceSamples);
-        InterlockedAdd(sharedLighting[dest][0], lighting.x);
-        InterlockedAdd(sharedLighting[dest][1], lighting.y);
-        InterlockedAdd(sharedLighting[dest][2], lighting.z);
+        float3 lighting = resolveUniform(params.inputRadiance)[traceAddress].xyz * preExposure;
+        uint3 quantizedLighting = lumenQuantizeProbeLighting(lighting * sampleWeight, kTraceSamples);
+        InterlockedAdd(sharedLighting[dest][0], quantizedLighting.x);
+        InterlockedAdd(sharedLighting[dest][1], quantizedLighting.y);
+        InterlockedAdd(sharedLighting[dest][2], quantizedLighting.z);
 #if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
         const float weightQuantizeScale = float(0xffffffffu) / float(kTraceSamples);
         const uint moving = resolveUniform(params.probeTraceMoving)[traceAddress];
@@ -177,7 +181,7 @@ void lumenCompositeScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Gr
 
     if (!writeGather) { return; }
     uint3 sum = uint3(sharedLighting[gatherThread][0], sharedLighting[gatherThread][1], sharedLighting[gatherThread][2]);
-    radiance[address] = float4(lumenDecodeProbeLighting(sum, kTraceSamples), 0.0f);
+    radiance[address] = float4(lumenDecodeProbeLighting(sum, kTraceSamples) / preExposure, 0.0f);
     uint minDistance = sharedMinHitDistance[gatherThread];
     distance[address] = minDistance == emptyDistance ? -1.0f : asfloat(minDistance);
 #if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
