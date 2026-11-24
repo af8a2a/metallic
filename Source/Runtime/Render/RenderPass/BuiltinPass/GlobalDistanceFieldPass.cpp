@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstring>
+#include <limits>
 #include <optional>
 #include <spdlog/spdlog.h>
 
@@ -19,7 +21,7 @@ namespace {
 constexpr uint64_t kGlobalDistanceFieldABI = 0x4744460000000001ull;
 constexpr uint64_t kGlobalDistanceFieldDebugABI = 0x4744464400000001ull;
 constexpr uint64_t kGlobalDistanceFieldPagesABI = 0x4744465000000003ull;
-constexpr uint64_t kPersistentGlobalDistanceFieldPagesABI = 0x4744465000000004ull;
+constexpr uint64_t kPersistentGlobalDistanceFieldPagesABI = 0x4744465000000005ull;
 constexpr uint64_t kGlobalDistanceFieldUpdateStatsABI = 0x4744465500000001ull;
 constexpr uint64_t kGlobalDistanceFieldPagesDebugABI = 0x4744504400000001ull;
 constexpr uint64_t kGlobalDistanceFieldMipABI = 0x4744464d00000003ull;
@@ -27,6 +29,9 @@ constexpr uint64_t kQuantizedGlobalDistanceFieldDebugABI = 0x4744514400000001ull
 constexpr uint32_t kDefaultResolution = 64;
 constexpr float kInfluenceRangeInVoxels = 4.0f;
 constexpr uint32_t kCellsPerPage = 7;
+constexpr uint32_t kCullGridPagesPerAxis = 4;
+constexpr uint32_t kCullGridFullScan = UINT32_MAX;
+constexpr uint32_t kCullGridWordBudget = 64u * 1024u * 1024u / sizeof(uint32_t);
 constexpr uint32_t kSamplesPerPage = kCellsPerPage + 1;
 constexpr uint32_t kDefaultPhysicalPages = 216;
 constexpr uint32_t kFreePageInitRowSize = 65536;
@@ -41,6 +46,7 @@ constexpr uint32_t kClipmapResolutionAlignment = kMipFactor * kCellsPerPage;
 struct alignas(16) GlobalDistanceFieldDomain {
     std::array<float, 4> minAndVoxelSize;
     std::array<float, 4> maxAndInfluenceRadius;
+    bool operator==(const GlobalDistanceFieldDomain&) const = default;
 };
 
 struct alignas(16) GlobalDistanceFieldParams {
@@ -62,6 +68,8 @@ struct alignas(16) GlobalDistanceFieldPagesParams {
     uint32_t instanceCount, logicalResolution, maxPhysicalPages, clipmapCount;
     ShaderBuffer objectGridObjects, objectGrid, objectGridScene;
     std::array<uint32_t, 2> sceneIdentity;
+    ShaderBuffer cullGrid;
+    uint32_t cullGridSide;
     std::array<GlobalDistanceFieldDomain, kMaxClipmaps> domains;
 };
 
@@ -74,6 +82,7 @@ struct alignas(16) PersistentGlobalDistanceFieldPagesParams {
     ShaderBuffer freeCount, freePages;
     uint32_t fullUpdate;
     ClipmapPageMovements pageMovements;
+    GPUBufferSpan dirtyPages;
 };
 
 struct alignas(16) GlobalDistanceFieldUpdateStatsParams {
@@ -89,9 +98,10 @@ struct alignas(16) GlobalDistanceFieldMipParams {
 };
 
 struct PersistentPageState {
-    uint64_t atlasAllocation;
-    std::array<uint64_t, 5> sceneRevision;
+    uint64_t atlasAllocation, sceneIdentity, structuralRevision;
+    std::array<uint64_t, 3> instanceRevisions;
     ClipmapPageOrigins origins;
+    std::shared_ptr<const std::vector<MeshDistanceFieldGPU::UpdateInstance>> instances;
 };
 
 struct PersistentPageUpdate {
@@ -100,6 +110,13 @@ struct PersistentPageUpdate {
     uint32_t updatedPages = 0;
     uint32_t totalPages = 0;
     ClipmapPageMovements movements{};
+    std::vector<uint32_t> dirtyPages;
+};
+
+struct MeshDistanceFieldBakeRevision {
+    std::filesystem::file_time_type writeTime;
+    uintmax_t bytes;
+    bool operator==(const MeshDistanceFieldBakeRevision&) const = default;
 };
 
 struct alignas(16) GlobalDistanceFieldDebugParams {
@@ -137,13 +154,16 @@ static_assert(sizeof(GlobalDistanceFieldPagesParams) == 272 &&
     offsetof(GlobalDistanceFieldPagesParams, clipmapCount) == 48 &&
     offsetof(GlobalDistanceFieldPagesParams, objectGridObjects) == 52 &&
     offsetof(GlobalDistanceFieldPagesParams, sceneIdentity) == 64 &&
+    offsetof(GlobalDistanceFieldPagesParams, cullGrid) == 72 &&
+    offsetof(GlobalDistanceFieldPagesParams, cullGridSide) == 76 &&
     offsetof(GlobalDistanceFieldPagesParams, domains) == 80);
 static_assert(sizeof(GlobalDistanceFieldPagesDebugParams) == 112 &&
     offsetof(GlobalDistanceFieldPagesDebugParams, current) == 32);
-static_assert(sizeof(PersistentGlobalDistanceFieldPagesParams) == 384 &&
+static_assert(sizeof(PersistentGlobalDistanceFieldPagesParams) == 400 &&
     offsetof(PersistentGlobalDistanceFieldPagesParams, pageHistory) == 272 &&
     offsetof(PersistentGlobalDistanceFieldPagesParams, fullUpdate) == 284 &&
-    offsetof(PersistentGlobalDistanceFieldPagesParams, pageMovements) == 288);
+    offsetof(PersistentGlobalDistanceFieldPagesParams, pageMovements) == 288 &&
+    offsetof(PersistentGlobalDistanceFieldPagesParams, dirtyPages) == 384);
 static_assert(sizeof(GlobalDistanceFieldUpdateStatsParams) == 32 &&
     offsetof(GlobalDistanceFieldUpdateStatsParams, updatedLevels) == 16);
 static_assert(sizeof(GlobalDistanceFieldMipParams) == 48 && offsetof(GlobalDistanceFieldMipParams, updateMask) == 32);
@@ -183,12 +203,105 @@ uint32_t pagesPerAxis(uint32_t resolution)
     return resolution / kCellsPerPage + (resolution % kCellsPerPage != 0);
 }
 
+struct GlobalDistanceFieldCullGrid {
+    uint32_t side = 0;
+    uint32_t fullScanCells = 0;
+    uint32_t references = 0;
+    std::vector<uint32_t> words;
+};
+
+GlobalDistanceFieldCullGrid buildGlobalDistanceFieldCullGrid(std::span<const GlobalDistanceFieldDomain> domains,
+    uint32_t pageSide, uint32_t levelMask, std::span<const MeshDistanceFieldGPU::UpdateInstance> instances)
+{
+    const uint32_t side = (pageSide + kCullGridPagesPerAxis - 1u) / kCullGridPagesPerAxis;
+    const uint32_t cellCount = side * side * side * static_cast<uint32_t>(domains.size());
+    if (cellCount > kCullGridWordBudget / 2u) { return {}; }
+
+    // UE 5.7.4 CullObjectsToGridCS uses a variable object list per 4x4x4 pages.
+    // Scatter each instance's expanded bounds on the CPU instead of gathering all objects per GPU cell.
+    const auto visitOverlappedCells = [&](auto&& visit) {
+        for (uint32_t instance = 0; instance < instances.size(); ++instance) {
+            const auto& bounds = instances[instance];
+            for (uint32_t level = 0; level < domains.size(); ++level) {
+                if ((levelMask & (1u << level)) == 0u) { continue; }
+                const auto& domain = domains[level];
+                const double cellSize = double(domain.minAndVoxelSize[3]) * (kCellsPerPage * kCullGridPagesPerAxis);
+                // Cover the 1e-4 tolerance on Mesh SDF scale and orthogonality tests.
+                const double radius = domain.maxAndInfluenceRadius[3] * 1.001;
+                std::array<uint32_t, 3> first, end;
+                for (size_t axis = 0; axis < first.size(); ++axis) {
+                    const double origin = domain.minAndVoxelSize[axis];
+                    // The GPU constructs the sample positions in float. Retain both cells at a shared boundary.
+                    const double rounding = 16.0 * std::numeric_limits<float>::epsilon() *
+                        std::max(std::abs(origin), std::abs(origin + side * cellSize));
+                    const double lo = (bounds.minimum[axis] - radius - rounding - origin) / cellSize;
+                    const double hi = (bounds.maximum[axis] + radius + rounding - origin) / cellSize;
+                    first[axis] = static_cast<uint32_t>(std::clamp(std::ceil(lo) - 1.0, 0.0, double(side)));
+                    end[axis] = static_cast<uint32_t>(std::clamp(std::floor(hi) + 1.0, 0.0, double(side)));
+                }
+                for (uint32_t z = first[2]; z < end[2]; ++z) {
+                    for (uint32_t y = first[1]; y < end[1]; ++y) {
+                        const uint32_t row = ((level * side + z) * side + y) * side;
+                        for (uint32_t x = first[0]; x < end[0]; ++x) { visit(row + x, instance); }
+                    }
+                }
+            }
+        }
+    };
+
+    // Headers are (absolute word offset, candidate count), followed by dense instance indices.
+    GlobalDistanceFieldCullGrid grid{.side = side, .words = std::vector<uint32_t>(2u * cellCount)};
+    visitOverlappedCells([&](uint32_t cell, uint32_t) { ++grid.words[2u * cell + 1u]; });
+    uint32_t next = static_cast<uint32_t>(grid.words.size());
+    for (uint32_t cell = 0; cell < cellCount; ++cell) {
+        auto& count = grid.words[2u * cell + 1u];
+        if (count == 0u) { continue; }
+        if (count == instances.size() || count > kCullGridWordBudget - next) {
+            ++grid.fullScanCells;
+            count = kCullGridFullScan;
+        } else {
+            grid.words[2u * cell] = next;
+            next += count;
+        }
+    }
+    grid.references = next - static_cast<uint32_t>(grid.words.size());
+    grid.words.resize(next);
+    if (grid.references != 0u) {
+        visitOverlappedCells([&](uint32_t cell, uint32_t instance) {
+            if (grid.words[2u * cell + 1u] != kCullGridFullScan) {
+                grid.words[grid.words[2u * cell]++] = instance;
+            }
+        });
+        for (uint32_t cell = 0; cell < cellCount; ++cell) {
+            if (grid.words[2u * cell + 1u] != kCullGridFullScan) {
+                grid.words[2u * cell] -= grid.words[2u * cell + 1u];
+            }
+        }
+    }
+    return grid;
+}
+
+Result<std::unique_ptr<Buffer>> uploadPageBuildBuffer(Device& device, std::span<const uint32_t> words)
+{
+    auto buffer = device.createBuffer({.size = words.size_bytes(), .structureStride = sizeof(uint32_t),
+        .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload,
+        .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute});
+    if (!buffer) { return makeError(buffer.error()); }
+    void* mapped = (*buffer)->map();
+    if (!mapped) { return makeError(Error::Failure); }
+    std::memcpy(mapped, words.data(), words.size_bytes());
+    (*buffer)->flush();
+    (*buffer)->unmap();
+    return buffer;
+}
+
 PersistentPageUpdate planPersistentPageUpdate(const PersistentPageState& next, const PersistentPageState* previous,
     uint32_t pageSide, uint32_t clipmapCount)
 {
     const uint32_t pagesPerLevel = pageSide * pageSide * pageSide;
     PersistentPageUpdate update{
-        .full = !previous || previous->sceneRevision != next.sceneRevision,
+        .full = !previous || previous->sceneIdentity != next.sceneIdentity ||
+            previous->structuralRevision != next.structuralRevision,
         .totalPages = pagesPerLevel * clipmapCount,
     };
     if (!update.full) {
@@ -217,6 +330,85 @@ PersistentPageUpdate planPersistentPageUpdate(const PersistentPageState& next, c
         update.updatedPages = update.totalPages;
     }
     return update;
+}
+
+void markDirtyInstancePages(PersistentPageUpdate& update, const MeshDistanceFieldGPU::UpdateInstance& instance,
+    const std::array<GlobalDistanceFieldDomain, kMaxClipmaps>& domains, uint32_t pageSide, uint32_t clipmapCount)
+{
+    for (uint32_t level = 0; level < clipmapCount; ++level) {
+        const auto& domain = domains[level];
+        auto& delta = update.movements[level];
+        const double pageSize = double(domain.minAndVoxelSize[3]) * kCellsPerPage;
+        // The accepted Mesh SDF transform tolerates small scale and orthogonality errors.
+        const double pageRadius = double(domain.maxAndInfluenceRadius[3]) * 1.001 / pageSize;
+        const double pageRadiusSquared = pageRadius * pageRadius;
+        std::array<double, 3> minimum{}, maximum{};
+        std::array<int32_t, 3> first{}, last{};
+        for (size_t axis = 0; axis < minimum.size(); ++axis) {
+            const double origin = domain.minAndVoxelSize[axis];
+            minimum[axis] = (instance.minimum[axis] - origin) / pageSize;
+            maximum[axis] = (instance.maximum[axis] - origin) / pageSize;
+            // Newly exposed scroll slabs are already counted and recomposed.
+            first[axis] = static_cast<int32_t>(std::clamp(std::ceil(minimum[axis] - pageRadius) - 1.0,
+                double(std::max(0, -delta[axis])), double(pageSide)));
+            last[axis] = static_cast<int32_t>(std::clamp(std::floor(maximum[axis] + pageRadius),
+                -1.0, double(int32_t(pageSide) - 1 - std::max(0, delta[axis]))));
+        }
+        for (int32_t z = first[2]; z <= last[2]; ++z) {
+            const double dz = std::max({minimum[2] - (z + 1), z - maximum[2], 0.0});
+            for (int32_t y = first[1]; y <= last[1]; ++y) {
+                const double dy = std::max({minimum[1] - (y + 1), y - maximum[1], 0.0});
+                for (int32_t x = first[0]; x <= last[0]; ++x) {
+                    const double dx = std::max({minimum[0] - (x + 1), x - maximum[0], 0.0});
+                    // UE 5.7.4 BuildGridTilesCS uses squared distance between the tile and modified bounds.
+                    if (dx * dx + dy * dy + dz * dz > pageRadiusSquared) { continue; }
+                    const uint32_t page = x + pageSide * (y + pageSide * (z + pageSide * level));
+                    if (update.dirtyPages.empty()) { update.dirtyPages.resize((update.totalPages + 31u) / 32u); }
+                    const uint32_t bit = 1u << (page % 32u);
+                    auto& word = update.dirtyPages[page / 32u];
+                    if ((word & bit) == 0) {
+                        word |= bit;
+                        ++update.updatedPages;
+                        delta[3] = 1;
+                        update.levelMask |= 1u << level;
+                    }
+                }
+            }
+        }
+    }
+}
+
+void markChangedInstancePages(PersistentPageUpdate& update, const PersistentPageState& previous,
+    const PersistentPageState& next, const std::array<GlobalDistanceFieldDomain, kMaxClipmaps>& domains,
+    uint32_t pageSide, uint32_t clipmapCount)
+{
+    // Both snapshots follow scene render-node order. Structural changes already force a full update.
+    const auto& before = *previous.instances;
+    const auto& after = *next.instances;
+    const auto mark = [&](const MeshDistanceFieldGPU::UpdateInstance& instance) {
+        markDirtyInstancePages(update, instance, domains, pageSide, clipmapCount);
+    };
+    size_t oldIndex = 0, newIndex = 0;
+    while (oldIndex < before.size() && newIndex < after.size()) {
+        const auto& oldInstance = before[oldIndex];
+        const auto& newInstance = after[newIndex];
+        if (oldInstance.renderNode < newInstance.renderNode) {
+            mark(oldInstance);
+            ++oldIndex;
+        } else if (newInstance.renderNode < oldInstance.renderNode) {
+            mark(newInstance);
+            ++newIndex;
+        } else {
+            if (oldInstance != newInstance) {
+                mark(oldInstance);
+                mark(newInstance);
+            }
+            ++oldIndex;
+            ++newIndex;
+        }
+    }
+    for (; oldIndex < before.size(); ++oldIndex) { mark(before[oldIndex]); }
+    for (; newIndex < after.size(); ++newIndex) { mark(after[newIndex]); }
 }
 
 std::optional<uint32_t> physicalPageBudget(const RenderGraphProperties& properties)
@@ -326,16 +518,20 @@ public:
             log = "Global Distance Field persistentPages must be a boolean and requires quantized pages when enabled";
             return makeError(Error::InvalidArgument);
         }
-        if (persistentPagesRequested()) { persistentPageState_ = std::make_shared<std::optional<PersistentPageState>>(); }
-        else { persistentPageState_.reset(); }
+        const bool persistent = persistentPagesRequested();
         const auto objectGrid = properties().find("buildObjectGrid");
         if (objectGrid != properties().end() && (!objectGrid->is_boolean() || (objectGridRequested() && !quantized))) {
             log = "Global Distance Field buildObjectGrid must be a boolean and requires quantized pages when enabled";
             return makeError(Error::InvalidArgument);
         }
-        buildObjectGrid_ = objectGridRequested();
-        clipmapCount_ = readClipmapCount(properties());
-        if (clipmapCount_ == 0 || (clipmapCount_ > 1 && !quantized)) {
+        const bool buildObjectGrid = objectGridRequested();
+        const auto cullGrid = properties().find("buildCullGrid");
+        if (cullGrid != properties().end() && !cullGrid->is_boolean()) {
+            log = "Global Distance Field buildCullGrid must be a boolean";
+            return makeError(Error::InvalidArgument);
+        }
+        const uint32_t clipmapCount = readClipmapCount(properties());
+        if (clipmapCount == 0 || (clipmapCount > 1 && !quantized)) {
             log = "Global Distance Field clipmapCount must be an integer from 1 to 6. Multiple levels require quantized pages.";
             return makeError(Error::InvalidArgument);
         }
@@ -343,12 +539,12 @@ public:
             log = "Quantized Global Distance Field requires R8 storage image support";
             return makeError(Error::Unsupported);
         }
-        const uint32_t resolution = logicalResolution(properties(), clipmapCount_);
+        const uint32_t resolution = logicalResolution(properties(), clipmapCount);
         if (resolution == 0) {
             log = "Global Distance Field resolution must be an integer of at least 2 and fit the clipmap layout";
             return makeError(Error::InvalidArgument);
         }
-        resolution_ = resolution;
+        uint32_t maxPhysicalPages = 0;
         if (usePages_) {
             const auto budget = physicalPageBudget(properties());
             const uint64_t pages = pagesPerAxis(resolution);
@@ -356,30 +552,32 @@ public:
                 log = "Global Distance Field page budget or virtual page count exceeds its 32-bit range";
                 return makeError(Error::InvalidArgument);
             }
-            maxPhysicalPages_ = *budget;
-            if (persistentPageState_ && (maxPhysicalPages_ > INT32_MAX ||
-                pages * pages * pages * clipmapCount_ > INT32_MAX)) {
+            maxPhysicalPages = *budget;
+            if (persistent && (maxPhysicalPages > INT32_MAX ||
+                pages * pages * pages * clipmapCount > INT32_MAX)) {
                 log = "Persistent Global Distance Field page counts exceed the signed allocator range";
                 return makeError(Error::InvalidArgument);
             }
-            if (buildObjectGrid_ && maxPhysicalPages_ > UINT32_MAX / kObjectGridCellsPerPage) {
+            if (buildObjectGrid && maxPhysicalPages > UINT32_MAX / kObjectGridCellsPerPage) {
                 log = "Global Distance Field object grid exceeds its 32-bit cell index range";
                 return makeError(Error::InvalidArgument);
             }
         }
         std::vector<std::filesystem::path> paths;
+        std::array<float, kMaxClipmaps> extents{};
+        std::array<GlobalDistanceFieldDomain, kMaxClipmaps> domains{};
         try {
             const float extent = properties().value("extent", 3.0f);
-            const auto center = clipmapCount_ == 1 ? properties().value("center", std::array<double, 3>{}) :
+            const auto center = clipmapCount == 1 ? properties().value("center", std::array<double, 3>{}) :
                 std::array<double, 3>{};
-            for (uint32_t level = 0; level < clipmapCount_; ++level) {
-                extents_[level] = std::ldexp(extent, static_cast<int>(level));
-                auto& domain = domains_[level];
-                if (!setDomainBounds(domain, center, extents_[level])) {
+            for (uint32_t level = 0; level < clipmapCount; ++level) {
+                extents[level] = std::ldexp(extent, static_cast<int>(level));
+                auto& domain = domains[level];
+                if (!setDomainBounds(domain, center, extents[level])) {
                     log = "Global Distance Field requires finite bounds with a positive extent";
                     return makeError(Error::InvalidArgument);
                 }
-                const float voxelSize = (extents_[level] * 2.0f) / static_cast<float>(resolution);
+                const float voxelSize = (extents[level] * 2.0f) / static_cast<float>(resolution);
                 domain.minAndVoxelSize[3] = voxelSize;
                 domain.maxAndInfluenceRadius[3] = voxelSize * kInfluenceRangeInVoxels;
                 if (voxelSize <= 0.0f || !std::isfinite(domain.maxAndInfluenceRadius[3])) {
@@ -394,12 +592,50 @@ public:
             return makeError(Error::InvalidArgument);
         }
 
-        device_ = context.device;
-        auto result = meshFields_.initialize(*device_, *context.graphicsQueue, *context.runtimeScene, paths, log);
-        if (!result) {
-            if (log.empty()) { log = "Global Distance Field mesh atlas upload failed: " + std::string(resultToString(result)); }
-            return result;
+        const auto& scene = *context.runtimeScene;
+        const std::array meshSource{scene.resourceIdentity(), scene.sceneGraph().lifetimeRevision(),
+            scene.sceneGraph().structuralRevision()};
+        std::vector<MeshDistanceFieldBakeRevision> bakeRevisions;
+        bakeRevisions.reserve(paths.size());
+        for (const auto& path : paths) {
+            std::error_code error;
+            const auto writeTime = std::filesystem::last_write_time(path, error);
+            if (error) { break; }
+            const auto bytes = std::filesystem::file_size(path, error);
+            if (error) { break; }
+            bakeRevisions.push_back({writeTime, bytes});
         }
+        const bool reloadMeshes = device_ != context.device || meshSource != meshSource_ || paths != meshPaths_ ||
+            bakeRevisions.size() != paths.size() || bakeRevisions != meshBakeRevisions_;
+        if (reloadMeshes) {
+            const auto result = meshFields_.initialize(*context.device, *context.graphicsQueue, scene, paths, log);
+            if (!result) {
+                if (log.empty()) { log = "Global Distance Field mesh atlas upload failed: " + std::string(resultToString(result)); }
+                return result;
+            }
+            meshSource_ = meshSource;
+            meshPaths_ = std::move(paths);
+            meshBakeRevisions_ = std::move(bakeRevisions);
+        }
+        // The executor recompiles world-bound passes on scene edits while
+        // retaining their graph allocations. Keep their submitted page state.
+        if (persistent) {
+            if (!persistentPageState_ || reloadMeshes || buildObjectGrid_ != buildObjectGrid || domains_ != domains ||
+                resolution_ != resolution || clipmapCount_ != clipmapCount || maxPhysicalPages_ != maxPhysicalPages) {
+                persistentPageState_ = std::make_shared<std::optional<PersistentPageState>>();
+            }
+        } else {
+            persistentPageState_.reset();
+        }
+        device_ = context.device;
+        resolution_ = resolution;
+        maxPhysicalPages_ = maxPhysicalPages;
+        clipmapCount_ = clipmapCount;
+        extents_ = extents;
+        domains_ = domains;
+        buildObjectGrid_ = buildObjectGrid;
+        buildCullGrid_ = usePages_ && (cullGrid == properties().end() || cullGrid->get<bool>());
+        Result<> result;
         if (usePages_) {
             auto& shaders = ShaderRegistry::instance();
             const auto pageABI = persistentPageState_ ?
@@ -483,8 +719,10 @@ public:
         ParameterWriter writer(*device_, **registry, frame);
         const auto& scene = *context.runtimeScene();
         PersistentPageState nextState{};
+        const PersistentPageState* previousState = nullptr;
         std::optional<PersistentPageUpdate> update;
         std::optional<EncodedParameters> encodedUpdate;
+        bool instanceContentChanged = false;
         if (persistentPageState_) {
             if (!frame) {
                 spdlog::error("Persistent Global Distance Field requires a tracked render frame");
@@ -492,15 +730,42 @@ public:
             }
             nextState = {
                 .atlasAllocation = context.outputTexture("pageAtlas").texture()->memoryInfo().allocationId,
-                .sceneRevision = {scene.resourceIdentity(), scene.sceneGraph().structuralRevision(),
-                    scene.geometryTransformRevision(), scene.visibilityRevision(),
+                .sceneIdentity = scene.resourceIdentity(),
+                .structuralRevision = scene.sceneGraph().structuralRevision(),
+                .instanceRevisions = {scene.geometryTransformRevision(), scene.visibilityRevision(),
                     buildObjectGrid_ ? scene.materialRevision() : 0},
                 .origins = origins,
             };
             const auto& previous = *persistentPageState_;
-            update = planPersistentPageUpdate(nextState,
-                previous && previous->atlasAllocation == nextState.atlasAllocation ? &*previous : nullptr,
-                pagesPerAxis(resolution_), clipmapCount_);
+            if (previous && previous->atlasAllocation == nextState.atlasAllocation) { previousState = &*previous; }
+            update = planPersistentPageUpdate(nextState, previousState, pagesPerAxis(resolution_), clipmapCount_);
+            if (!update->full) {
+                instanceContentChanged = previousState->instanceRevisions != nextState.instanceRevisions;
+                nextState.instances = previousState->instances;
+            }
+        }
+        uint32_t instanceCount = 0;
+        uint32_t unsupportedTransforms = 0;
+        std::unique_ptr<Buffer> instances, objectGridObjects;
+        if (!update || update->levelMask != 0 || instanceContentChanged) {
+            const bool captureInstances = update ? update->full || instanceContentChanged : buildCullGrid_;
+            auto updateInstances = captureInstances ? std::make_shared<std::vector<MeshDistanceFieldGPU::UpdateInstance>>() :
+                nullptr;
+            auto uploaded = meshFields_.uploadInstances(scene, instanceCount, unsupportedTransforms,
+                buildObjectGrid_ ? &objectGridObjects : nullptr, nullptr, nullptr, updateInstances.get());
+            if (!uploaded) { return makeError(uploaded.error()); }
+            instances = std::move(*uploaded);
+            if (updateInstances) { nextState.instances = std::move(updateInstances); }
+            if (instanceContentChanged) {
+                markChangedInstancePages(*update, *previousState, nextState, domains, pagesPerAxis(resolution_),
+                    clipmapCount_);
+            }
+        }
+        const auto publishPageState = [&]() {
+            return commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
+                [state = persistentPageState_, nextState]() { *state = nextState; }, [] {}));
+        };
+        if (update) {
             const GlobalDistanceFieldUpdateStatsParams statistics{
                 .updateStatistics = writer.buffer(context.outputBuffer("updateStatistics").buffer()),
                 .fullUpdate = update->full,
@@ -516,18 +781,14 @@ public:
                 const RenderGraphStage reuse[] = {{"Publish page update statistics", uses, [&](CommandBuffer& cmd) {
                     return publishUpdateStats_.dispatch(cmd, *encodedUpdate, 1);
                 }}};
-                return context.executeComputeStages(reuse);
+                auto result = context.executeComputeStages(reuse);
+                if (result && instanceContentChanged) { return publishPageState(); }
+                return result;
             }
         }
-        uint32_t instanceCount = 0;
-        uint32_t unsupportedTransforms = 0;
-        std::unique_ptr<Buffer> objectGridObjects;
-        auto instances = meshFields_.uploadInstances(scene, instanceCount, unsupportedTransforms,
-            buildObjectGrid_ ? &objectGridObjects : nullptr);
-        if (!instances) { return makeError(instances.error()); }
         const auto meshBindings = meshFields_.bind(writer);
         const auto bindMeshes = [&](auto& params) {
-            params.instances = writer.buffer(instances->get());
+            params.instances = writer.buffer(instances.get());
             params.mips = meshBindings.mips;
             params.indirection = meshBindings.indirection;
             params.atlas = meshBindings.atlas;
@@ -536,6 +797,7 @@ public:
             params.instanceCount = instanceCount;
         };
         Result<> result;
+        GlobalDistanceFieldCullGrid cullGrid;
         if (usePages_) {
             PersistentGlobalDistanceFieldPagesParams pageParams{};
             auto& params = pageParams.pages;
@@ -554,22 +816,35 @@ public:
                 params.sceneIdentity = {uint32_t(identity), uint32_t(identity >> 32)};
             }
             params.domains = domains;
+            std::unique_ptr<Buffer> cullGridBuffer;
+            if (buildCullGrid_ && instanceCount != 0u) {
+                cullGrid = buildGlobalDistanceFieldCullGrid(std::span(domains).first(clipmapCount_),
+                    pagesPerAxis(resolution_), update ? update->levelMask : (1u << clipmapCount_) - 1u, *nextState.instances);
+                if (!cullGrid.words.empty()) {
+                    auto buffer = uploadPageBuildBuffer(*device_, cullGrid.words);
+                    if (!buffer) { return makeError(buffer.error()); }
+                    cullGridBuffer = std::move(*buffer);
+                    params.cullGrid = writer.buffer(cullGridBuffer.get());
+                    params.cullGridSide = cullGrid.side;
+                }
+            }
             if (update) {
                 pageParams.pageHistory = writer.storageImageHandle(context.outputTexture("pageHistory").view());
                 pageParams.freeCount = writer.buffer(context.outputBuffer("freeCount").buffer());
                 pageParams.freePages = writer.buffer(context.outputBuffer("freePages").buffer());
                 pageParams.fullUpdate = update->full;
                 pageParams.pageMovements = update->movements;
+                if (!update->dirtyPages.empty()) {
+                    pageParams.dirtyPages = writer.dataSpan(update->dirtyPages.data(),
+                        update->dirtyPages.size() * sizeof(uint32_t));
+                }
             }
             auto encoded = update ? writer.encode(pageParams, kPersistentGlobalDistanceFieldPagesABI) :
                 writer.encode(params, kGlobalDistanceFieldPagesABI);
             if (!encoded) { return makeError(encoded.error()); }
             result = executePages(context, *encoded, writer, update ? &*update : nullptr,
                 encodedUpdate ? &*encodedUpdate : nullptr);
-            if (result && update) {
-                result = commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
-                    [state = persistentPageState_, nextState]() { *state = nextState; }, [] {}));
-            }
+            if (result && update) { result = publishPageState(); }
         } else {
             GlobalDistanceFieldParams params{};
             bindMeshes(params);
@@ -587,6 +862,8 @@ public:
                 {"unsupportedTransforms", unsupportedTransforms}, {"sampleCountPerAxis", resolution_ + 1u},
                 {"virtualPagesPerAxis", usePages_ ? pagesPerAxis(resolution_) : 0u},
                 {"maxPhysicalPages", maxPhysicalPages_}, {"clipmapCount", clipmapCount_},
+                {"cullGridCellsPerAxis", cullGrid.side}, {"cullGridReferences", cullGrid.references},
+                {"cullGridFullScanCells", cullGrid.fullScanCells},
                 {"minAndVoxelSize", domains[0].minAndVoxelSize}, {"maxAndInfluenceRadius", domains[0].maxAndInfluenceRadius}});
         }
         return result;
@@ -649,7 +926,7 @@ private:
                         std::max(1u, (maxPhysicalPages_ + kFreePageInitRowSize - 1u) / kFreePageInitRowSize));
                 }});
             } else {
-                pageStages.push_back({"Preserve overlap and reclaim leaving pages", scrollUses, [&](CommandBuffer& commands) {
+                pageStages.push_back({"Reclaim dirty and leaving pages", scrollUses, [&](CommandBuffer& commands) {
                     const uint32_t groupsXY = (groups + 3u) / 4u;
                     return preparePageScroll_.dispatch(commands, encoded, groupsXY, groupsXY, (depth + 3u) / 4u);
                 }});
@@ -731,6 +1008,7 @@ private:
 
     bool usePages_;
     bool buildObjectGrid_ = false;
+    bool buildCullGrid_ = false;
     Device* device_ = nullptr;
     uint32_t resolution_ = 0;
     uint32_t maxPhysicalPages_ = 0;
@@ -742,6 +1020,9 @@ private:
     ComputeKernel initFreePages_, preparePageScroll_, finalizeFreePages_, publishUpdateStats_;
     ComputeKernel seedMip_, propagateMip_;
     MeshDistanceFieldGPU meshFields_;
+    std::array<uint64_t, 3> meshSource_{};
+    std::vector<std::filesystem::path> meshPaths_;
+    std::vector<MeshDistanceFieldBakeRevision> meshBakeRevisions_;
     std::shared_ptr<std::optional<PersistentPageState>> persistentPageState_;
 };
 

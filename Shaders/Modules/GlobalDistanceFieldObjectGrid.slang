@@ -3,6 +3,7 @@ module GlobalDistanceFieldObjectGrid;
 import GlobalDistanceField;
 import GlobalDistanceFieldPages;
 import MeshDistanceField;
+import ShaderCore;
 
 namespace Metallic.DistanceField
 {
@@ -85,12 +86,12 @@ float computeSquaredDistanceBetweenAABBs(float3 centerA, float extentA, float3 c
     return dot(axisDistances, axisDistances);
 }
 
-// UE 5.7.4 GlobalDistanceFieldCompositeObjects.usf:262. The current Metallic
-// producer supplies the full instance list to each page instead of a clipmap cull grid.
+// UE 5.7.4 GlobalDistanceFieldCompositeObjects.usf:262.
 public void compositeGlobalDistanceFieldObjectGridPage(GlobalDistanceFieldDomain domain, uint3 pageCoordinate,
     uint3 cellCoordinate, uint threadIndex, uint physicalPage, MeshDistanceFieldResources meshes,
     StructuredBuffer<MeshDistanceFieldInstance> instances, StructuredBuffer<GlobalDistanceFieldObjectGridSource> objects,
-    uint instanceCount, RWStructuredBuffer<uint4> objectGrid)
+    uint instanceCount, ResourceHandle<StructuredBuffer<uint>> cullGrid, uint2 candidates,
+    RWStructuredBuffer<uint4> objectGrid)
 {
     const float voxelSize = domain.minAndVoxelSize.w;
     const float voxelExtent = 0.5f * voxelSize;
@@ -110,10 +111,12 @@ public void compositeGlobalDistanceFieldObjectGridPage(GlobalDistanceFieldDomain
     const float maxTileQueryDistance = 1.44f * tileWorldExtent + cardInterpolationRange;
 
     uint4 cell = uint4(kGlobalDistanceFieldInvalidObjectGridEntry);
-    const uint passes = (instanceCount + kMaxCulledObjects - 1u) / kMaxCulledObjects;
+    const bool useCullGrid = candidates.y != kGlobalDistanceFieldFullCullScan;
+    const uint candidateCount = useCullGrid ? candidates.y : instanceCount;
+    const uint passes = candidateCount == 0u ? 0u : 1u + (candidateCount - 1u) / kMaxCulledObjects;
     for (uint passIndex = 0u; passIndex < passes; ++passIndex) {
         uint passStartObject = passIndex * kMaxCulledObjects;
-        uint passEndObject = passStartObject + min(instanceCount - passStartObject, kMaxCulledObjects);
+        uint passEndObject = passStartObject + min(candidateCount - passStartObject, kMaxCulledObjects);
         if (threadIndex == 0u) {
             sharedObjectGridCulledCount = 0u;
         }
@@ -121,13 +124,17 @@ public void compositeGlobalDistanceFieldObjectGridPage(GlobalDistanceFieldDomain
 
         for (uint index = passStartObject + threadIndex; index < passEndObject;
             index += kGlobalDistanceFieldObjectGridPageStride) {
-            GlobalDistanceFieldObjectGridSource object = objects[index];
+            uint instanceIndex = index;
+            if (useCullGrid) {
+                instanceIndex = resolveUniform(cullGrid)[candidates.x + index];
+            }
+            GlobalDistanceFieldObjectGridSource object = objects[instanceIndex];
             float distanceSquared = computeSquaredDistanceBetweenAABBs(tileWorldCenter, tileWorldExtent,
                 object.center, object.extent);
             if (distanceSquared < maxTileQueryDistance * maxTileQueryDistance) {
                 uint destination;
                 InterlockedAdd(sharedObjectGridCulledCount, 1u, destination);
-                sharedObjectGridCulledIndices[destination] = index;
+                sharedObjectGridCulledIndices[destination] = instanceIndex;
             }
         }
         GroupMemoryBarrierWithGroupSync();

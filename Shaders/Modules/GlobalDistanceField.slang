@@ -47,15 +47,21 @@ public float3 globalDistanceFieldVoxelCenter(GlobalDistanceFieldDomain domain, u
 }
 
 // UE 5.7.4 GlobalDistanceFieldCompositeObjects.usf:46, opaque objects without a coverage atlas.
+public float accumulateGlobalDistanceField(MeshDistanceFieldResources meshes, MeshDistanceFieldInstance instance,
+    float3 worldPosition, float influenceRadius, float minDistance)
+{
+    float maxQueryDistance = min(influenceRadius, max(minDistance, 0.0f));
+    float distanceToOccluder = distanceToNearestMeshSurface(meshes, instance, worldPosition, maxQueryDistance);
+    return min(minDistance, distanceToOccluder);
+}
+
 public float compositeGlobalDistanceField(MeshDistanceFieldResources meshes,
     StructuredBuffer<MeshDistanceFieldInstance> instances, uint instanceCount,
     float3 worldPosition, float influenceRadius)
 {
     float minDistance = influenceRadius;
     for (uint index = 0u; index < instanceCount; ++index) {
-        float maxQueryDistance = min(influenceRadius, max(minDistance, 0.0f));
-        float distanceToOccluder = distanceToNearestMeshSurface(meshes, instances[index], worldPosition, maxQueryDistance);
-        minDistance = min(minDistance, distanceToOccluder);
+        minDistance = accumulateGlobalDistanceField(meshes, instances[index], worldPosition, influenceRadius, minDistance);
     }
     // UE's page encode/decode saturates to this range. Keep the distances in meters without UNORM8 rounding.
     return clamp(minDistance, -influenceRadius, influenceRadius);

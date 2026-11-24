@@ -117,7 +117,7 @@
             }
         },
         {"id": 9, "name": "GlobalDistanceFieldPages", "type": "GlobalDistanceFieldPagesPass", "position": {"x": 480, "y": 560},
-            "properties": {"resolution": 252, "maxPhysicalPages": 12288, "quantized": true, "clipmapCount": 1, "buildObjectGrid": true, "persistentPages": true}},
+            "properties": {"resolution": 252, "maxPhysicalPages": 12288, "quantized": true, "buildObjectGrid": true, "persistentPages": true}},
         {"id": 10, "name": "SurfaceCache", "type": "LumenSurfaceCachePass", "position": {"x": 800, "y": 560},
             "properties": {"atlasSize": 512, "tileResolution": 64, "shadowedLighting": true, "exportDirectIrradiance": true, "persistentCards": true}},
         {"id": 11, "name": "Radiosity", "type": "LumenRadiosityPass", "position": {"x": 1120, "y": 560},

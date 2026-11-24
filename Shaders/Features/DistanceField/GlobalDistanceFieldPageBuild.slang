@@ -40,9 +40,8 @@ struct GlobalDistanceFieldPageBuildParams
     uint objectGridScene;
 #endif
     uint2 sceneIdentity;
-    // Match the CPU's 16-byte domain alignment in scalar parameter storage.
-    uint padding0;
-    uint padding1;
+    ResourceHandle<StructuredBuffer<uint>> cullGrid;
+    uint cullGridSide;
     GlobalDistanceFieldDomain domains[6];
 #if defined(METALLIC_GLOBAL_DISTANCE_FIELD_PERSISTENT_PAGES)
     ResourceHandle<RWTexture3D<uint>> pageHistory;
@@ -50,6 +49,7 @@ struct GlobalDistanceFieldPageBuildParams
     ResourceHandle<RWStructuredBuffer<uint>> freePages;
     uint fullUpdate;
     int4 pageMovements[6];
+    BufferSpan<uint> dirtyPages;
 #endif
 };
 
@@ -109,6 +109,12 @@ bool isLocalPageInRange(int3 page, uint pageCountPerAxis)
     return all(page >= 0) && all(page < int(pageCountPerAxis));
 }
 
+bool isDirtyPage(BufferSpan<uint> dirtyPages, uint3 page, uint pageCountPerAxis)
+{
+    uint index = page.x + pageCountPerAxis * (page.y + pageCountPerAxis * page.z);
+    return (dirtyPages.load(index / 32u) & (1u << (index % 32u))) != 0u;
+}
+
 void countRetainedPage(RWStructuredBuffer<uint> statistics, uint pageIndex)
 {
     if (pageIndex == kGlobalDistanceFieldPositivePage) {
@@ -136,8 +142,7 @@ void globalDistanceFieldInitFreePagesMain(uint3 thread : SV_DispatchThreadID)
     }
 }
 
-// The published table uses logical coordinates. Snapshot moved levels before
-// overwriting them and return only pages whose old coordinates leave the clipmap.
+// Snapshot changed levels before overwriting them and free slots whose pages leave or become dirty.
 [shader("compute")]
 [numthreads(4, 4, 4)]
 void globalDistanceFieldPreparePageScrollMain(uint3 thread : SV_DispatchThreadID)
@@ -159,8 +164,11 @@ void globalDistanceFieldPreparePageScrollMain(uint3 thread : SV_DispatchThreadID
     uint pageIndex = pageTable[thread];
     resolveUniform(params.pageHistory)[thread] = pageIndex;
     int3 oldLocalPage = int3(thread.xy, thread.z % tableDimensions.x);
+    int3 newLocalPage = oldLocalPage - movement.xyz;
     if (pageIndex < kGlobalDistanceFieldOverflowPage &&
-        !isLocalPageInRange(oldLocalPage - movement.xyz, tableDimensions.x)) {
+        (!isLocalPageInRange(newLocalPage, tableDimensions.x) ||
+            isDirtyPage(params.dirtyPages, uint3(newLocalPage) + uint3(0, 0, clipmapIndex * tableDimensions.x),
+                tableDimensions.x))) {
         int freeListLastElementIndex;
         InterlockedAdd(resolveUniform(params.freeCount)[0], 1, freeListLastElementIndex);
         resolveUniform(params.freePages)[freeListLastElementIndex] = pageIndex;
@@ -207,7 +215,8 @@ void globalDistanceFieldBuildPagesMain(uint3 pageCoordinate : SV_GroupID, uint3 
     if (params.fullUpdate == 0u) {
         int4 movement = params.pageMovements[clipmapIndex];
         int3 oldLocalPage = int3(localPage) + movement.xyz;
-        if (isLocalPageInRange(oldLocalPage, tableDimensions.x)) {
+        if (isLocalPageInRange(oldLocalPage, tableDimensions.x) &&
+            !isDirtyPage(params.dirtyPages, pageCoordinate, tableDimensions.x)) {
             if (threadIndex == 0u) {
                 uint pageIndex;
                 if (movement.w != 0) {
@@ -224,7 +233,15 @@ void globalDistanceFieldBuildPagesMain(uint3 pageCoordinate : SV_GroupID, uint3 
     }
 #endif
 
-    if (params.instanceCount == 0u) {
+    uint2 candidates = uint2(0u, kGlobalDistanceFieldFullCullScan);
+    if (params.cullGridSide != 0u) {
+        uint3 cell = localPage / kGlobalDistanceFieldCullGridPageFactor;
+        uint side = params.cullGridSide;
+        uint header = 2u * (((clipmapIndex * side + cell.z) * side + cell.y) * side + cell.x);
+        StructuredBuffer<uint> grid = resolveUniform(params.cullGrid);
+        candidates = uint2(grid[header], grid[header + 1u]);
+    }
+    if (params.instanceCount == 0u || candidates.y == 0u) {
         if (threadIndex == 0u) {
             pageTable[pageCoordinate] = kGlobalDistanceFieldPositivePage;
             InterlockedAdd(statistics[kPositivePages], 1u);
@@ -250,7 +267,17 @@ void globalDistanceFieldBuildPagesMain(uint3 pageCoordinate : SV_GroupID, uint3 
         uint3 local = globalDistanceFieldPageAtlasOffset(index, uint3(kGlobalDistanceFieldPageSamples));
         uint3 sampleCoordinate = min(firstSample + local, params.logicalResolution);
         float3 worldPosition = globalDistanceFieldVoxelCenter(domain, sampleCoordinate);
-        float distance = compositeGlobalDistanceField(meshes, instances, params.instanceCount, worldPosition, influenceRadius);
+        float distance = influenceRadius;
+        if (candidates.y == kGlobalDistanceFieldFullCullScan) {
+            distance = compositeGlobalDistanceField(meshes, instances, params.instanceCount, worldPosition, influenceRadius);
+        } else {
+            StructuredBuffer<uint> grid = resolveUniform(params.cullGrid);
+            for (uint j = 0u; j < candidates.y; ++j) {
+                distance = accumulateGlobalDistanceField(meshes, instances[grid[candidates.x + j]],
+                    worldPosition, influenceRadius, distance);
+            }
+            distance = clamp(distance, -influenceRadius, influenceRadius);
+        }
         sharedPageDistances[index] = distance;
         variation |= distance < influenceRadius ? kBelowPositiveBand : 0u;
         variation |= distance > -influenceRadius ? kAboveNegativeBand : 0u;
@@ -314,7 +341,7 @@ void globalDistanceFieldBuildPagesMain(uint3 pageCoordinate : SV_GroupID, uint3 
 #if defined(METALLIC_GDF_BUILD_OBJECT_GRID)
         compositeGlobalDistanceFieldObjectGridPage(domain, localPage, cellCoordinate, threadIndex, sharedPhysicalPage,
             meshes, instances, resolveUniform(params.objectGridObjects), params.instanceCount,
-            resolveUniform(params.objectGrid));
+            params.cullGrid, candidates, resolveUniform(params.objectGrid));
 #endif
     }
 }

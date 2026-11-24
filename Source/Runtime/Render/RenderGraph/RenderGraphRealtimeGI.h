@@ -71,12 +71,16 @@ inline bool resolveSceneRealtimeGI(RenderGraph& graph, const scene::Scene* scene
             for (const auto& path : value) { result.push_back(path.generic_string()); }
             return result;
         };
-        auto& gdf = overrides[graph.findNode("GlobalDistanceFieldPages")->id];
+        const auto* gdfNode = graph.findNode("GlobalDistanceFieldPages");
+        auto& gdf = overrides[gdfNode->id];
         const auto bounds = scene->bounds();
         const auto center = bounds.center();
         gdf = {{"distanceFieldPaths", paths(gi.distanceFieldPaths)},
             {"center", gi.center.value_or(std::array<double, 3>{center.x, center.y, center.z})},
             {"extent", gi.extent.value_or(std::max(bounds.radius(), 1.0f))}};
+        if (gi.clipmapCount && !gdfNode->properties.contains("clipmapCount")) {
+            gdf["clipmapCount"] = *gi.clipmapCount;
+        }
         overrides[graph.findNode("SurfaceCache")->id] = {{"meshCardPaths", paths(gi.meshCardPaths)}};
         const bool detail = !gi.detailDistanceFieldPaths.empty();
         overrides[graph.findNode("Reflections")->id] = {{"detailTracing", detail},

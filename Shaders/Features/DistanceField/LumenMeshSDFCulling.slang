@@ -35,16 +35,24 @@ struct LumenMeshSDFCullingParams
     ResourceHandle<RWStructuredBuffer<uint>> gridIndices;
     ResourceHandle<RWStructuredBuffer<uint2>> gridPairs;
     ResourceHandle<RWStructuredBuffer<uint>> gridState;
+    ResourceHandle<RWStructuredBuffer<uint>> gridArgs;
+    uint pairCapacity;
+    uint viewCapacity;
+    uint padding;
 };
 
 static const uint kPairCount = 0u;
 static const uint kIndexAllocator = 1u;
+static const uint kViewObjectCount = 2u;
+static const uint kOverflowedCellCount = 3u;
 static const uint kGridStateWords = 4u;
 static const uint kGridCellStride = 8u;
 static const uint kGridCellCountOffset = 4u;
 static const uint kEmissiveMeshSDF = 1u;
 static const float kMeshSDFRadiusThreshold = 0.30f;
 static const uint kThreads = 64u;
+static const uint kMaxDispatchGroups = 65535u;
+static const uint kOverflowBit = 0x80000000u;
 
 groupshared float2 gTileDepth[kThreads];
 
@@ -66,6 +74,9 @@ void lumenMeshSDFGridClearMain(uint3 dispatch : SV_DispatchThreadID)
     LumenMeshSDFCullingParams params = getParameters<LumenMeshSDFCullingParams>();
     if (dispatch.x < kGridStateWords) {
         resolveUniform(params.gridState)[dispatch.x] = 0u;
+    }
+    if (dispatch.x < 6u) {
+        resolveUniform(params.gridArgs)[dispatch.x] = dispatch.x % 3u == 0u ? 0u : 1u;
     }
     if (dispatch.x < meshSDFGridCellCount(params.grid.xyz)) {
         resolveUniform(params.gridCells).Store2(dispatch.x * kGridCellStride, uint2(0u, 0u));
@@ -179,6 +190,69 @@ bool meshSDFBoundsIntersectView(MeshSDFCullView view, float3 viewPosition, float
     return intersects;
 }
 
+float3 meshSDFViewPosition(MeshSDFCullView view, float3 eyeRelativePosition)
+{
+    return float3(dot(eyeRelativePosition, view.right), dot(eyeRelativePosition, view.up),
+        dot(eyeRelativePosition, view.forward));
+}
+
+bool meshSDFInfluencesView(MeshSDFCullView view, LumenMeshSDFBounds bounds, float3 eyeRelativePosition, float3 viewPosition,
+    float influenceRadius, float cardTraceEndDistance)
+{
+    const float objectRadius = length(bounds.extent);
+    const float maxDistance = cardTraceEndDistance + objectRadius;
+    // UE 5.7.4 CullMeshSDFObjectsForViewCS. Instance upload filters visibility.
+    return dot(eyeRelativePosition, eyeRelativePosition) < maxDistance * maxDistance &&
+        (objectRadius > kMeshSDFRadiusThreshold || (bounds.flags & kEmissiveMeshSDF) != 0u) &&
+        meshSDFBoundsIntersectView(view, viewPosition, objectRadius + influenceRadius);
+}
+
+bool meshSDFHasViewList(LumenMeshSDFCullingParams params)
+{
+    return params.grid.w <= params.viewCapacity;
+}
+
+uint meshSDFViewObjectCount(LumenMeshSDFCullingParams params)
+{
+    return meshSDFHasViewList(params) ? resolveUniform(params.gridState)[kViewObjectCount] : params.grid.w;
+}
+
+bool meshSDFPairCounterCanRepresentGrid(uint objectCount, uint cellCount)
+{
+    return objectCount <= ~0u / cellCount;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void lumenMeshSDFGridCullViewMain(uint3 dispatch : SV_DispatchThreadID)
+{
+    LumenMeshSDFCullingParams params = getParameters<LumenMeshSDFCullingParams>();
+    if (dispatch.x >= params.grid.w) { return; }
+
+    const LumenMeshSDFBounds bounds = resolveUniform(params.bounds)[dispatch.x];
+    const MeshSDFCullView view = makeCullView(params.camera, params.cull.xy);
+    const float3 eyeRelativePosition = bounds.center - view.eye;
+    if (meshSDFInfluencesView(view, bounds, eyeRelativePosition, meshSDFViewPosition(view, eyeRelativePosition),
+        params.cull.z, params.cull.w)) {
+        uint index;
+        InterlockedAdd(resolveUniform(params.gridState)[kViewObjectCount], 1u, index);
+        resolveUniform(params.gridIndices)[index] = dispatch.x;
+    }
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void lumenMeshSDFGridSetupScatterMain()
+{
+    LumenMeshSDFCullingParams params = getParameters<LumenMeshSDFCullingParams>();
+    const uint objectCount = meshSDFViewObjectCount(params);
+    RWStructuredBuffer<uint> args = resolveUniform(params.gridArgs);
+    args[0] = params.grid.x;
+    args[1] = params.grid.y;
+    args[2] = meshSDFPairCounterCanRepresentGrid(objectCount, meshSDFGridCellCount(params.grid.xyz)) ?
+        (objectCount + kThreads - 1u) / kThreads : 0u;
+}
+
 float3 meshSDFVolumeWorldExtent(MeshDistanceFieldInstance instance)
 {
     // The uploaded inverse basis is orthogonal with a uniform scale. Multiplying
@@ -210,23 +284,19 @@ float3 meshSDFGridCellWorldPosition(MeshSDFCullView view, uint3 gridSize, uint3 
 void lumenMeshSDFGridScatterMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID)
 {
     LumenMeshSDFCullingParams params = getParameters<LumenMeshSDFCullingParams>();
-    uint objectIndex = group.z * kThreads + lane.x;
-    if (objectIndex >= params.grid.w) {
+    const uint viewIndex = group.z * kThreads + lane.x;
+    if (viewIndex >= meshSDFViewObjectCount(params)) {
         return;
     }
+    const bool useViewList = meshSDFHasViewList(params);
+    const uint objectIndex = useViewList ? resolveUniform(params.gridIndices)[viewIndex] : viewIndex;
 
     LumenMeshSDFBounds bounds = resolveUniform(params.bounds)[objectIndex];
     MeshSDFCullView view = makeCullView(params.camera, params.cull.xy);
     float influenceRadius = params.cull.z;
-    float objectRadius = length(bounds.extent);
     float3 eyeRelativePosition = bounds.center - view.eye;
-    float3 viewPosition = float3(dot(eyeRelativePosition, view.right), dot(eyeRelativePosition, view.up),
-        dot(eyeRelativePosition, view.forward));
-    float maxDistance = params.cull.w + objectRadius;
-    // UE 5.7.4 CullMeshSDFObjectsForViewCS. Instance upload filters visibility.
-    if (!(dot(eyeRelativePosition, eyeRelativePosition) < maxDistance * maxDistance &&
-            (objectRadius > kMeshSDFRadiusThreshold || (bounds.flags & kEmissiveMeshSDF) != 0u) &&
-            meshSDFBoundsIntersectView(view, viewPosition, objectRadius + influenceRadius))) {
+    float3 viewPosition = meshSDFViewPosition(view, eyeRelativePosition);
+    if (!useViewList && !meshSDFInfluencesView(view, bounds, eyeRelativePosition, viewPosition, influenceRadius, params.cull.w)) {
         return;
     }
 
@@ -278,11 +348,15 @@ void lumenMeshSDFGridScatterMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
         }
         if (intersectsTile) {
             uint gridIndex = lumenMeshSDFGridIndex(gridCoordinate, params.grid.xyz);
-            cells.InterlockedAdd(gridIndex * kGridCellStride + kGridCellCountOffset, 1u);
             uint pairIndex;
             InterlockedAdd(state[kPairCount], 1u, pairIndex);
-            // The CPU allocates for one pair for every combination of object and cell.
-            pairs[pairIndex] = uint2(objectIndex, gridIndex);
+            uint cellCountAddress = gridIndex * kGridCellStride + kGridCellCountOffset;
+            if (pairIndex < params.pairCapacity) {
+                cells.InterlockedAdd(cellCountAddress, 1u);
+                pairs[pairIndex] = uint2(objectIndex, gridIndex);
+            } else {
+                cells.InterlockedOr(cellCountAddress, kOverflowBit);
+            }
         }
     }
 }
@@ -292,16 +366,33 @@ void lumenMeshSDFGridScatterMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
 void lumenMeshSDFGridAllocateMain(uint3 dispatch : SV_DispatchThreadID)
 {
     LumenMeshSDFCullingParams params = getParameters<LumenMeshSDFCullingParams>();
-    if (dispatch.x >= meshSDFGridCellCount(params.grid.xyz)) {
+    const uint cellCount = meshSDFGridCellCount(params.grid.xyz);
+    RWStructuredBuffer<uint> state = resolveUniform(params.gridState);
+    if (dispatch.x == 0u) {
+        const uint groups = (min(state[kPairCount], params.pairCapacity) + kThreads - 1u) / kThreads;
+        RWStructuredBuffer<uint> args = resolveUniform(params.gridArgs);
+        args[3] = min(groups, kMaxDispatchGroups);
+        args[4] = (groups + kMaxDispatchGroups - 1u) / kMaxDispatchGroups;
+        args[5] = 1u;
+    }
+    if (dispatch.x >= cellCount) {
         return;
     }
     RWByteAddressBuffer cells = resolveUniform(params.gridCells);
     uint cellAddress = dispatch.x * kGridCellStride;
-    uint startOffset = 0u;
     uint count = cells.Load(cellAddress + kGridCellCountOffset);
+    const uint viewCount = meshSDFViewObjectCount(params);
+    if ((count & kOverflowBit) != 0u || !meshSDFPairCounterCanRepresentGrid(viewCount, cellCount)) {
+        InterlockedAdd(state[kOverflowedCellCount], 1u);
+        // The shared view list is a conservative superset of the lost cell list.
+        // A scene that has outgrown its reflected view list uses dense instance indices.
+        cells.Store2(cellAddress, uint2(meshSDFHasViewList(params) ? 0u : kLumenMeshSDFDenseInstanceOffset, viewCount));
+        return;
+    }
+    uint startOffset = 0u;
     if (count != 0u) {
-        RWStructuredBuffer<uint> state = resolveUniform(params.gridState);
         InterlockedAdd(state[kIndexAllocator], count, startOffset);
+        startOffset += params.viewCapacity;
     }
     // Compaction increments the cleared per-cell count as it writes indices.
     cells.Store2(cellAddress, uint2(startOffset, 0u));
@@ -312,8 +403,8 @@ void lumenMeshSDFGridAllocateMain(uint3 dispatch : SV_DispatchThreadID)
 void lumenMeshSDFGridCompactMain(uint3 dispatch : SV_DispatchThreadID)
 {
     LumenMeshSDFCullingParams params = getParameters<LumenMeshSDFCullingParams>();
-    uint pairIndex = dispatch.x + dispatch.y * (65535u * kThreads);
-    uint pairCount = resolveUniform(params.gridState)[kPairCount];
+    uint pairIndex = dispatch.x + dispatch.y * (kMaxDispatchGroups * kThreads);
+    uint pairCount = min(resolveUniform(params.gridState)[kPairCount], params.pairCapacity);
     if (pairIndex >= pairCount) {
         return;
     }
@@ -322,6 +413,7 @@ void lumenMeshSDFGridCompactMain(uint3 dispatch : SV_DispatchThreadID)
     uint cellAddress = pair.y * kGridCellStride;
     // A scalar offset read must not also read the count being updated by other lanes.
     uint startOffset = cells.Load(cellAddress);
+    if (startOffset < params.viewCapacity || startOffset == kLumenMeshSDFDenseInstanceOffset) { return; }
     uint indexInCell;
     cells.InterlockedAdd(cellAddress + kGridCellCountOffset, 1u, indexInCell);
     resolveUniform(params.gridIndices)[startOffset + indexInCell] = pair.x;

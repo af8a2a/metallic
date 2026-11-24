@@ -2,6 +2,7 @@ module LumenMeshSDFTrace;
 
 import LumenSurfaceCache;
 import MeshDistanceField;
+import LumenMeshSDFGrid;
 
 using Metallic.DistanceField;
 
@@ -123,7 +124,8 @@ public LumenMeshSDFTraceResult traceLumenMeshSDFs(LumenMeshSDFTraceScene scene, 
         float hitDistance = maxTraceDistance;
         uint hitObject = 0u;
         for (uint gridCulledMeshSDFIndex = 0u; gridCulledMeshSDFIndex < input.numMeshSDFs; ++gridCulledMeshSDFIndex) {
-            const uint objectIndex = scene.candidateIndices[input.meshSDFStartOffset + gridCulledMeshSDFIndex];
+            const uint objectIndex = input.meshSDFStartOffset == kLumenMeshSDFDenseInstanceOffset ? gridCulledMeshSDFIndex :
+                scene.candidateIndices[input.meshSDFStartOffset + gridCulledMeshSDFIndex];
             uint stepCount;
             if (rayTraceSingleMeshSDF(scene.meshes, scene.instances[objectIndex], input.origin, input.direction,
                     input.minTraceDistance, maxTraceDistance, input.expandUsingRayTime, 0.0f, hitDistance, stepCount)) {

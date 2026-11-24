@@ -387,6 +387,7 @@ struct RealtimeGISettings {
     std::vector<std::filesystem::path> detailDistanceFieldPaths;
     std::optional<std::array<double, 3>> center;
     std::optional<float> extent;
+    std::optional<uint32_t> clipmapCount;
 };
 
 class Scene {

@@ -30,12 +30,20 @@ public:
         std::unique_ptr<Buffer>& buffer;
     };
 
+    struct UpdateInstance {
+        std::array<float, 3> minimum, maximum;
+        uint32_t renderNode, object, mipBase, gridFlags;
+        std::array<float, 16> worldMatrix;
+        bool operator==(const UpdateInstance&) const = default;
+    };
+
     Result<> initialize(Device& device, Queue& queue, const scene::Scene& scene,
         std::span<const std::filesystem::path> paths, std::string& log);
     Result<std::unique_ptr<Buffer>> uploadInstances(const scene::Scene& scene,
         uint32_t& count, uint32_t& unsupportedTransforms,
         std::unique_ptr<Buffer>* objectGridObjects = nullptr,
-        std::unique_ptr<Buffer>* validationBounds = nullptr, const MotionOutput* motion = nullptr) const;
+        std::unique_ptr<Buffer>* validationBounds = nullptr, const MotionOutput* motion = nullptr,
+        std::vector<UpdateInstance>* updateInstances = nullptr) const;
     MeshDistanceFieldGPUBindings bind(ParameterWriter& writer) const;
     Texture& atlas() const { return *atlas_; }
     uint32_t bricksPerAxis() const { return atlas_->desc().width / scene::kMeshDistanceFieldBrickSize; }

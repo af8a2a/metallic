@@ -7,6 +7,7 @@ namespace Metallic.Lumen
 
 public static const uint kLumenMeshSDFGridPixelSizeShift = 6u;
 public static const uint kLumenMeshSDFGridPixelSize = 1u << kLumenMeshSDFGridPixelSizeShift;
+public static const uint kLumenMeshSDFDenseInstanceOffset = ~0u;
 
 // UE 5.7.4 LumenDiffuseIndirect.cpp:132, converted from centimeters to meters.
 static const float3 kCardGridZParams = float3(1.0f, 1.0f, 4.0f);

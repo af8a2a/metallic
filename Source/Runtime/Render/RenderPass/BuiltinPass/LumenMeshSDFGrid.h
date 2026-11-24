@@ -39,7 +39,9 @@ public:
         ShaderLumenMeshSDFGridBindings bindings{};
         EncodedParameters culling;
         std::unique_ptr<Buffer> instances, bounds, motion;
-        uint32_t cellGroups = 0, objectGroups = 0, compactGroups = 0;
+        std::array<BufferSlice, 2> indirect;
+        uint32_t cellGroups = 0, objectGroups = 0;
+        bool compactViewObjects = false;
     };
 
     static void reflect(RenderPassReflection& reflection, const RenderGraphCompileContext& context)
@@ -48,24 +50,30 @@ public:
             .sampledRead().format = Format::D32Sfloat;
         const uint64_t tiles = uint64_t(gridTiles(context.width)) * gridTiles(context.height);
         const uint64_t cells = tiles * kGridMaxDepth;
-        const uint64_t maxInstances = context.runtimeScene ? context.runtimeScene->renderNodes().size() : 0u;
-        const uint64_t capacity = std::clamp(cells * maxInstances, uint64_t{1}, uint64_t{kMaxPairs});
+        const uint64_t maxInstances = context.runtimeScene ?
+            std::min<uint64_t>(context.runtimeScene->renderNodes().size(), uint64_t{kMaxDispatchGroups} * kCullThreads) : 0u;
+        const uint64_t capacity = std::clamp(cells * std::min(maxInstances, uint64_t{kAveragePairsPerCell}),
+            uint64_t{1}, uint64_t{kMaxPairs});
         reflection.addBufferOutput("detailTileDepth", "Closest and furthest reversed-Z depth per froxel tile")
             .buffer(tiles * 8, 8).storageReadWrite();
         reflection.addBufferOutput("detailGridCells", "Mesh SDF candidate start and count per froxel")
             .buffer(cells * 8, 8).storageReadWrite().bufferLayout("RG32U");
         reflection.addBufferOutput("detailGridPairs", "Scattered Mesh SDF instance and froxel indices")
             .buffer(capacity * 8, 8).storageReadWrite();
-        reflection.addBufferOutput("detailGridIndices", "Compacted Mesh SDF instance indices")
-            .buffer(capacity * 4, 4).storageReadWrite().bufferLayout("u32");
-        reflection.addBufferOutput("detailGridState", "Candidate count and compacted index allocator")
+        reflection.addBufferOutput("detailGridIndices", "View candidates followed by compacted Mesh SDF froxel indices")
+            .buffer((maxInstances + capacity) * 4, 4).storageReadWrite().bufferLayout("u32");
+        reflection.addBufferOutput("detailGridState", "Attempted pairs, index allocator, view candidates, overflowed froxels")
             .buffer(4 * sizeof(uint32_t), sizeof(uint32_t)).storageReadWrite().bufferLayout("u32");
+        reflection.addBufferOutput("detailGridIndirectArgs", "Indirect Mesh SDF scatter and compaction dispatches")
+            .buffer(2 * kDispatchArgumentBytes, sizeof(uint32_t)).storageWrite()
+            .stageAccess(RenderGraphResourceAccess::BufferIndirectRead);
     }
 
     Result<> compile(Device& device, std::string& log)
     {
         const std::pair<const char*, ComputeKernel*> kernels[]{
             {"lumenMeshSDFGridClearMain", &clear_}, {"lumenMeshSDFGridDepthMain", &depth_},
+            {"lumenMeshSDFGridCullViewMain", &cullView_}, {"lumenMeshSDFGridSetupScatterMain", &setupScatter_},
             {"lumenMeshSDFGridScatterMain", &scatter_}, {"lumenMeshSDFGridAllocateMain", &allocate_},
             {"lumenMeshSDFGridCompactMain", &compact_},
         };
@@ -109,15 +117,20 @@ public:
         const std::array grid{gridTiles(context.width()), gridTiles(context.height()), slices, instanceCount};
         const uint32_t cellCount = grid[0] * grid[1] * grid[2];
         const uint32_t capacity = uint32_t(context.outputBuffer("detailGridPairs").desc().size / 8u);
+        const uint32_t viewCapacity = uint32_t(context.outputBuffer("detailGridIndices").desc().size / 4u) - capacity;
         frame.cellGroups = (cellCount + kCullThreads - 1u) / kCullThreads;
         frame.objectGroups = (instanceCount + kCullThreads - 1u) / kCullThreads;
-        if (uint64_t(cellCount) * instanceCount > capacity || frame.cellGroups > kMaxDispatchGroups ||
-            frame.objectGroups > kMaxDispatchGroups) {
-            spdlog::error("Lumen Detail Tracing candidate pool cannot hold {} instances across {} froxels", instanceCount, cellCount);
+        if (frame.cellGroups > kMaxDispatchGroups || frame.objectGroups > kMaxDispatchGroups) {
+            spdlog::error("Lumen Detail Tracing dispatch exceeds its group limit for {} instances across {} froxels", instanceCount, cellCount);
             return makeError(Error::Unsupported);
         }
-        const uint32_t candidateSlots = cellCount * instanceCount;
-        frame.compactGroups = (candidateSlots + kCullThreads - 1u) / kCullThreads;
+        frame.compactViewObjects = instanceCount <= viewCapacity;
+        auto* indirect = context.outputBuffer("detailGridIndirectArgs").buffer();
+        for (size_t command = 0; command < frame.indirect.size(); ++command) {
+            auto slice = indirect->slice({command * kDispatchArgumentBytes, kDispatchArgumentBytes});
+            if (!slice) { return makeError(slice.error()); }
+            frame.indirect[command] = *slice;
+        }
         const auto bindOutput = [&](const char* name) { return writer.buffer(context.outputBuffer(name).buffer()); };
         const auto meshBindings = meshFields.bind(writer);
         const auto instancesHandle = writer.buffer(frame.instances.get());
@@ -128,7 +141,7 @@ public:
             {view->jitter[0], view->jitter[1], meshSDFTraceDistance, cardTraceEndDistance}, grid,
             writer.sampledImageHandle(context.inputTexture("detailDepth").view()), bindOutput("detailTileDepth"),
             writer.buffer(frame.bounds.get()), instancesHandle, meshBindings, frame.bindings.gridCells, frame.bindings.gridIndices,
-            bindOutput("detailGridPairs"), bindOutput("detailGridState")}, kCullingABI);
+            bindOutput("detailGridPairs"), bindOutput("detailGridState"), writer.buffer(indirect), capacity, viewCapacity}, kCullingABI);
         if (!culling) { return makeError(culling.error()); }
         frame.culling = *culling;
         if (context.detailedDebugSnapshots()) {
@@ -148,17 +161,22 @@ public:
     {
         using Access = RenderGraphResourceAccess;
         static constexpr RenderGraphStageUse clearUses[]{{"detailGridCells", Access::BufferStorageWrite},
-            {"detailGridState", Access::BufferStorageWrite}};
+            {"detailGridState", Access::BufferStorageWrite}, {"detailGridIndirectArgs", Access::BufferStorageWrite}};
         static constexpr RenderGraphStageUse depthUses[]{{"detailDepth", Access::TextureSampleRead},
             {"detailTileDepth", Access::BufferStorageWrite}};
+        static constexpr RenderGraphStageUse cullViewUses[]{{"detailGridIndices", Access::BufferStorageWrite},
+            {"detailGridState", Access::BufferStorageReadWrite}};
+        static constexpr RenderGraphStageUse setupScatterUses[]{{"detailGridState", Access::BufferStorageRead},
+            {"detailGridIndirectArgs", Access::BufferStorageWrite}};
         static constexpr RenderGraphStageUse scatterUses[]{{"detailTileDepth", Access::BufferStorageRead},
             {"detailGridCells", Access::BufferStorageReadWrite}, {"detailGridPairs", Access::BufferStorageWrite},
-            {"detailGridState", Access::BufferStorageReadWrite}};
+            {"detailGridState", Access::BufferStorageReadWrite}, {"detailGridIndices", Access::BufferStorageRead},
+            {"detailGridIndirectArgs", Access::BufferIndirectRead}};
         static constexpr RenderGraphStageUse allocateUses[]{{"detailGridCells", Access::BufferStorageReadWrite},
-            {"detailGridState", Access::BufferStorageReadWrite}};
+            {"detailGridState", Access::BufferStorageReadWrite}, {"detailGridIndirectArgs", Access::BufferStorageWrite}};
         static constexpr RenderGraphStageUse compactUses[]{{"detailGridCells", Access::BufferStorageReadWrite},
             {"detailGridPairs", Access::BufferStorageRead}, {"detailGridState", Access::BufferStorageRead},
-            {"detailGridIndices", Access::BufferStorageWrite}};
+            {"detailGridIndices", Access::BufferStorageWrite}, {"detailGridIndirectArgs", Access::BufferIndirectRead}};
         stages.push_back({"Clear Mesh SDF candidate ranges", clearUses, [this, &frame](CommandBuffer& cmd) {
             return clear_.dispatch(cmd, frame.culling, frame.cellGroups, 1, 1);
         }});
@@ -166,25 +184,34 @@ public:
         stages.push_back({"Reduce closest and furthest froxel depth", depthUses, [this, &frame](CommandBuffer& cmd) {
             return depth_.dispatch(cmd, frame.culling, frame.bindings.grid[0], frame.bindings.grid[1], 1);
         }});
+        if (frame.compactViewObjects) {
+            stages.push_back({"Cull Mesh SDFs to view", cullViewUses, [this, &frame](CommandBuffer& cmd) {
+                return cullView_.dispatch(cmd, frame.culling, frame.objectGroups, 1, 1);
+            }});
+        }
+        stages.push_back({"Build Mesh SDF froxel scatter dispatch", setupScatterUses, [this, &frame](CommandBuffer& cmd) {
+            return setupScatter_.dispatch(cmd, frame.culling, 1, 1, 1);
+        }});
         stages.push_back({"Cull Mesh SDFs to view froxels", scatterUses, [this, &frame](CommandBuffer& cmd) {
-            return scatter_.dispatch(cmd, frame.culling, frame.bindings.grid[0], frame.bindings.grid[1], frame.objectGroups);
+            return scatter_.dispatchIndirect(cmd, frame.culling, frame.indirect[0]);
         }});
         stages.push_back({"Allocate Mesh SDF candidate ranges", allocateUses, [this, &frame](CommandBuffer& cmd) {
             return allocate_.dispatch(cmd, frame.culling, frame.cellGroups, 1, 1);
         }});
         stages.push_back({"Compact Mesh SDF candidates", compactUses, [this, &frame](CommandBuffer& cmd) {
-            return compact_.dispatch(cmd, frame.culling, std::min(frame.compactGroups, kMaxDispatchGroups),
-                (frame.compactGroups + kMaxDispatchGroups - 1u) / kMaxDispatchGroups, 1);
+            return compact_.dispatchIndirect(cmd, frame.culling, frame.indirect[1]);
         }});
     }
 
 private:
-    static constexpr uint64_t kCullingABI = 0x4c554d454e060001ull;
+    static constexpr uint64_t kCullingABI = 0x4c554d454e060002ull;
     static constexpr uint32_t kGridTileSize = 64;
     static constexpr uint32_t kGridMaxDepth = 22;
     static constexpr uint32_t kCullThreads = 64;
     static constexpr uint32_t kMaxDispatchGroups = 65535;
+    static constexpr uint32_t kAveragePairsPerCell = 512;
     static constexpr uint32_t kMaxPairs = (128u * 1024 * 1024) / (2 * sizeof(uint32_t));
+    static constexpr uint32_t kDispatchArgumentBytes = 3 * sizeof(uint32_t);
 
     struct CullingParams {
         ViewCameraConstants camera;
@@ -193,16 +220,18 @@ private:
         ShaderSampledImage depth;
         ShaderBuffer tileDepth, bounds, instances;
         MeshDistanceFieldGPUBindings meshes;
-        ShaderBuffer gridCells, gridIndices, gridPairs, gridState;
+        ShaderBuffer gridCells, gridIndices, gridPairs, gridState, gridArgs;
+        uint32_t pairCapacity, viewCapacity, padding = 0;
     };
-    static_assert(sizeof(CullingParams) == 160 && offsetof(CullingParams, meshes) == 128);
+    static_assert(sizeof(CullingParams) == 176 && offsetof(CullingParams, meshes) == 128 &&
+        offsetof(CullingParams, pairCapacity) == 164);
 
     static uint32_t gridTiles(uint32_t extent)
     {
         return (extent + kGridTileSize - 1u) / kGridTileSize;
     }
 
-    ComputeKernel clear_, depth_, scatter_, allocate_, compact_;
+    ComputeKernel clear_, depth_, cullView_, setupScatter_, scatter_, allocate_, compact_;
 };
 
 } // namespace metallic::render::builtin_pass

@@ -4,6 +4,9 @@ import GlobalDistanceField;
 
 namespace Metallic.DistanceField
 {
+// UE 5.7.4 GlobalDistanceField.usf CullObjectsToGridCS.
+public static const uint kGlobalDistanceFieldCullGridPageFactor = 4u;
+public static const uint kGlobalDistanceFieldFullCullScan = 0xffffffffu;
 // UE 5.7.4 GlobalDistanceFieldShared.ush:89. The last sample in a page
 // is shared with the first sample of its neighbor.
 public static const uint kGlobalDistanceFieldPageCells = 7u;

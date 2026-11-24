@@ -19,6 +19,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 
 namespace metallic::tests {
@@ -1053,8 +1054,71 @@ public:
         // the negative constant pages still provide a deterministic coarse seed.
         if (const auto error = testR8(0, 1, false); !error.empty()) { return RHITestResult::fail(error); }
         if (const auto error = testR8(1, 1, true); !error.empty()) { return RHITestResult::fail(error); }
+
+        // Three objects at separate locations exercise both sparse and empty cull cells.
+        constexpr uint32_t kObjectGridWordsPerPage = 64u * 4u;
+        const auto captureCullGrid = [&](bool enabled) -> std::shared_ptr<const debug::DebugCapture> {
+            auto options = properties;
+            options.update({{"quantized", true}, {"maxPhysicalPages", kFullCapacity}, {"buildObjectGrid", true},
+                {"buildCullGrid", enabled}});
+            if (!quantizedGraph.setNodeProperties(quantizedId, std::move(options))) {
+                log = "Failed to set the R8 GDF cull grid properties";
+                return {};
+            }
+            if (!preview.render(quantizedGraph, kWidth, kHeight, kColorOutput)) {
+                log = "R8 GDF cull grid preview: " + preview.lastLog();
+                return {};
+            }
+            return captureAfterPass(preview, inspector, quantizedGraph, kSparsePass, debug::DebugValue::array({
+                textureCapture("GlobalDistanceFieldPages.pageTable", kPageTableEdge, kPageTableEdge, kPageTableEdge),
+                {{"id", "GlobalDistanceFieldPages.objectGrid"}, {"layout", "u32"},
+                    {"count", kFullCapacity * kObjectGridWordsPerPage}},
+                textureCapture("GlobalDistanceFieldPages.pageAtlas", kFullAtlasPageEdge * kPhysicalPageWidth,
+                    kFullAtlasPageEdge * kPhysicalPageWidth, kFullAtlasPageEdge * kPhysicalPageWidth),
+            }), kSparseTrace, log);
+        };
+        const auto culled = captureCullGrid(true);
+        if (!culled) { return RHITestResult::fail(log); }
+        const auto fullScan = captureCullGrid(false);
+        if (!fullScan) { return RHITestResult::fail(log); }
+
+        constexpr size_t kGridPageBytes = kObjectGridWordsPerPage * sizeof(uint32_t);
+        constexpr uint32_t kFullAtlasEdge = kFullAtlasPageEdge * kPhysicalPageWidth;
+        const auto& culledArtifacts = culled->artifacts;
+        const auto& fullArtifacts = fullScan->artifacts;
+        if (culledArtifacts.size() != 3u || fullArtifacts.size() != 3u ||
+            !matchesVolumeLayout(culledArtifacts[0], kPageTableEdge, "u32") ||
+            !matchesVolumeLayout(fullArtifacts[0], kPageTableEdge, "u32") ||
+            !matchesVolumeLayout(culledArtifacts[2], kFullAtlasEdge, "R8") ||
+            !matchesVolumeLayout(fullArtifacts[2], kFullAtlasEdge, "R8") ||
+            culledArtifacts[1].bytes.size() != kFullCapacity * kGridPageBytes ||
+            fullArtifacts[1].bytes.size() != kFullCapacity * kGridPageBytes) {
+            return RHITestResult::fail("Invalid R8 GDF cull grid capture layout");
+        }
+        for (size_t logical = 0; logical < culledArtifacts[0].bytes.size() / sizeof(uint32_t); ++logical) {
+            const uint32_t a = readGdfElement<uint32_t>(culledArtifacts[0].bytes, logical);
+            const uint32_t b = readGdfElement<uint32_t>(fullArtifacts[0].bytes, logical);
+            if (a >= kFullCapacity || b >= kFullCapacity) {
+                if (a != b) { return RHITestResult::fail("Cull grid changed a logical page's residency"); }
+                continue;
+            }
+            if (std::memcmp(culledArtifacts[1].bytes.data() + a * kGridPageBytes,
+                    fullArtifacts[1].bytes.data() + b * kGridPageBytes, kGridPageBytes) != 0) {
+                return RHITestResult::fail("Cull grid changed the ranked Surface Cache object candidates");
+            }
+            for (uint32_t z = 0; z < kPhysicalPageWidth; ++z) {
+                for (uint32_t y = 0; y < kPhysicalPageWidth; ++y) {
+                    const size_t aIndex = atlasVoxelIndex(a, 0u, y, z, kFullAtlasPageEdge);
+                    const size_t bIndex = atlasVoxelIndex(b, 0u, y, z, kFullAtlasPageEdge);
+                    if (std::memcmp(culledArtifacts[2].bytes.data() + aIndex,
+                            fullArtifacts[2].bytes.data() + bIndex, kPhysicalPageWidth) != 0) {
+                        return RHITestResult::fail("Cull grid changed the R8 GDF page samples");
+                    }
+                }
+            }
+        }
         if (validation.failed()) { return RHITestResult::fail("R8 GDF Vulkan validation: " + validation.snapshot().dump()); }
-        return RHITestResult::pass("R8 atlas, five-step UE coarse propagation, fine refinement and overflow traces validated.");
+        return RHITestResult::pass("R8 atlas, coarse propagation, overflow traces and cull grid parity validated.");
     }
 };
 
@@ -1342,17 +1406,21 @@ debug::DebugValue persistentCaptureResources(std::string_view pass, bool persist
 }
 
 std::string checkPersistentClipmaps(const debug::DebugCapture& persistent, const debug::DebugCapture& reference,
-    const std::array<uint32_t, 4>& expectedUpdate)
+    const std::optional<std::array<uint32_t, 4>>& expectedUpdate)
 {
     if (persistent.artifacts.size() != 8 || reference.artifacts.size() != 6 ||
-        persistent.artifacts[6].bytes.size() != sizeof(expectedUpdate) ||
+        persistent.artifacts[6].bytes.size() != sizeof(std::array<uint32_t, 4>) ||
         persistent.artifacts[7].bytes.size() != sizeof(uint32_t)) {
         return "Expected distance fields, object grids, update counters and free page count";
     }
     const auto update = readGdfElement<std::array<uint32_t, 4>>(persistent.artifacts[6].bytes, 0);
-    if (update != expectedUpdate) {
+    if (expectedUpdate && update != *expectedUpdate) {
         return "Unexpected GDF update counters [full, updated, preserved, coarse levels]: " +
-            nlohmann::json(update).dump() + ", expected " + nlohmann::json(expectedUpdate).dump();
+            nlohmann::json(update).dump() + ", expected " + nlohmann::json(*expectedUpdate).dump();
+    }
+    if (!expectedUpdate && (update[0] != 0u || update[1] == 0u || update[1] >= kPersistentVirtualPages ||
+            update[2] != kPersistentVirtualPages - update[1] || update[3] == 0u || update[3] > kPersistentClipmapCount)) {
+        return "Expected a local GDF update, got " + nlohmann::json(update).dump();
     }
     for (const auto* capture : {&persistent, &reference}) {
         const auto& fields = capture->artifacts;
@@ -1512,7 +1580,8 @@ public:
         }
         const RenderGraphSubmitDesc submission{.graphicsQueue = queue,
             .historyResources = &history, .recordingWorkerLimit = 1};
-        const auto runFrame = [&](const std::array<uint32_t, 4>& expected) -> std::shared_ptr<const debug::DebugCapture> {
+        const auto runFrame = [&](const std::optional<std::array<uint32_t, 4>>& expected)
+            -> std::shared_ptr<const debug::DebugCapture> {
             const auto request = inspector.core().dispatch({{"method", "capture.batch"}, {"params", {
                 {"batches", debug::DebugValue::array({
                     {{"pass", kPersistentPass}, {"resources", persistentCaptureResources(kPersistentPass, true)}},
@@ -1558,7 +1627,7 @@ public:
         }
 
         if (!moveCamera(0.5f)) { return RHITestResult::fail("Could not scroll the finest clipmap by one page"); }
-        const auto scrolled = runFrame({0u, kPersistentPageSlab, kPersistentVirtualPages - kPersistentPageSlab, 1u});
+        const auto scrolled = runFrame(std::array{0u, kPersistentPageSlab, kPersistentVirtualPages - kPersistentPageSlab, 1u});
         if (!scrolled) { return RHITestResult::fail("One-page scroll: " + log); }
         if (const auto error = checkPersistentScrollPageIds(*subPage, *scrolled); !error.empty()) {
             return RHITestResult::fail(error);
@@ -1566,7 +1635,7 @@ public:
 
         if (!moveCamera(0.0f, 0.5f)) { return RHITestResult::fail("Could not scroll the finest clipmap diagonally"); }
         constexpr uint32_t diagonalPages = 2 * kPersistentPageSlab - kPersistentPageEdge;
-        const auto diagonal = runFrame({0u, diagonalPages, kPersistentVirtualPages - diagonalPages, 1u});
+        const auto diagonal = runFrame(std::array{0u, diagonalPages, kPersistentVirtualPages - diagonalPages, 1u});
         if (!diagonal) { return RHITestResult::fail("Diagonal scroll: " + log); }
 
         float4x4 movedBox = document.nodes()[0].worldMatrix;
@@ -1575,14 +1644,20 @@ public:
         if (!document.setObjectWorldMatrix(box, movedBox)) {
             return RHITestResult::fail("Could not move the GDF fixture's first box");
         }
-        const auto moved = runFrame(full);
-        if (!moved) { return RHITestResult::fail("Moved-instance frame: " + log); }
+        if (!moveCamera(0.5f, 0.5f)) { return RHITestResult::fail("Could not scroll while moving a box"); }
+        const auto moved = runFrame(std::nullopt);
+        if (!moved) { return RHITestResult::fail("Moved-instance and scrolled frame: " + log); }
+        const uint32_t movedPages = readGdfElement<uint32_t>(moved->artifacts[6].bytes, 1);
+        if (movedPages <= kPersistentPageSlab) {
+            return RHITestResult::fail("Moving the box did not invalidate retained pages during a scroll");
+        }
         if (moved->artifacts[2].bytes == diagonal->artifacts[2].bytes) {
             return RHITestResult::fail("Moving the instance did not change the rebuilt coarse distance field");
         }
         if (!document.setObjectVisible(box, false)) { return RHITestResult::fail("Could not hide a GDF fixture box"); }
-        const auto hidden = runFrame(full);
+        const auto hidden = runFrame(std::nullopt);
         if (!hidden) { return RHITestResult::fail("Hidden-instance frame: " + log); }
+        const uint32_t hiddenPages = readGdfElement<uint32_t>(hidden->artifacts[6].bytes, 1);
         if (hidden->artifacts[2].bytes == moved->artifacts[2].bytes) {
             return RHITestResult::fail("Hiding the instance did not change the rebuilt coarse distance field");
         }
@@ -1594,7 +1669,9 @@ public:
             return RHITestResult::fail("The teleported clipmaps retained stale geometry in an empty area");
         }
         if (validation.failed()) { return RHITestResult::fail("Persistent GDF Vulkan validation: " + validation.snapshot().dump()); }
-        return RHITestResult::pass("Verified page reuse, physical pool conservation, scrolling and full refresh against a same-frame rebuild.");
+        return RHITestResult::pass("Verified page reuse, local geometry edits, scrolling and full refresh against a same-frame rebuild. "
+            "The move with scrolling updated " + std::to_string(movedPages) + " of " +
+            std::to_string(kPersistentVirtualPages) + " pages and hiding the box updated " + std::to_string(hiddenPages) + ".");
     }
 };
 

@@ -3055,6 +3055,14 @@ public:
         if (!sponza.realtimeGI() || !cornell.realtimeGI()) {
             return RHITestResult::fail("Sponza and Cornell Box must declare scene realtime GI bakes");
         }
+        struct ClipmapScene : scene::Scene {
+            explicit ClipmapScene(const scene::RealtimeGISettings& settings)
+            {
+                realtimeGI_ = settings;
+                realtimeGI_->clipmapCount = 4;
+            }
+        };
+        const ClipmapScene clipmapScene(*cornell.realtimeGI());
 
         RenderWorld world;
         world.setScene(&sponza);
@@ -3158,10 +3166,28 @@ public:
                 return RHITestResult::fail(prefix + log);
             }
             const auto& cornellReflections = withoutDetail.findNode("Reflections")->properties;
-            if (cornellReflections.value("detailTracing", true) || !cornellReflections.at("detailDistanceFieldPaths").empty() ||
+            if (withoutDetail.findNode("GlobalDistanceFieldPages")->properties.value("clipmapCount", 1) != 1 ||
+                cornellReflections.value("detailTracing", true) || !cornellReflections.at("detailDistanceFieldPaths").empty() ||
                 hasEdge(withoutDetail, "VBuffer.depth", "Reflections.detailDepth") || !hasPresentation(withoutDetail, "Reflections.color") ||
                 serializeRenderGraphToString(sample.graph) != authored) {
                 return RHITestResult::fail(prefix + "scene routing must preserve the authored graph and allow GI without detail tracing");
+            }
+
+            auto withClipmaps = sample.graph;
+            detail::RealtimeGIProperties clipmapProperties;
+            if (!detail::resolveSceneRealtimeGI(withClipmaps, &clipmapScene, clipmapProperties, log) ||
+                withClipmaps.findNode("GlobalDistanceFieldPages")->properties.value("clipmapCount", 1) != 4) {
+                return RHITestResult::fail(prefix + "stock graph must use the scene's clipmap count");
+            }
+            auto fixedVolume = sample.graph;
+            const auto* fixedNode = fixedVolume.findNode("GlobalDistanceFieldPages");
+            auto fixedProperties = fixedNode->properties;
+            fixedProperties["clipmapCount"] = 1;
+            detail::RealtimeGIProperties fixedOverrides;
+            if (!fixedVolume.setNodeProperties(fixedNode->id, std::move(fixedProperties)) ||
+                !detail::resolveSceneRealtimeGI(fixedVolume, &clipmapScene, fixedOverrides, log) ||
+                fixedVolume.findNode("GlobalDistanceFieldPages")->properties.value("clipmapCount", 0) != 1) {
+                return RHITestResult::fail(prefix + "explicit graph clipmap count must preserve the fixed volume");
             }
         }
         return RHITestResult::pass();

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <unordered_set>
 #include <spdlog/spdlog.h>
 
@@ -82,13 +83,18 @@ bool makeMeshDistanceFieldInstance(const float4x4& world, float3 localCenter, fl
         return false;
     }
     const float factor = 1.0f / (scaleSquared * volumeToLocal);
+    const float worldScale = std::sqrt(scaleSquared) * volumeToLocal;
+    if (!(factor > 0.0f) || !std::isfinite(factor) || !(worldScale > 0.0f) || !std::isfinite(worldScale)) {
+        return false;
+    }
     const std::array center{localCenter.x, localCenter.y, localCenter.z};
     for (size_t axis = 0; axis < 3; ++axis) {
         const float3 row = axes[axis] * factor;
-        instance.worldToVolume[axis] = {row.x, row.y, row.z, -dot(row, origin) - center[axis] / volumeToLocal};
+        const float offset = -dot(row, origin) - center[axis] / volumeToLocal;
+        if (!std::isfinite(offset)) { return false; }
+        instance.worldToVolume[axis] = {row.x, row.y, row.z, offset};
     }
-    instance.volumeExtentAndWorldScale = {normalizedExtent.x, normalizedExtent.y, normalizedExtent.z,
-        std::sqrt(scaleSquared) * volumeToLocal};
+    instance.volumeExtentAndWorldScale = {normalizedExtent.x, normalizedExtent.y, normalizedExtent.z, worldScale};
     instance.indices = {mipBase, debugId, 0u, 0u};
     return true;
 }
@@ -121,6 +127,54 @@ MeshDistanceFieldGPUObject makeMeshDistanceFieldGPUObject(const float4x4& world,
     }
     result.object = static_cast<uint32_t>(object);
     return result;
+}
+
+MeshDistanceFieldGPU::UpdateInstance makeUpdateInstance(uint32_t renderNode, const float4x4& world,
+    const MeshDistanceFieldGPUInstance& instance, const MeshDistanceFieldGPUObject& geometry)
+{
+    // Invert the packed GPU rows. The nearly uniform transforms accepted by
+    // makeMeshDistanceFieldInstance can differ from the exact scene transform.
+    const auto& rows = instance.worldToVolume;
+    std::array<std::array<double, 3>, 3> inverseColumns;
+    for (size_t column = 0; column < 3; ++column) {
+        const auto& left = rows[(column + 1) % 3];
+        const auto& right = rows[(column + 2) % 3];
+        inverseColumns[column] = {
+            double(left[1]) * right[2] - double(left[2]) * right[1],
+            double(left[2]) * right[0] - double(left[0]) * right[2],
+            double(left[0]) * right[1] - double(left[1]) * right[0],
+        };
+    }
+    const double determinant = rows[0][0] * inverseColumns[0][0] + rows[0][1] * inverseColumns[0][1] +
+        rows[0][2] * inverseColumns[0][2];
+    std::array<double, 3> volumeMinimum{}, volumeMaximum{};
+    double worldMagnitude = 0.0;
+    for (size_t axis = 0; axis < 3; ++axis) {
+        double center = 0.0, extent = 0.0;
+        for (size_t column = 0; column < 3; ++column) {
+            const double inverse = inverseColumns[column][axis] / determinant;
+            center -= inverse * rows[column][3];
+            extent += std::abs(inverse) * instance.volumeExtentAndWorldScale[column];
+        }
+        volumeMinimum[axis] = center - extent;
+        volumeMaximum[axis] = center + extent;
+        worldMagnitude = std::max(worldMagnitude, std::abs(center) + extent);
+    }
+    // Bound roundoff from the GPU world-to-volume dot products, including
+    // cancellation of the world position and translation at large offsets.
+    constexpr double kDotProductError = 16.0 * std::numeric_limits<float>::epsilon();
+    constexpr float kInfinity = std::numeric_limits<float>::infinity();
+    const double padding = kDotProductError * worldMagnitude;
+    MeshDistanceFieldGPU::UpdateInstance bounds{.renderNode = renderNode, .object = geometry.object,
+        .mipBase = instance.indices[0], .gridFlags = geometry.flags};
+    std::copy_n(world.a, bounds.worldMatrix.size(), bounds.worldMatrix.begin());
+    for (size_t axis = 0; axis < 3; ++axis) {
+        bounds.minimum[axis] = std::nextafter(float(std::min(volumeMinimum[axis] - padding,
+            double(geometry.center[axis]) - geometry.extent[axis])), -kInfinity);
+        bounds.maximum[axis] = std::nextafter(float(std::max(volumeMaximum[axis] + padding,
+            double(geometry.center[axis]) + geometry.extent[axis])), kInfinity);
+    }
+    return bounds;
 }
 
 } // namespace
@@ -250,7 +304,8 @@ Result<> MeshDistanceFieldGPU::initialize(Device& device, Queue& queue, const sc
 
 Result<std::unique_ptr<Buffer>> MeshDistanceFieldGPU::uploadInstances(const scene::Scene& scene,
     uint32_t& count, uint32_t& unsupportedTransforms, std::unique_ptr<Buffer>* objectGridObjects,
-    std::unique_ptr<Buffer>* validationBounds, const MotionOutput* motion) const
+    std::unique_ptr<Buffer>* validationBounds, const MotionOutput* motion,
+    std::vector<UpdateInstance>* updateInstances) const
 {
     std::vector<MeshDistanceFieldGPUInstance> instances;
     std::vector<MeshDistanceFieldGPUObject> gridObjects;
@@ -258,6 +313,7 @@ Result<std::unique_ptr<Buffer>> MeshDistanceFieldGPU::uploadInstances(const scen
     std::vector<MeshDistanceFieldGPUMotion> previousTransforms;
     std::unordered_set<scene::SceneEntity> objects;
     unsupportedTransforms = 0;
+    if (updateInstances) { updateInstances->clear(); }
     const auto& renderNodes = scene.renderNodes();
     for (uint32_t renderNodeIndex = 0; renderNodeIndex < renderNodes.size(); ++renderNodeIndex) {
         const auto& node = renderNodes[renderNodeIndex];
@@ -298,14 +354,17 @@ Result<std::unique_ptr<Buffer>> MeshDistanceFieldGPU::uploadInstances(const scen
                 }
                 localBounds.push_back(bounds);
             }
-            if (objectGridObjects) {
+            if (objectGridObjects || updateInstances) {
                 auto bounds = makeMeshDistanceFieldGPUObject(node.worldMatrix,
                     asset->geometryCenter, asset->geometryExtent, node.object);
                 if (primitive.materialIndex >= 0) {
                     const auto& emissive = scene.materials()[primitive.materialIndex].emissiveFactor;
                     bounds.flags = emissive.x > 0.0f || emissive.y > 0.0f || emissive.z > 0.0f;
                 }
-                gridObjects.push_back(bounds);
+                if (objectGridObjects) { gridObjects.push_back(bounds); }
+                if (updateInstances) {
+                    updateInstances->push_back(makeUpdateInstance(renderNodeIndex, node.worldMatrix, instance, bounds));
+                }
             }
         } else {
             ++unsupportedTransforms;

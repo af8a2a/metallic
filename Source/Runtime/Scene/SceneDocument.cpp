@@ -648,6 +648,14 @@ std::optional<RealtimeGISettings> parseRealtimeGI(const nlohmann::json& value,
         }
         settings.extent = meters;
     }
+    if (const auto clipmapCount = value.find("clipmapCount"); clipmapCount != value.end()) {
+        const uint64_t count = clipmapCount->is_number_integer() ? clipmapCount->get<uint64_t>() : 0u;
+        if (count < 1 || count > 6) {
+            error = "world.realtimeGI.clipmapCount must be an integer from 1 to 6.";
+            return std::nullopt;
+        }
+        settings.clipmapCount = static_cast<uint32_t>(count);
+    }
     return settings;
 }
 
@@ -669,6 +677,7 @@ nlohmann::json serializeRealtimeGI(const RealtimeGISettings& settings, const std
     }
     if (settings.center) { value["center"] = *settings.center; }
     if (settings.extent) { value["extent"] = *settings.extent; }
+    if (settings.clipmapCount) { value["clipmapCount"] = *settings.clipmapCount; }
     return value;
 }
 
