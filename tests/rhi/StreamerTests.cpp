@@ -1099,6 +1099,153 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(StreamBLASCacheTest);
 
+class StreamAsyncFeedbackReadbackTest final : public RHITest {
+public:
+    StreamAsyncFeedbackReadbackTest() { type = RHITestType::Rendering; name = "stream_async_feedback_readback"; }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        std::atomic_uint validationMessages = 0;
+        std::unique_ptr<Device> device;
+        const auto created = createDevice({.applicationName = "Stream async feedback readback",
+            .enableValidation = context.enableValidation,
+            .enableSynchronizationValidation = context.deviceDesc && context.deviceDesc->enableSynchronizationValidation,
+            .enableBindlessDescriptorHeap = true,
+            .validationSink = {.callback = [](void* data, const ValidationMessage& message) noexcept {
+                if (message.severity == ValidationSeverity::Error) { ++*static_cast<std::atomic_uint*>(data); }
+            }, .context = &validationMessages}}).transform([&](auto value) { device = std::move(value); });
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Requires bindless compute"); }
+        if (!created) { return RHITestResult::fail("Cannot create async feedback device"); }
+        auto* copy = device->getQueue(QueueType::Copy);
+        if (!copy) { return RHITestResult::skip("Independent copy queue unavailable"); }
+
+        const auto assetPath = std::filesystem::absolute(context.outputDirectory / "async_feedback.meshstream.bin");
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(assetPath, asset);
+        if (!built.passed) { return built; }
+
+        const auto require = [](bool condition, const char* reason) {
+            if (!condition) { throw std::runtime_error(reason); }
+        };
+        const auto check = [](const auto& result, const char* operation) {
+            if (!result) { throw std::runtime_error(std::string(operation) + ": " + resultToString(result)); }
+        };
+        try {
+            {
+                auto& graphics = *device->getQueue(QueueType::Graphics);
+                MeshletStreamRuntime runtime;
+                std::unique_ptr<CommandPool> pool;
+                std::unique_ptr<CommandBuffer> commands;
+                std::unique_ptr<Streamer> streamer;
+                QueueSubmissionTracker tracker;
+                RenderFrameContext frame;
+                std::unique_ptr<Semaphore> copyGate;
+                struct Drain {
+                    Queue& graphics;
+                    Queue& copy;
+                    RenderFrameContext& frame;
+                    std::unique_ptr<Semaphore>& gate;
+                    ~Drain()
+                    {
+                        if (gate && gate->currentValue() == 0) { (void)gate->signal(1); }
+                        frame.cancel();
+                        (void)graphics.waitIdle();
+                        (void)copy.waitIdle();
+                    }
+                } drain{graphics, *copy, frame, copyGate};
+
+                std::string log;
+                const auto initialized = runtime.initialize(*device, {
+                    .sourcePath = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf",
+                    .streamAssetPath = assetPath, .maxResidentBytes = 16ull << 20, .maxResidentPages = 256,
+                    .maxPageUploadsPerFrame = 64, .maxGpuPageRequests = 256, .maxGpuPageUnloadRequests = 256,
+                    .maxActiveGroups = 2048, .maxTraversalWorkers = 64, .maxTraversalWorkItems = 4096,
+                    .pageLoadConcurrency = 0, .queuedFrameCount = 2, .asyncFeedbackReadback = true,
+                    .prefetchPages = false}, log);
+                if (!initialized) { throw std::runtime_error(log); }
+                check(tracker.initialize(*device, graphics), "Graphics tracker");
+                check(device->createCommandPool(graphics).transform([&](auto value) { pool = std::move(value); }), "Graphics pool");
+                check(pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); }), "Graphics commands");
+                check(createStreamer(*device, makeTestStreamerDesc()).transform([&](auto value) { streamer = std::move(value); }), "Streamer");
+
+                MeshletStreamFrameDesc view{.width = 192, .height = 128, .selectedLodLevel = 0, .enableGpuLodSelection = false};
+                view.camera = {.eye = {-.0168404f, .110154f, .22f}, .center = {-.0168404f, .110154f, -.00153695f},
+                    .znear = .001f, .zfar = 10.f};
+                uint64_t frameId = 0;
+                const auto record = [&](MeshletStreamRuntime::RequestReadbackSubmission* readback) {
+                    check(frame.begin(++frameId, 0), "Frame begin");
+                    check(pool->reset(), "Graphics pool reset");
+                    check(commands->begin(frame.submissionContext()), "Graphics recording begin");
+                    check(streamer->beginFrame(frame), "Streamer frame begin");
+                    check(runtime.cmdBeginFrame(*commands, *streamer, view), "Stream begin");
+                    check(streamer->copyStreamedData(*commands), "Stream upload");
+                    check(runtime.cmdPreTraversal(*commands, view), "Stream traversal");
+                    check(runtime.cmdPostTraversal(*commands), "Stream traversal end");
+                    check(runtime.cmdEndFrame(*commands, readback), "Stream end");
+                    check(commands->end(), "Graphics recording end");
+                    streamer->endFrame();
+                    return runtime.frameIndex();
+                };
+                const auto submit = [&] {
+                    CommandBuffer* batch[]{commands.get()};
+                    const auto producer = tracker.submitSegment({.commandBuffers = batch}, frame);
+                    check(producer, "Graphics submit");
+                    check(frame.finishSubmission(), "Graphics frame close");
+                    return *producer;
+                };
+
+                constexpr uint64_t kWaitNanoseconds = 5'000'000'000ull;
+                const uint32_t fallbackFrame = record(nullptr);
+                check(submit().wait(kWaitNanoseconds), "Graphics feedback completion");
+                runtime.prepareMaintenance();
+                require(runtime.profilingStats().feedbackFrame == fallbackFrame, "Graphics fallback feedback was not consumed");
+
+                check(device->createSemaphore().transform([&](auto value) { copyGate = std::move(value); }), "Copy queue gate");
+                const SemaphoreSubmitDesc gateWait{.semaphore = copyGate.get(), .value = 1, .stages = PipelineStageBits::AllCommands};
+                check(copy->submit({.waitSemaphores = {&gateWait, 1}}), "Gate copy queue");
+
+                MeshletStreamRuntime::RequestReadbackSubmission firstReadback;
+                const uint32_t firstFrame = record(&firstReadback);
+                require(bool(firstReadback), "Tracked graphics producer did not schedule copy feedback");
+                const auto firstProducer = submit();
+                check(firstReadback(firstProducer), "First feedback submit");
+                check(frame.wait(kWaitNanoseconds), "Graphics frame must retire with the copy queue gated");
+                runtime.prepareMaintenance();
+                require(runtime.profilingStats().feedbackFrame == fallbackFrame, "Uncompleted copy feedback was consumed");
+
+                MeshletStreamRuntime::RequestReadbackSubmission secondReadback;
+                const uint32_t secondFrame = record(&secondReadback);
+                require(bool(secondReadback), "Consecutive producer did not schedule copy feedback");
+                const auto secondProducer = submit();
+                require(!secondProducer.wait(100'000'000ull), "Second producer overwrote feedback while the copy queue was gated");
+                check(copyGate->signal(1), "Release copy queue");
+                check(copy->waitIdle(), "First feedback copy completion");
+                runtime.prepareMaintenance();
+                require(runtime.profilingStats().feedbackFrame == firstFrame, "Readback bytes did not preserve the first producer frame");
+
+                check(secondReadback(secondProducer), "Second feedback submit");
+                check(frame.wait(kWaitNanoseconds), "Second graphics completion");
+                check(copy->waitIdle(), "Second feedback copy completion");
+
+                MeshletStreamRuntime::RequestReadbackSubmission cancelledReadback;
+                record(&cancelledReadback);
+                require(bool(cancelledReadback), "Cancelled producer did not reserve feedback");
+                frame.cancel();
+                cancelledReadback = {};
+                runtime.prepareMaintenance();
+                require(runtime.profilingStats().feedbackFrame == secondFrame, "Cancelled producer displaced accepted feedback");
+            }
+            device.reset();
+            require(validationMessages.load() == 0, "Async feedback produced Vulkan validation errors");
+        } catch (const std::exception& error) {
+            return RHITestResult::fail(error.what());
+        }
+        return RHITestResult::pass("Graphics fallback, gated async copy, producer reuse, and cancelled feedback");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamAsyncFeedbackReadbackTest);
+
 class StreamInitialLoadingTest final : public RHITest {
 public:
     StreamInitialLoadingTest() { type = RHITestType::Rendering; name = "stream_initial_loading"; }

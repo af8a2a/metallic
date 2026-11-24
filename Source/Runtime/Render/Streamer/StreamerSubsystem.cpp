@@ -459,12 +459,13 @@ Result<> StreamerSubsystem::recordSceneTraversal(PreparedSceneResources& prepare
     return result;
 }
 
-Result<> StreamerSubsystem::recordSceneEnd(PreparedSceneResources& prepared, RenderGraphExecutionContext& context)
+Result<> StreamerSubsystem::recordSceneEnd(PreparedSceneResources& prepared, RenderGraphExecutionContext& context,
+    MeshletStreamRuntime::RequestReadbackSubmission* submitReadback)
 {
     if (!prepared.geometry) { return {}; }
     auto scope = context.profileScope("Stream End");
     auto result = prepared.geometry->cmdPostTraversal(context.commandBuffer());
-    if (result) { result = prepared.geometry->cmdEndFrame(context.commandBuffer()); }
+    if (result) { result = prepared.geometry->cmdEndFrame(context.commandBuffer(), submitReadback); }
     if (result) {
         auto profile = prepared.geometry->profilingStats();
         const bool captureSemanticSource = context.properties().value("benchmarkCaptureSemanticSource", false);

@@ -370,6 +370,7 @@ struct RenderGraphExecutor::Impl {
         bool accepted = false;
         std::function<void(const GPUCompletionPoint&)> onAccepted;
         std::function<void()> onCancelled;
+        MeshletStreamRuntime::RequestReadbackSubmission submitReadback;
         std::vector<GPUCompletionPoint> crossFrameWaits;
         std::vector<std::string> crossFrameWaitReasons;
         std::vector<AcceptedCrossFrameAccess> acceptedAccesses;
@@ -3699,7 +3700,8 @@ struct RenderGraphExecutor::Impl {
     Result<> executeNode(CommandBuffer& commandBuffer, CompiledNode& node, uint64_t frameIndex,
         const RenderGraphExecutionContext::ParallelRecorder& parallel = {},
         std::vector<RenderGraphWorkerInterval>* workerIntervals = nullptr, CPUProfileRecorder* recordingProfile = nullptr,
-        std::vector<PendingTemporalPublication>* outTemporalPublications = nullptr)
+        std::vector<PendingTemporalPublication>* outTemporalPublications = nullptr,
+        MeshletStreamRuntime::RequestReadbackSubmission* submitReadback = nullptr)
     {
         CPUProfileScope setup(recordingProfile, recordingProfile ? "Set up pass / " + node.name : std::string{});
         RenderGraphProperties executionProperties;
@@ -3839,7 +3841,7 @@ struct RenderGraphExecutor::Impl {
             }
         }
         if (result && sceneReady && upload && node.preparedScene) {
-            result = upload->recordSceneEnd(*node.preparedScene, context);
+            result = upload->recordSceneEnd(*node.preparedScene, context, submitReadback);
         }
         if (firstFeature) {
             firstFeatureReservations.erase(featureReservation);
@@ -5423,6 +5425,8 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         }
         std::vector<bool> signalBoundaries(segments.size(), false);
         for (size_t index = 0; index < segments.size(); ++index) {
+            // A detached readback waits on this batch and can overlap later passes.
+            if (segments[index].submitReadback) { signalBoundaries[index] = true; }
             for (size_t predecessor : segments[index].predecessors) {
                 if (queueIds[predecessor] != queueIds[index]) { signalBoundaries[predecessor] = true; }
             }
@@ -5556,6 +5560,10 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
                     segments[i].onAccepted(receipt.completion());
                     segments[i].onAccepted = nullptr;
                     segments[i].onCancelled = nullptr;
+                }
+                if (segments[i].submitReadback) {
+                    auto submitted = segments[i].submitReadback(receipt.completion());
+                    if (!submitted) { return submitted; }
                 }
             }
             ++impl_->lastExecutionStats.submittedBatchCount;
@@ -6232,9 +6240,10 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             continue;
         }
         std::vector<Impl::PendingTemporalPublication> serialTemporalPublications;
+        MeshletStreamRuntime::RequestReadbackSubmission submitReadback;
         result = invokePass([&] { return impl_->executeNode(*segments[index].commandBuffer, node, frameIndex,
             segments[index].queue == desc.graphicsQueue ? parallel : RenderGraphExecutionContext::ParallelRecorder{},
-            workerIntervals, recordingProfile, &serialTemporalPublications); });
+            workerIntervals, recordingProfile, &serialTemporalPublications, &submitReadback); });
         if (!result) {
             if (subsystemCommands && beginSegment(QueueType::Graphics)) {
                 std::string cleanupLog;
@@ -6254,6 +6263,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             const size_t completedIndex = segments.size() - 1;
             segments[completedIndex].acceptedAccesses = std::move(passAcceptedAccesses[passIndex]);
             segments[completedIndex].temporalPublications = std::move(serialTemporalPublications);
+            segments[completedIndex].submitReadback = std::move(submitReadback);
             if (opaque) { orderingBoundary = completedIndex; }
             passCompletions[passIndex] = completedIndex;
             CPUProfileScope phaseScope(recordingProfile, "End command buffer");

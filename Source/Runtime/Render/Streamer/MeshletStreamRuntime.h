@@ -611,6 +611,7 @@ struct MeshletStreamRuntimeDesc {
     uint32_t queuedFrameCount = 3;
     bool enableClusterRtx = false;
     bool asyncComputePreferred = true;
+    bool asyncFeedbackReadback = false;
     bool enableClas = false; // Build resident CLAS independently of per-frame BLAS/TLAS.
     bool compactClas = false;
     uint32_t coldPageRetentionFrames = 0; // Zero preserves budget-only eviction.
@@ -799,7 +800,10 @@ public:
     Result<> cmdBuildTopLevelAccelerationStructure(CommandBuffer& commandBuffer,
         const TraversalCheckpoint& checkpoint = {});
     Result<> cmdPostTraversal(CommandBuffer& commandBuffer);
-    Result<> cmdEndFrame(CommandBuffer& commandBuffer);
+    // The coordinator invokes this only after accepting the graphics batch
+    // that produced the feedback. The readback has its own GPU completion.
+    using RequestReadbackSubmission = std::function<Result<>(const GPUCompletionPoint&)>;
+    Result<> cmdEndFrame(CommandBuffer& commandBuffer, RequestReadbackSubmission* submitReadback = nullptr);
 
     ResourceRegistry* resourceRegistry() const { return registry_.get(); }
     BindlessHeap* bindlessHeap() const { return registry_ ? registry_->heap() : nullptr; }
@@ -909,7 +913,10 @@ private:
     Result<> cmdBuildTlas(CommandBuffer& commandBuffer);
     Result<> cmdBuildTessellation(CommandBuffer& commandBuffer, const MeshletStreamFrameDesc& frame,
         const TraversalCheckpoint& checkpoint);
-    Result<> copyRequestBufferForReadback(CommandBuffer& commandBuffer);
+    struct RequestReadback;
+    Result<> copyRequestBufferForReadback(CommandBuffer& commandBuffer, RequestReadbackSubmission* submitReadback);
+    Result<> recordRequestReadbackCopies(CommandBuffer& commandBuffer, Buffer& readback);
+    Result<> submitRequestReadback(RequestReadback& slot, const GPUCompletionPoint& producer);
     Result<> updateParamsBuffer(const MeshletStreamFrameDesc& frame);
     Result<> transitionPageBufferForTraversal(CommandBuffer& commandBuffer);
     void consumeGpuRequestReadback(CPUProfileRecorder* profiler, bool allowLegacyReadback, bool consumeResidency = true);
@@ -932,13 +939,21 @@ private:
     std::unique_ptr<Buffer> pageTableBuffer_;
     std::unique_ptr<Buffer> requestBuffer_;
     std::unique_ptr<Buffer> requestReadbackBuffer_;
+    struct RequestReadbackRecording {
+        RenderFrameContext frame;
+        CommandRecordingContext commands;
+    };
     struct RequestReadback {
         std::unique_ptr<Buffer> buffer;
         GPUCompletionPoint completion;
         std::shared_ptr<SubmissionTransaction> submission;
+        std::unique_ptr<RequestReadbackRecording> copyRecording;
         uint32_t frame = 0;
     };
     std::vector<RequestReadback> requestReadbacks_;
+    Queue* requestCopyQueue_ = nullptr;
+    QueueSubmissionTracker requestCopyTracker_;
+    GPUCompletionPoint requestCopyCompletion_;
     struct ShadowRequestReadback {
         std::unique_ptr<Buffer> buffer;
         GPUCompletionPoint completion;

@@ -19,6 +19,8 @@
 
 `--sample` 兼容两个 ID：`gpu-driven-sample`、`gpu-driven-zorah-full`。`--streamasset-path <file>` 仅覆盖所选启动场景的 cook，切换到另一个场景使用其自身的缓存。`--debug-control`、`--smoke-test` 与 `--wait-for-graphics-debugger` 保留。
 
+在 GPUDriven pass 的 Runtime Settings 中启用 **Async Meshlet Feedback Readback**，或在图的 pass 属性中设置 `"asyncFeedbackReadback": true`。默认关闭。Vulkan 提供独立 Copy Queue 时，几何流式反馈会在生产者提交后由 Copy Queue 回读，CPU 在后续帧读取已完成的反馈。回读使用独立的完成信号，下一次写入同一反馈缓冲前由 GPU 等待。没有独立 Copy Queue 时，回读沿用 Graphics Queue。
+
 Nsight Graphics 2026.3.1 在 MiniZorah 开始捕获时可能崩溃于
 `ngfx-capture-interception.dll + 0xec137`。单独 reset 后释放仍可能崩溃。
 捕获注入期间，RHI 现会 reset 并复用原生命令缓冲和命令池，延迟到设备

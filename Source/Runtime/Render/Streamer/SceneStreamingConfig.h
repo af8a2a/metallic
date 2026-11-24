@@ -141,6 +141,7 @@ MeshletStreamRuntimeDesc sceneStreamRuntimeDesc(
         .queuedFrameCount = 3,
         .enableClusterRtx = boolProperty(&properties, "enableClusterRtx", false),
         .asyncComputePreferred = boolProperty(&properties, "AsyncComputePreferred", true),
+        .asyncFeedbackReadback = boolProperty(&properties, "asyncFeedbackReadback", false),
         .enableClas = boolProperty(&properties, "enableClas", false),
         .compactClas = boolProperty(&properties, "compactClas", false),
         .coldPageRetentionFrames = sceneStreamUintProperty(properties, "coldPageRetentionFrames", 0),

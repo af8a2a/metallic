@@ -157,7 +157,7 @@ public:
                 FIELD(SliderDebugParams, output), FIELD(SliderDebugParams, display), FIELD(SliderDebugParams, padding)}},
             {"Metallic.AutoExposureParams", {FIELD(AutoExposureParams, source), FIELD(AutoExposureParams, output),
                 FIELD(AutoExposureParams, histogram), FIELD(AutoExposureParams, history), FIELD(AutoExposureParams, exposure),
-                FIELD(AutoExposureParams, display), FIELD(AutoExposureParams, padding)}},
+                FIELD(AutoExposureParams, display), FIELD(AutoExposureParams, savedProbeExposure)}},
             {"Metallic.ColorGradingLUTParams", {FIELD(ColorGradingLUTParams, output), FIELD(ColorGradingLUTParams, custom0),
                 FIELD(ColorGradingLUTParams, custom1), FIELD(ColorGradingLUTParams, custom2), FIELD(ColorGradingLUTParams, custom3),
                 FIELD(ColorGradingLUTParams, reach), FIELD(ColorGradingLUTParams, gamut), FIELD(ColorGradingLUTParams, gammaTable),

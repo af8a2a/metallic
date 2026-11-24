@@ -51,7 +51,8 @@ public:
         RenderGraphExecutionContext& context, const MeshletStreamFrameDesc& view, std::string& log);
     Result<> recordSceneTraversal(PreparedSceneResources& prepared, RenderGraphExecutionContext& context,
         const MeshletStreamFrameDesc& view, const MeshletStreamRuntime::TraversalCheckpoint& checkpoint);
-    Result<> recordSceneEnd(PreparedSceneResources& prepared, RenderGraphExecutionContext& context);
+    Result<> recordSceneEnd(PreparedSceneResources& prepared, RenderGraphExecutionContext& context,
+        MeshletStreamRuntime::RequestReadbackSubmission* submitReadback);
 
     [[nodiscard]] Result<std::shared_ptr<MeshletStreamRuntime>> acquireStream(
         const MeshletStreamRuntimeDesc& desc,

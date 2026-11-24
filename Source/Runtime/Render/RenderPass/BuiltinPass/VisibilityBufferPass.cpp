@@ -303,6 +303,8 @@ public:
             runtimeBoolSetting("asyncSoftwareRaster", "Async Software Rasterization", true),
             {.key = "AsyncComputePreferred", .label = "Async RTAS Build",
                 .type = RenderGraphRuntimeSettingType::Bool, .defaultValue = true, .rebuildGraph = true},
+            {.key = "asyncFeedbackReadback", .label = "Async Meshlet Feedback Readback",
+                .type = RenderGraphRuntimeSettingType::Bool, .defaultValue = false, .rebuildGraph = true},
             runtimeBoolSetting("asyncLateRaster", "Async Late Software Rasterization", false),
             runtimeFloatSetting("softwareRasterMaxPixels", "Software Triangle Size (px)", 8.0f, 1.0f, 32.0f),
             runtimeBoolSetting("softwareRasterSharedScreenVertices", "Shared SW Screen Vertices", true),

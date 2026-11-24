@@ -769,6 +769,9 @@ private:
 };
 
 class MeshletStreamRuntime::GPUBLASAllocator {
+    static constexpr BufferUsageBits kDefaultBufferUsage = BufferUsageBits::Storage |
+        BufferUsageBits::ShaderDeviceAddress | BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::TransferSource;
+
 public:
     uint32_t ownerCount = 0;
     uint32_t relocateBudget = 0;
@@ -785,22 +788,23 @@ public:
         uint64_t stagingBytes, const ClusterAccelerationStructureProperties& properties,
         uint32_t moveBudget, Buffer& priorityState,
         uint64_t importanceAddress, uint64_t priorityOrderAddress, uint64_t priorityCacheControlAddress, uint32_t referenceCapacity,
-        uint32_t buildCapacity, std::string& log, PipelineCache* pipelineCache)
+        uint32_t buildCapacity, QueueAccessBits feedbackQueueAccess, std::string& log, PipelineCache* pipelineCache)
     {
         ownerCount = count;
         relocateBudget = moveBudget;
         referenced = {&owners, &header, &infos, &sizes, &addresses, &priorityState};
         const auto buffer = [&](uint64_t bytes, std::unique_ptr<Buffer>& output, std::string_view label,
                                 MemoryLocation location = MemoryLocation::Device,
-                                BufferUsageBits usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress |
-                                    BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::TransferSource) {
-            return createNamedBuffer(device, {.size = bytes, .usage = usage, .memoryLocation = location},
+                                BufferUsageBits usage = kDefaultBufferUsage,
+                                QueueAccessBits queueAccess = QueueAccessBits::Graphics) {
+            return createNamedBuffer(device, {.size = bytes, .usage = usage, .memoryLocation = location, .queueAccess = queueAccess},
                 output, log, label);
         };
         Result<> result;
         const uint64_t nodeCount = uint64_t(count) * 4u + 1u;
         if (nodeCount > UINT32_MAX) { return makeError(Error::OutOfMemory); }
-        if (!(result = buffer(kBLASAllocatorStateWords * 4u, state, "BLAS allocator state")) ||
+        if (!(result = buffer(kBLASAllocatorStateWords * 4u, state, "BLAS allocator state",
+                MemoryLocation::Device, kDefaultBufferUsage, feedbackQueueAccess)) ||
             !(result = buffer(nodeCount * sizeof(MeshletStreamBLASAllocatorGap), gaps, "BLAS allocator gaps")) ||
             !(result = buffer(uint64_t(count) * sizeof(MeshletStreamBLASAllocatorAllocation), allocations, "BLAS allocations")) ||
             !(result = buffer(uint64_t(count) * 4u, buildOwners, "BLAS build owners")) ||
@@ -1238,6 +1242,9 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     profiling::CPUPhase phase("streamInit.reset");
     reset();
     device_ = &device;
+    requestCopyQueue_ = desc.asyncFeedbackReadback ? device.getQueue(QueueType::Copy) : nullptr;
+    const QueueAccessBits feedbackQueueAccess = requestCopyQueue_ ?
+        QueueAccessBits::Graphics | QueueAccessBits::Copy : QueueAccessBits::Graphics;
     log.clear();
 
     phase.next("streamInit.openAsset");
@@ -1683,6 +1690,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
                     BufferUsageBits::AccelerationStructureBuildInput |
                     BufferUsageBits::ShaderDeviceAddress,
                 .memoryLocation = MemoryLocation::Device,
+                .queueAccess = feedbackQueueAccess,
             },
             blasHeaderBuffer_,
             log,
@@ -1999,7 +2007,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             blasClusterReferenceAddress_, instanceCapacity, blasSizes.accelerationStructureSize,
             clusterProperties, relocationBytes, *rtRepresentationStateBuffer_,
             importanceAddress, priorityOrderAddress, priorityCacheControlAddress,
-            blasClusterReferenceCapacity_, blasBuildCapacity_, log, pipelineCache);
+            blasClusterReferenceCapacity_, blasBuildCapacity_, feedbackQueueAccess, log, pipelineCache);
         if (!result) { return result; }
         spdlog::info("[MeshletStreamRuntime] GPU BLAS allocator persistentBytes={} stagingBytes={} relocationBudget={}",
             persistentBytes, blasSizes.accelerationStructureSize, relocationBytes);
@@ -2340,6 +2348,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             .structureStride = sizeof(uint32_t),
             .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource | BufferUsageBits::TransferDestination,
             .memoryLocation = MemoryLocation::Device,
+            .queueAccess = feedbackQueueAccess,
         },
         requestBuffer_,
         log,
@@ -2363,10 +2372,19 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         return result;
     }
     requestReadbacks_.resize(std::max(desc.queuedFrameCount, 1u) + 1u);
+    BufferDesc readbackDesc = requestReadbackBuffer_->desc();
+    readbackDesc.queueAccess = feedbackQueueAccess;
     for (auto& readback : requestReadbacks_) {
-        result = createNamedBuffer(device, requestReadbackBuffer_->desc(), readback.buffer,
+        result = createNamedBuffer(device, readbackDesc, readback.buffer,
             log, "MeshletStreamRuntime completed feedback");
         if (!result) { return result; }
+    }
+    if (requestCopyQueue_) {
+        result = requestCopyTracker_.initialize(device, *requestCopyQueue_);
+        if (!result) {
+            log += resultMessage("initialize meshlet feedback copy queue", result);
+            return result;
+        }
     }
     result = createNamedBuffer(
         device,
@@ -2716,6 +2734,11 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
 
 void MeshletStreamRuntime::reset()
 {
+    // These submissions are detached from the frame that retains the stream.
+    // Drain them before releasing the source or destination buffers.
+    (void)requestCopyTracker_.reset();
+    requestCopyCompletion_ = {};
+    requestCopyQueue_ = nullptr;
     tessellation_.reset();
     ++shadingStateRevision_;
     sceneReadinessCache_ = std::make_shared<SceneReadinessCache>();
@@ -3231,6 +3254,11 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
     bool initialLoad)
 {
     if (!registry_) { return makeError(Error::InvalidArgument); }
+    if (requestCopyCompletion_.isSubmitted()) {
+        // The persistent GPU feedback buffers can be written again this frame.
+        // Only their next producer has to wait for the detached readback.
+        if (auto result = addCommandDependency(commandBuffer, requestCopyCompletion_); !result) { return result; }
+    }
     if (auto result = prepareImmutableMetadataRead(commandBuffer); !result) { return result; }
     for (const auto& lease : {
         pageHandle_, activeGroupHandle_, activeHeaderHandle_, pageTableHandle_,
@@ -3693,11 +3721,12 @@ Result<> MeshletStreamRuntime::cmdPostTraversal(CommandBuffer& commandBuffer)
     return ready() ? prepareImmutableMetadataRead(commandBuffer) : makeError(Error::InvalidArgument);
 }
 
-Result<> MeshletStreamRuntime::cmdEndFrame(CommandBuffer& commandBuffer)
+Result<> MeshletStreamRuntime::cmdEndFrame(CommandBuffer& commandBuffer, RequestReadbackSubmission* submitReadback)
 {
+    if (submitReadback) { *submitReadback = {}; }
     if (auto result = prepareImmutableMetadataRead(commandBuffer); !result) { return result; }
     if (rasterSnapshotFrozen_) { return ready() ? Result<>{} : makeError(Error::InvalidArgument); }
-    if (sourceResidencyFrozen_) { return copyRequestBufferForReadback(commandBuffer); }
+    if (sourceResidencyFrozen_) { return copyRequestBufferForReadback(commandBuffer, submitReadback); }
     if (!ready()) {
         return makeError(Error::InvalidArgument);
     }
@@ -3707,7 +3736,7 @@ Result<> MeshletStreamRuntime::cmdEndFrame(CommandBuffer& commandBuffer)
         result = dispatchTraversal(commandBuffer, maxGpuPageRequests_, 3u);
         if (!result) { return result; }
     }
-    result = copyRequestBufferForReadback(commandBuffer);
+    result = copyRequestBufferForReadback(commandBuffer, submitReadback);
     if (!result) {
         return result;
     }
@@ -4416,6 +4445,7 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
         .structureStride = sizeof(uint32_t),
         .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
         .memoryLocation = MemoryLocation::Device,
+        .queueAccess = requestCopyQueue_ ? QueueAccessBits::Graphics | QueueAccessBits::Copy : QueueAccessBits::Graphics,
     }, demandBuffer_, log, "MeshletStreamRuntime demand bits and statistics");
     if (!result) { return result; }
     result = createAndPopulateImmutableStorageBuffer<uint32_t>(device, deviceImmutableMetadata_, topology.size(),
@@ -4604,11 +4634,14 @@ Result<> MeshletStreamRuntime::clearRequestBuffer(CommandBuffer& commandBuffer)
     return {};
 }
 
-Result<> MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& commandBuffer)
+Result<> MeshletStreamRuntime::copyRequestBufferForReadback(
+    CommandBuffer& commandBuffer, RequestReadbackSubmission* submitReadback)
 {
     Buffer* readback = requestReadbackBuffer_.get();
-    if (auto* frame = metallic::render::RenderFrameContext::from(commandBuffer)) {
-        RequestReadback* slot = nullptr;
+    auto* frame = RenderFrameContext::from(commandBuffer);
+    RequestReadback* slot = nullptr;
+    const bool async = frame && requestCopyQueue_ && submitReadback;
+    if (frame) {
         for (auto& candidate : requestReadbacks_) {
             if (!candidate.submission || candidate.submission->cancelled() ||
                 (candidate.submission->resolved() && candidate.completion.isSubmitted() && candidate.completion.isComplete())) {
@@ -4621,50 +4654,106 @@ Result<> MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& comma
         const auto result = commandBuffer.addSubmissionTransaction(transaction);
         if (!result) { return result; }
         slot->submission = std::move(transaction);
-        slot->completion = frame->completion();
+        slot->completion = async ? GPUCompletionPoint{} : frame->completion();
         slot->frame = frameIndex_;
         readback = slot->buffer.get();
     }
     if (auto commandResult = transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::TransferSource); !commandResult) { return commandResult; }
-    {
-        auto sourceSlice = requestBuffer_.get()->slice({0, readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) - sizeof(MeshletStreamGPUBLASHeader) - sizeof(recentBlasAllocatorState_)});
-        if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-        auto destinationSlice = readback->slice({0, readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) - sizeof(MeshletStreamGPUBLASHeader) - sizeof(recentBlasAllocatorState_)});
-        if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
-        if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
-    }
     if (distributedPageDemand_ || lodTransitionTelemetry_) {
-        // Piggyback the compact statistics header on completed request feedback;
-        // no additional CPU wait or GPU-to-CPU submission is introduced.
         if (auto commandResult = transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::TransferSource); !commandResult) { return commandResult; }
-        {
-            auto sourceSlice = demandBuffer_.get()->slice({0, kMeshletStreamDemandStatsWords * sizeof(uint32_t)});
-            if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-            auto destinationSlice = readback->slice({readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) - sizeof(MeshletStreamGPUBLASHeader), kMeshletStreamDemandStatsWords * sizeof(uint32_t)});
-            if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
-            if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
-        }
     }
     if (clusterRtxEnabled_ && blasHeaderBuffer_) {
         if (auto commandResult = transitionBuffer(commandBuffer, *blasHeaderBuffer_, blasHeaderBufferState_, ResourceState::TransferSource); !commandResult) { return commandResult; }
-        {
-            auto sourceSlice = blasHeaderBuffer_.get()->slice({0, sizeof(MeshletStreamGPUBLASHeader)});
-            if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-            auto destinationSlice = readback->slice({readback->desc().size - sizeof(MeshletStreamGPUBLASHeader), sizeof(MeshletStreamGPUBLASHeader)});
-            if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
-            if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
-        }
     }
     if (gpuBlasAllocator_) {
         if (auto result = gpuBlasAllocator_->barrier(commandBuffer, *gpuBlasAllocator_->state); !result) { return result; }
-        auto source = gpuBlasAllocator_->state->slice();
-        auto destination = readback->slice({readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) -
-            sizeof(MeshletStreamGPUBLASHeader) - sizeof(recentBlasAllocatorState_), sizeof(recentBlasAllocatorState_)});
-        if (!source || !destination) { return makeError(Error::InvalidArgument); }
-        if (auto result = commandBuffer.copyBuffer(*source, *destination); !result) { return result; }
     }
-    requestReadbackValid_ = metallic::render::RenderFrameContext::from(commandBuffer) == nullptr;
-    return {};
+    if (async) {
+        requestReadbackValid_ = false;
+        *submitReadback = [this, slot](const GPUCompletionPoint& producer) {
+            return submitRequestReadback(*slot, producer);
+        };
+        return {};
+    }
+    auto result = recordRequestReadbackCopies(commandBuffer, *readback);
+    if (result) { requestReadbackValid_ = frame == nullptr; }
+    return result;
+}
+
+Result<> MeshletStreamRuntime::recordRequestReadbackCopies(CommandBuffer& commandBuffer, Buffer& readback)
+{
+    const auto copy = [&](Buffer& source, uint64_t destinationOffset, uint64_t size) -> Result<> {
+        auto sourceSlice = source.slice({0, size});
+        if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+        auto destinationSlice = readback.slice({destinationOffset, size});
+        if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+        return commandBuffer.copyBuffer(*sourceSlice, *destinationSlice);
+    };
+    const uint64_t blasHeaderOffset = readback.desc().size - sizeof(MeshletStreamGPUBLASHeader);
+    const uint64_t demandBytes = kMeshletStreamDemandStatsWords * sizeof(uint32_t);
+    const uint64_t demandOffset = blasHeaderOffset - demandBytes;
+    const uint64_t allocatorOffset = demandOffset - sizeof(recentBlasAllocatorState_);
+    auto result = copy(*requestBuffer_, 0, allocatorOffset);
+    if (!result) { return result; }
+    if (distributedPageDemand_ || lodTransitionTelemetry_) {
+        result = copy(*demandBuffer_, demandOffset, demandBytes);
+        if (!result) { return result; }
+    }
+    if (clusterRtxEnabled_ && blasHeaderBuffer_) {
+        result = copy(*blasHeaderBuffer_, blasHeaderOffset, sizeof(MeshletStreamGPUBLASHeader));
+        if (!result) { return result; }
+    }
+    if (gpuBlasAllocator_) {
+        result = copy(*gpuBlasAllocator_->state, allocatorOffset, sizeof(recentBlasAllocatorState_));
+    }
+    return result;
+}
+
+Result<> MeshletStreamRuntime::submitRequestReadback(RequestReadback& slot, const GPUCompletionPoint& producer)
+{
+    if (!producer.isSubmitted()) { return makeError(Error::InvalidArgument); }
+    if (!slot.copyRecording) {
+        auto recording = std::make_unique<RequestReadbackRecording>();
+        auto result = recording->commands.initialize(*device_, *requestCopyQueue_);
+        if (!result) {
+            slot.submission.reset();
+            return result;
+        }
+        slot.copyRecording = std::move(recording);
+    }
+    auto& recording = *slot.copyRecording;
+    auto result = recording.commands.reset();
+    if (result) { result = recording.frame.begin(slot.frame, 0); }
+    if (result) { result = recording.frame.addDependency(producer); }
+    if (result) {
+        auto prepared = recording.commands.prepare(recording.frame);
+        if (!prepared) {
+            result = std::unexpected(prepared.error());
+        } else {
+            CommandBuffer* commands = *prepared;
+            commands->beginDebugLabel({.name = "Meshlet feedback readback"});
+            result = recordRequestReadbackCopies(*commands, *slot.buffer);
+            const BufferBarrierDesc hostRead{
+                .buffer = slot.buffer.get(),
+                .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                .after = {PipelineStageBits::Host, AccessBits::HostRead},
+            };
+            if (result) { result = commands->synchronize({.buffers = {&hostRead, 1}}); }
+            commands->endDebugLabel();
+            if (result) { result = commands->end(); }
+            if (result) {
+                result = requestCopyTracker_.submit({.commandBuffers = {&commands, 1}}, recording.frame);
+            }
+        }
+    }
+    if (!result) { recording.frame.cancel(); }
+    slot.completion = recording.frame.completion();
+    if (slot.completion.isSubmitted()) {
+        requestCopyCompletion_ = slot.completion;
+    } else {
+        slot.submission.reset();
+    }
+    return result;
 }
 
 Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& frame)

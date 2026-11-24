@@ -8378,6 +8378,7 @@ public:
             render::RenderGraphProperties{
                 {"path", sourcePath.string()},
                 {"streamAssetPath", streamAssetPath.string()},
+                {"asyncFeedbackReadback", true},
                 {"enableClusterRtx", true},
                 {"compactClas", true},
                 {"rtasVisualization", true},
@@ -8423,6 +8424,7 @@ public:
         }
 
         constexpr uint32_t kStreamingWarmupFrameCount = 16;
+        bool consumedFeedback = false;
         for (uint32_t frame = 0; frame < kStreamingWarmupFrameCount; ++frame) {
             result = executor.execute(render::RenderGraphSubmitDesc{
                 .graphicsQueue = graphicsQueue,
@@ -8442,6 +8444,12 @@ public:
                     " returned " +
                     toString(result));
             }
+            for (const auto& stream : executor.executionStats().streaming) {
+                consumedFeedback |= stream.feedbackFrame != UINT64_MAX;
+            }
+        }
+        if (!consumedFeedback) {
+            return RHITestResult::fail("GPUDrivenStreamAssetPass did not consume meshlet feedback");
         }
 
         std::unique_ptr<render::CommandPool> commandPool;

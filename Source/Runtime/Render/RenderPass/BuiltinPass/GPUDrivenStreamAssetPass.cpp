@@ -344,6 +344,8 @@ public:
             prefetch,
             {.key = "AsyncComputePreferred", .label = "Async RTAS Build",
                 .type = RenderGraphRuntimeSettingType::Bool, .defaultValue = true, .rebuildGraph = true},
+            {.key = "asyncFeedbackReadback", .label = "Async Meshlet Feedback Readback",
+                .type = RenderGraphRuntimeSettingType::Bool, .defaultValue = false, .rebuildGraph = true},
             retention,
             telemetry,
             runtimeBoolSetting("autoLod", "Auto Meshlet LOD", autoLodProperty(properties())),
