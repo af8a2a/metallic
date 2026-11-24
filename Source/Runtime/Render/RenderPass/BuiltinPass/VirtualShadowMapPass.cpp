@@ -27,6 +27,7 @@ VirtualShadowMapSettings shadowSettings(const RenderGraphProperties& properties)
     settings.physicalPageCount = properties.value("physicalPageCount", settings.physicalPageCount);
     settings.maxWorkItems = properties.value("maxWorkItems", settings.maxWorkItems);
     settings.firstClipmapExtent = properties.value("firstClipmapExtent", settings.firstClipmapExtent);
+    settings.continuousDirectionalBasis = properties.value("continuousDirectionalBasis", settings.continuousDirectionalBasis);
     settings.shadowBias = properties.value("shadowBias", settings.shadowBias);
     settings.receiverFootprint = boolProperty(&properties, "receiverFootprint", true);
     settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", false);
@@ -197,6 +198,7 @@ public:
             runtimeFloatSetting("rasterTimeBudgetMs", "GPU Shadow Raster Budget in ms (0 Off)", 0, 0, 100),
             runtimeIntSetting("maxWorkItems", "Raster Work Budget", 65535, 1, 4 * 1024 * 1024),
             runtimeFloatSetting("firstClipmapExtent", "First Clipmap Half-width (m)", 4.0f, 0.01f, 10000.0f),
+            runtimeBoolSetting("continuousDirectionalBasis", "Continuous Directional Basis", false),
             runtimeFloatSetting("shadowBias", "Shadow Bias (m)", 0.002f, 0.0f, 1.0f),
             runtimeBoolSetting("receiverFootprint", "Match Receiver Footprint", true),
             runtimeIntSetting("tessellationFactor", "Shadow Displacement Subdivisions", 4, 1, 8),

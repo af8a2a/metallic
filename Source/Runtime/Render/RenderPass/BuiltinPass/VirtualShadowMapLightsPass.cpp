@@ -206,6 +206,7 @@ public:
             runtimeIntSetting("clipmapCount", "Clipmap / Local Mip Levels", 4, 1, 12),
             runtimeIntSetting("maxWorkItems", "Per-face Raster Work Budget", 65535, 1, 4 * 1024 * 1024),
             runtimeFloatSetting("firstClipmapExtent", "First Directional Half-width (m)", 4, 0.01f, 10000),
+            runtimeBoolSetting("continuousDirectionalBasis", "Continuous Directional Basis", false),
             runtimeFloatSetting("maxPagePoolLoadFactor", "Target Page Pool Load (0 Off)", VirtualShadowMapResolutionController::kDefaultLoadFactor, 0, 1),
             runtimeFloatSetting("maxResolutionLodBias", "Maximum Resolution LOD Bias", VirtualShadowMapResolutionController::kDefaultMaxBias, 0, 12),
             runtimeIntSetting("directionalMovingResolutionLodBias", "Moving Directional LOD Bias (Levels)", 0, 0, 11),
@@ -342,6 +343,7 @@ public:
         settings.clipmapCount = properties.value("clipmapCount", settings.clipmapCount);
         settings.maxWorkItems = properties.value("maxWorkItems", settings.maxWorkItems);
         settings.firstClipmapExtent = properties.value("firstClipmapExtent", settings.firstClipmapExtent);
+        settings.continuousDirectionalBasis = properties.value("continuousDirectionalBasis", settings.continuousDirectionalBasis);
         settings.shadowBias = properties.value("shadowBias", settings.shadowBias);
         const auto filter = properties.value("filter", std::string("hard"));
         if (filter != "hard" && filter != "pcf" && filter != "smrt") { return makeError(Error::InvalidArgument); }

@@ -145,7 +145,22 @@ std::vector<ShadowProjection> makeProjections(const scene::Bounds& bounds, const
     Vector direction, const VirtualShadowMapSettings& settings)
 {
     const auto z = normalized(direction);
-    const auto x = normalized(cross(std::abs(z[1]) < 0.95f ? Vector{0, 1, 0} : Vector{1, 0, 0}, z));
+    Vector x{0, 0, -1};
+    if (settings.continuousDirectionalBasis) {
+        // Rotate the seed basis from world down to z. Resolve the exact antipode
+        // with a half-turn about the seed X axis. The horizontal direction avoids
+        // a division by 1 - z.y when approaching that pole.
+        const double directionX = z[0], directionZ = z[2];
+        const double horizontalLength = std::sqrt(directionX * directionX + directionZ * directionZ);
+        if (horizontalLength > 0.0) {
+            const double horizontalX = directionX / horizontalLength;
+            const double horizontalZ = directionZ / horizontalLength;
+            const double tilt = (1.0 + z[1]) * horizontalZ;
+            x = normalized({float(horizontalX * tilt), -z[2], float(-1.0 + horizontalZ * tilt)});
+        }
+    } else {
+        x = normalized(cross(std::abs(z[1]) < 0.95f ? Vector{0, 1, 0} : Vector{1, 0, 0}, z));
+    }
     const auto y = cross(z, x);
     Vector low{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
     Vector high{-low[0], -low[1], -low[2]};
@@ -302,24 +317,10 @@ bool compatibleSettings(const VirtualShadowMapSettings& a, const VirtualShadowMa
 {
     return a.pageSize == b.pageSize && a.virtualPagesPerAxis == b.virtualPagesPerAxis &&
         a.clipmapCount == b.clipmapCount && a.physicalPageCount == b.physicalPageCount &&
-        a.firstClipmapExtent == b.firstClipmapExtent && a.shadowBias == b.shadowBias && a.enabled == b.enabled &&
+        a.firstClipmapExtent == b.firstClipmapExtent && a.continuousDirectionalBasis == b.continuousDirectionalBasis &&
+        a.shadowBias == b.shadowBias && a.enabled == b.enabled &&
         a.clusterHybridRaster == b.clusterHybridRaster && a.twoPassHZB == b.twoPassHZB &&
         a.hierarchyHZB == b.hierarchyHZB;
-}
-
-std::vector<std::array<int64_t, 2>> pageOrigins(const ViewConstants& view, Vector direction,
-    const VirtualShadowMapSettings& settings)
-{
-    const auto z = normalized(direction);
-    const auto x = normalized(cross(std::abs(z[1]) < .95f ? Vector{0, 1, 0} : Vector{1, 0, 0}, z));
-    const auto y = cross(z, x);
-    const Vector eye{view.current.eye[0], view.current.eye[1], view.current.eye[2]};
-    std::vector<std::array<int64_t, 2>> origins;
-    for (uint32_t level = 0; level < settings.clipmapCount; ++level) {
-        const float pageWorldSize = 2 * std::ldexp(settings.firstClipmapExtent, int(level)) / settings.virtualPagesPerAxis;
-        origins.push_back({int64_t(std::floor(dot(x, eye) / pageWorldSize)), int64_t(std::floor(dot(y, eye) / pageWorldSize))});
-    }
-    return origins;
 }
 
 struct ShadowAtlas
@@ -2075,6 +2076,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     auto light = inputLight;
     if (auto valid = validateProjectionLight(light, log); !valid) { return std::unexpected(valid.error()); }
     const bool directional = light.type == VirtualShadowMapLightType::Directional;
+    settings.continuousDirectionalBasis &= directional;
     const bool singlePage = useDistantLightSinglePage(view, light, settings);
     if (singlePage) { settings.clipmapCount = 0; }
     const auto& caps = device.capabilities();
@@ -2233,8 +2235,13 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         makeLocalProjections(light, farPlane, settings);
     // A local coarse page uses the level-zero frustum for changed-bound tests.
     const uint32_t remapLevelCount = std::max(1u, settings.clipmapCount);
-    const auto origins = directional ? pageOrigins(view, direction, settings) :
-        std::vector<std::array<int64_t, 2>>(remapLevelCount, {0, 0});
+    std::vector<std::array<int64_t, 2>> origins(remapLevelCount, {0, 0});
+    if (directional) {
+        for (uint32_t level = 0; level < remapLevelCount; ++level) {
+            const auto& origin = projections[level].originNear;
+            origins[level] = {int64_t(origin[0]), int64_t(origin[1])};
+        }
+    }
     const bool layered = settings.cacheEnabled && settings.cacheLayering;
     const bool staticPageHZB = layered && directional;
     const bool receiverMask = layered && directional &&

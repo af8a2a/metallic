@@ -107,6 +107,7 @@ struct VirtualShadowMapSettings
     uint32_t physicalPageCount = 256;
     uint32_t maxWorkItems = 65535;
     float firstClipmapExtent = 4.0f; // Half-width in world meters, doubles per level.
+    bool continuousDirectionalBasis = false;
     float shadowBias = 0.002f; // World meters toward the light.
     VirtualShadowMapFilter filter = VirtualShadowMapFilter::Hard;
     float pcfRadius = 1.0f; // Radius in selected virtual texels.

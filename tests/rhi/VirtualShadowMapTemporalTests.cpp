@@ -379,6 +379,9 @@ public:
             settings.resolutionLodBias = 0;
             (void)uniform("RestoredResolutionRejectsCoarseHistory", 57, 0, 0, 0);
             (void)uniform("RestoredResolutionAccumulates", 58, 255, .5);
+            settings.continuousDirectionalBasis = true;
+            (void)uniform("DirectionalBasisChangeRejectsHistory", 59, 255, 1, 0);
+            (void)uniform("StableDirectionalBasisAccumulates", 60, 0, .5);
 
             // GPU cut changes must reject history even though the CPU caster
             // content key and all temporal settings remain unchanged.

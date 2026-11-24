@@ -1283,6 +1283,26 @@ public:
                 auto camera = originalCamera;
                 camera.eye[0] += .55f; camera.center[0] += .55f;
                 camera.eye[2] += .55f; camera.center[2] += .55f;
+                for (const auto& name : {"Moon", "MoonReference"}) {
+                    require(graph.setNodeRuntimeProperty(graph.findNode(name)->id, "continuousDirectionalBasis", true),
+                        "Enable continuous Moon basis");
+                }
+                const auto basisToggle = compare("MoonContinuousBasis");
+                require(basisToggle.moon.statistics[16] > 0 && basisToggle.moon.statistics[21] == 1,
+                    "Changing Moon basis did not redraw depth");
+                requireCacheReused(basisToggle.sun, "Changing Moon basis must preserve Sun cache");
+                require(view.setCamera(camera), "Scroll continuous-basis cache");
+                const auto basisShift = compare("ContinuousBasisCameraPageShift");
+                require(basisShift.moon.statistics[19] > 0 && basisShift.moon.statistics[17] > 0,
+                    "Camera shift did not retain and remap continuous-basis Moon pages");
+                requireCacheReused(compare("ContinuousBasisCameraStable").moon, "Stable continuous-basis Moon");
+                require(view.setCamera(originalCamera), "Restore camera after continuous-basis scroll");
+                for (const auto& name : {"Moon", "MoonReference"}) {
+                    require(graph.setNodeRuntimeProperty(graph.findNode(name)->id, "continuousDirectionalBasis", false),
+                        "Restore legacy Moon basis");
+                }
+                (void)compare("MoonLegacyBasisRestored");
+
                 require(view.setCamera(camera), "Shift cache camera across page boundaries");
                 auto shifted = compare("CameraPageShift");
                 require(shifted.sun.statistics[19] > 0 && shifted.sun.statistics[17] > 0,

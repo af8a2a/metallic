@@ -27,14 +27,14 @@ bool sameLight(const VirtualShadowMapLight& a, const VirtualShadowMapLight& b)
         a.angularRadius == b.angularRadius && a.sourceRadius == b.sourceRadius && a.enabled == b.enabled;
 }
 
-bool sameSettings(const VirtualShadowMapSettings& a, const VirtualShadowMapSettings& b)
+bool sameSettings(const VirtualShadowMapSettings& a, const VirtualShadowMapSettings& b, bool directional)
 {
-    const auto key = [](const auto& s) {
+    const auto key = [directional](const auto& s) {
         return std::tuple{s.pageSize, s.virtualPagesPerAxis, s.clipmapCount, s.physicalPageCount,
             s.maxWorkItems, s.firstClipmapExtent, s.shadowBias, s.filter, s.pcfRadius,
             s.smrtRayCount, s.smrtSamplesPerRay, s.smrtMaxRayLength, s.smrtRayLengthScale,
             s.smrtMaxRayAngle, s.receiverFootprint, s.resolutionLodBias, s.enabled, s.clusterHybridRaster, s.twoPassHZB, s.hierarchyHZB,
-            s.shadowLOD, s.shadowLODSmartBias, s.shadowLODScreenRayLength};
+            s.shadowLOD, s.shadowLODSmartBias, s.shadowLODScreenRayLength, directional && s.continuousDirectionalBasis};
     };
     // Cache redraw and sampling phase do not change the underlying visibility.
     return key(a) == key(b);
@@ -141,7 +141,8 @@ Result<> VirtualShadowMapTemporal::record(Device& device, CommandBuffer& command
     const bool hasHistory = previous && previous->frameIndex + 1 == frameIndex &&
         previous->invalidationRevision == invalidationRevision && previous->contentKey == contentKey &&
         previous->maxFrames == maxFrames && sameProjection(previous->view, view) &&
-        sameLight(previous->light, light) && sameSettings(previous->settings, settings);
+        sameLight(previous->light, light) &&
+        sameSettings(previous->settings, settings, light.type == VirtualShadowMapLightType::Directional);
     const bool isOrtho = view.current.upProjection[3] > 0.5f;
     const bool useHistory = hasHistory && maxFrames > 1;
     const size_t kernelIndex = (isOrtho ? 2u : 0u) | (useHistory ? 1u : 0u);

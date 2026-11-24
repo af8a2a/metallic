@@ -557,6 +557,56 @@ LODCapture readCapture(Device& device, LODCommands& gpu, const VirtualShadowMapR
     return captures[0];
 }
 
+class VirtualShadowMapDirectionalBasisTest final : public RHITest
+{
+public:
+    VirtualShadowMapDirectionalBasisTest() { name = "virtual_shadow_map_directional_basis"; type = RHITestType::Rendering; }
+
+    RHITestResult run(RHITestContext&) override
+    {
+        try {
+            VirtualShadowMapSettings settings;
+            settings.continuousDirectionalBasis = true;
+            const auto dot = [](const std::array<float, 3>& a, const std::array<float, 3>& b) {
+                return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+            };
+            const auto checkBasis = [&](std::array<float, 3> direction) {
+                VirtualShadowMapLight light;
+                light.direction = direction;
+                std::string log;
+                const auto projections = VirtualShadowMaps::makeShadowLODProjections({}, {}, light, settings, log);
+                check(projections, "Build directional clipmap: " + log);
+                check(projections->size() == settings.clipmapCount + 1, "Missing directional clipmap projections");
+                const auto& first = projections->front();
+                const float extent = settings.firstClipmapExtent;
+                const std::array x{first.rowX[0] * extent, first.rowX[1] * extent, first.rowX[2] * extent};
+                const std::array y{first.rowY[0] * extent, first.rowY[1] * extent, first.rowY[2] * extent};
+                const std::array z{x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0]};
+                check(std::abs(dot(x, x) - 1) < 1e-5f && std::abs(dot(y, y) - 1) < 1e-5f && std::abs(dot(x, y)) < 1e-5f,
+                    "Directional clipmap basis is not orthonormal");
+                const float length = std::sqrt(dot(direction, direction));
+                for (size_t axis = 0; axis < z.size(); ++axis) {
+                    check(std::abs(z[axis] - direction[axis] / length) < 1e-5f, "Directional clipmap changed the light axis");
+                }
+                return x;
+            };
+            checkBasis({0, -1, 0});
+            checkBasis({0, 1, 0});
+            checkBasis({1e-7f, 1, -2e-7f});
+            checkBasis({1, 0, 0});
+            check(dot(checkBasis({-.280f, -.94f, -.16f}), checkBasis({-.260f, -.94f, -.16f})) > .999f,
+                "Directional clipmap jumped entering the legacy pole threshold");
+            check(dot(checkBasis({.254f, -.94f, -.16f}), checkBasis({.274f, -.94f, -.16f})) > .999f,
+                "Directional clipmap jumped leaving the legacy pole threshold");
+            return RHITestResult::pass("Directional shadow basis preserves the light axis, legacy-threshold continuity and pole handling");
+        } catch (const std::exception& error) {
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDirectionalBasisTest);
+
 class VirtualShadowMapLODTest final : public RHITest
 {
 public:
