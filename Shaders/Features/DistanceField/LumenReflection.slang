@@ -9,6 +9,7 @@ import LumenGlobalRay;
 import LumenMeshSDFGrid;
 import LumenMeshSDFTrace;
 import LumenProbeMath;
+import LumenReflectionSampling;
 import LumenScreenTrace;
 import MeshDistanceField;
 
@@ -78,54 +79,6 @@ static const uint kReflectionScreenHit = 5u;
 static const uint kReflectionMeshSDFHit = 9u;
 static const float4 kEmptyReflectionTrace = float4(-1.0f, float(kGlobalDistanceFieldEmpty), -1.0f, 0.0f);
 static const float3 kInvalidReflectionLighting = float3(65024.0f, 65024.0f, 64512.0f);
-
-// UE 5.7.4 MonteCarlo.ush, isotropic material tangent basis.
-float3x3 getReflectionTangentBasis(float3 tangentZ)
-{
-    const float signZ = tangentZ.z >= 0.0f ? 1.0f : -1.0f;
-    const float a = -rcp(signZ + tangentZ.z);
-    const float b = tangentZ.x * tangentZ.y * a;
-    float3 tangentX = float3(1.0f + signZ * a * (tangentZ.x * tangentZ.x), signZ * b, -signZ * tangentZ.x);
-    float3 tangentY = float3(b, signZ + a * (tangentZ.y * tangentZ.y), -tangentZ.y);
-    return float3x3(tangentX, tangentY, tangentZ);
-}
-
-// UE 5.7.4 MonteCarlo.ush, VisibleGGXPDF_aniso overload with
-// GGX_BOUNDED_VNDF_SAMPLING and bLimitVDNFToReflection enabled.
-float visibleReflectionGGXPDF(float3 v, float3 h, float2 alpha)
-{
-    float noV = v.z;
-    float noH = h.z;
-    float voH = dot(v, h);
-    float a2 = alpha.x * alpha.y;
-    float3 hs = float3(alpha.y * h.x, alpha.x * h.y, a2 * noH);
-    float s = dot(hs, hs);
-    float d = (1.0f / kLumenProbePi) * a2 * ((a2 / s) * (a2 / s));
-    float lenV = length(float3(v.x * alpha.x, v.y * alpha.y, noV));
-    float a = saturate(min(alpha.x, alpha.y));
-    float bound = 1.0f + length(v.xy);
-    float ka2 = a * a, s2 = bound * bound;
-    float k = (s2 - ka2 * s2) / (s2 + ka2 * v.z * v.z);
-    return (2.0f * d * voH) / (k * noV + lenV);
-}
-
-// UE 5.7.4 MonteCarlo.ush, ImportanceSampleVisibleGGX with the bounded reflection sampling range.
-float4 importanceSampleVisibleReflectionGGX(float2 e, float2 alpha, float3 v)
-{
-    float3 vh = normalize(float3(alpha * v.xy, v.z));
-    float phi = (2.0f * kLumenProbePi) * e.x;
-    float a = saturate(min(alpha.x, alpha.y));
-    float s = 1.0f + length(v.xy);
-    float a2 = a * a, s2 = s * s;
-    float k = (s2 - a2 * s2) / (s2 + a2 * v.z * v.z);
-    float z = lerp(1.0f, -k * vh.z, e.y);
-    float sinTheta = sqrt(saturate(1.0f - z * z));
-    float x = sinTheta * cos(phi);
-    float y = sinTheta * sin(phi);
-    float3 h = float3(x, y, z) + vh;
-    h = normalize(float3(alpha * h.xy, max(0.0f, h.z)));
-    return float4(h, visibleReflectionGGXPDF(v, h, alpha));
-}
 
 // UE 5.7.4 LumenReflections.usf, full-resolution, opaque non-Substrate,
 // isotropic single-lobe ray generation. Distance quantization is in centimeters.
@@ -282,10 +235,10 @@ float3 traceSoftwareReflection(LumenReflectionParams params, uint2 pixel, float4
         maxTraceDistance, maxTraceDistanceCm, debugTrace, rayHitDistance);
 }
 
-float reflectionRoughnessFade(LumenReflectionParams params, float roughness)
+float reflectionRoughnessFade(float maxRoughness, float roughness)
 {
     // UE 5.7.4 LumenReflectionsCombine.ush, opaque single-lobe fade.
-    return saturate((params.maxRoughness - roughness) * kInvRoughnessFadeLength);
+    return saturate((maxRoughness - roughness) * kInvRoughnessFadeLength);
 }
 
 float4 clampReflectionLighting(float3 lighting, float fadeAlpha)
@@ -307,7 +260,7 @@ void lumenReflectionTraceMain(uint3 thread : SV_DispatchThreadID)
 
     const float4 position = resolveUniform(params.position).Load(int3(pixel, 0));
     const float4 specular = resolveUniform(params.specular).Load(int3(pixel, 0));
-    const float fadeAlpha = reflectionRoughnessFade(params, specular.w);
+    const float fadeAlpha = reflectionRoughnessFade(params.maxRoughness, specular.w);
     float4 reflections = 0.0f;
     float4 debugTrace = kEmptyReflectionTrace;
     float4 rayData = 0.0f;
@@ -360,7 +313,7 @@ void initializeTiledReflectionTrace(LumenReflectionParams params, uint2 pixel, f
 void writeTiledReflectionTrace(LumenReflectionParams params, uint2 pixel, float3 lighting, float4 debugTrace)
 {
     const float roughness = resolveUniform(params.specular).Load(int3(pixel, 0)).w;
-    resolveUniform(params.outputReflections)[pixel] = clampReflectionLighting(lighting, reflectionRoughnessFade(params, roughness));
+    resolveUniform(params.outputReflections)[pixel] = clampReflectionLighting(lighting, reflectionRoughnessFade(params.maxRoughness, roughness));
     resolveUniform(params.trace)[pixel] = debugTrace;
 }
 
@@ -375,7 +328,7 @@ void lumenReflectionGenerateTiledRaysMain(uint3 group : SV_GroupID, uint3 lane :
 
     const float4 position = resolveUniform(params.position).Load(int3(pixel, 0));
     const float4 specular = resolveUniform(params.specular).Load(int3(pixel, 0));
-    float fadeAlpha = reflectionRoughnessFade(params, specular.w);
+    float fadeAlpha = reflectionRoughnessFade(params.maxRoughness, specular.w);
     float4 rayData = 0.0f;
     if (position.w > 0.0f && any(specular.xyz > 0.0f) && fadeAlpha > 0.0f) {
         const float3 normal = normalize(resolveUniform(params.normal).Load(int3(pixel, 0)).xyz);
@@ -633,17 +586,41 @@ void lumenReflectionResolveTiledMain(uint3 group : SV_GroupID, uint3 lane : SV_G
 }
 #endif
 
+struct LumenReflectionCompositeParams
+{
+    ResourceHandle<Texture2D<float4>> sceneColor, specular, bilateralReflections, position, roughSpecular;
+    ResourceHandle<RWTexture2D<float4>> color;
+    uint width, height;
+    float maxRoughness;
+};
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void lumenReflectionCompositeMain(uint3 thread : SV_DispatchThreadID)
 {
-    LumenReflectionParams params = getParameters<LumenReflectionParams>();
+    LumenReflectionCompositeParams params = getParameters<LumenReflectionCompositeParams>();
     uint2 pixel = thread.xy;
     if (any(pixel >= uint2(params.width, params.height))) { return; }
 
     const float4 sceneColor = resolveUniform(params.sceneColor).Load(int3(pixel, 0));
-    const float4 reflection = resolveUniform(params.bilateralReflections).Load(int3(pixel, 0));
     float3 lighting = 0.0f;
+#if defined(METALLIC_LUMEN_REFLECTION_ROUGH_SPECULAR)
+    // UE 5.7.4 DiffuseIndirectComposite.usf, default opaque non-clear-coat Lumen composition.
+    const float4 specular = resolveUniform(params.specular).Load(int3(pixel, 0));
+    if (any(specular.xyz > 0.0f) && resolveUniform(params.position).Load(int3(pixel, 0)).w > 0.0f) {
+        const float fadeAlpha = reflectionRoughnessFade(params.maxRoughness, specular.w);
+        if (fadeAlpha < 1.0f) {
+            lighting = resolveUniform(params.roughSpecular).Load(int3(pixel, 0)).rgb * (1.0f - fadeAlpha);
+        }
+        // Resolved dedicated lighting is invalid wherever no dedicated ray was generated.
+        if (fadeAlpha > 0.0f) {
+            const float4 reflection = resolveUniform(params.bilateralReflections).Load(int3(pixel, 0));
+            if (reflection.a > 0.0f) { lighting += reflection.rgb * fadeAlpha; }
+        }
+        lighting *= specular.xyz;
+    }
+#else
+    const float4 reflection = resolveUniform(params.bilateralReflections).Load(int3(pixel, 0));
     // UE 5.7.4 ReflectionEnvironmentPixelShader.usf, standalone Lumen
     // reflection composite. The supported permutation has no sky or probe fallback.
     if (reflection.a > 0.0f) {
@@ -651,5 +628,6 @@ void lumenReflectionCompositeMain(uint3 thread : SV_DispatchThreadID)
         lighting = reflection.rgb * reflection.a;
         lighting *= specular;
     }
+#endif
     resolveUniform(params.color)[pixel] = float4(sceneColor.rgb - min(-lighting, 0.0f), sceneColor.a);
 }

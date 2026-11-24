@@ -21,6 +21,7 @@ namespace {
 
 constexpr uint64_t kLumenTemporalGatherABI = 0x4c554d454e030006ull;
 constexpr uint64_t kLumenTemporalFastUpdateABI = 0x4c554d454e030007ull;
+constexpr uint64_t kLumenTemporalRoughSpecularABIBit = 0x0000000000100000ull;
 
 struct LumenTemporalGatherParams {
     ShaderSampledImage indirectDiffuse, position, normal, directColor;
@@ -50,6 +51,14 @@ static_assert(sizeof(LumenTemporalGatherParams) == 288 &&
     offsetof(LumenTemporalGatherParams, currentJitter) == 276 &&
     offsetof(LumenTemporalGatherParams, fastUpdateAmount) == 284);
 
+struct LumenTemporalRoughSpecularParams {
+    LumenTemporalGatherParams base;
+    ShaderSampledImage roughSpecular, previousRoughSpecular;
+    ShaderStorageImage roughSpecularOutput, currentRoughSpecular;
+};
+static_assert(offsetof(LumenTemporalRoughSpecularParams, roughSpecular) == 288 &&
+    sizeof(LumenTemporalRoughSpecularParams) == 304);
+
 struct HistoryContent {
     uint64_t reprojectionRevision = 0;
     uint64_t sceneIdentity = 0;
@@ -75,9 +84,11 @@ public:
         const auto ao = properties().value("shortRangeAO", RenderGraphProperties(false));
         const auto dynamic = properties().value("dynamicReprojection", RenderGraphProperties(false));
         const auto fast = properties().value("fastLightingUpdate", RenderGraphProperties(false));
+        const auto roughSpecular = properties().value("roughSpecular", RenderGraphProperties(false));
         return !ao.is_boolean() || ao != compiledShortRangeAO_ ||
             !dynamic.is_boolean() || dynamic != compiledDynamicReprojection_ ||
-            !fast.is_boolean() || fast != compiledFastLightingUpdate_ ? compile(context, log) : Result<>{};
+            !fast.is_boolean() || fast != compiledFastLightingUpdate_ ||
+            !roughSpecular.is_boolean() || roughSpecular != compiledRoughSpecular_ ? compile(context, log) : Result<>{};
     }
     Result<> execute(RenderGraphExecutionContext& context) override;
     bool supportsFrameOverlap() const override { return true; }
@@ -108,6 +119,12 @@ private:
         return value != properties().end() && *value == true;
     }
 
+    bool roughSpecularEnabled() const
+    {
+        const auto value = properties().find("roughSpecular");
+        return value != properties().end() && *value == true;
+    }
+
     Device* device_ = nullptr;
     ComputeKernel kernel_;
     std::unique_ptr<TextureView> blueNoiseScalar_;
@@ -115,6 +132,7 @@ private:
     bool compiledShortRangeAO_ = false;
     bool compiledDynamicReprojection_ = false;
     bool compiledFastLightingUpdate_ = false;
+    bool compiledRoughSpecular_ = false;
     // The shared manager invalidates its resources during ordinary editor camera
     // motion. Retain this pass's reprojectable history across that event.
     HistoryResourceManager history_;
@@ -150,6 +168,14 @@ RenderPassReflection LumenTemporalGatherPass::reflect(const RenderGraphCompileCo
             .sampledRead().format = Format::RGBA16Sfloat;
         reflection.addTextureOutput("shortRangeAO", "Reprojected full-resolution packed world-space bent normal")
             .storageWrite().transient(RenderGraphInitialization::FullOverwrite).format = Format::R32Uint;
+    }
+    if (roughSpecularEnabled()) {
+        reflection.addTextureInput("currentRoughSpecular", "Current unexposed rough specular radiance before receiver response")
+            .sampledRead().format = Format::RGBA16Sfloat;
+        auto& roughSpecular = reflection.addTextureOutput("roughSpecular", "Accumulated unexposed rough specular radiance")
+            .storageWrite().transient(RenderGraphInitialization::FullOverwrite);
+        roughSpecular.format = Format::RGBA16Sfloat;
+        roughSpecular.colorEncoding = DisplayColorEncoding::SceneLinear;
     }
 
     auto& indirect = reflection.addTextureOutput("indirectDiffuse", "Accumulated unexposed indirect diffuse")
@@ -203,9 +229,15 @@ Result<> LumenTemporalGatherPass::compile(const RenderGraphCompileContext& conte
         log = "Lumen Temporal Gather shortRangeAO must be a boolean";
         return makeError(Error::InvalidArgument);
     }
+    const auto roughSpecular = properties().find("roughSpecular");
+    if (roughSpecular != properties().end() && !roughSpecular->is_boolean()) {
+        log = "Lumen Temporal Gather roughSpecular must be a boolean";
+        return makeError(Error::InvalidArgument);
+    }
     compiledShortRangeAO_ = shortRangeAOEnabled();
     compiledDynamicReprojection_ = dynamicReprojection();
     compiledFastLightingUpdate_ = fastLightingUpdateEnabled();
+    compiledRoughSpecular_ = roughSpecularEnabled();
     device_ = context.device;
     const bool ditherHistory = properties().value("stochasticHistoryQuantization", false);
     if (ditherHistory || compiledShortRangeAO_) {
@@ -219,20 +251,23 @@ Result<> LumenTemporalGatherPass::compile(const RenderGraphCompileContext& conte
     } else {
         blueNoiseScalar_.reset();
     }
-    std::array<SlangMacroDefine, 4> defines{};
+    std::array<SlangMacroDefine, 5> defines{};
     size_t defineCount = 0;
     if (ditherHistory) { defines[defineCount++] = {"METALLIC_LUMEN_DITHER_HISTORY", "1"}; }
     if (compiledDynamicReprojection_) { defines[defineCount++] = {"METALLIC_LUMEN_DYNAMIC_REPROJECTION", "1"}; }
     if (compiledShortRangeAO_) { defines[defineCount++] = {"METALLIC_LUMEN_SHORT_RANGE_AO", "1"}; }
     if (compiledFastLightingUpdate_) { defines[defineCount++] = {"METALLIC_LUMEN_FAST_LIGHTING_UPDATE", "1"}; }
+    if (compiledRoughSpecular_) { defines[defineCount++] = {"METALLIC_LUMEN_ROUGH_SPECULAR", "1"}; }
     lastContent_.reset();
     if (auto result = history_.initialize(*device_); !result) { return result; }
+    const uint64_t baseABI = compiledFastLightingUpdate_ ? kLumenTemporalFastUpdateABI : kLumenTemporalGatherABI;
+    const auto parameters = compiledRoughSpecular_ ?
+        parameterAbi<LumenTemporalRoughSpecularParams>(baseABI | kLumenTemporalRoughSpecularABIBit) :
+        parameterAbi<LumenTemporalGatherParams>(baseABI);
     return ShaderRegistry::instance().getComputeKernel(*device_,
         {.moduleName = "Features/DistanceField/LumenTemporalGather", .entryPointName = "lumenTemporalGatherMain",
             .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = {defines.data(), defineCount}},
-        {.parameters = parameterAbi<LumenTemporalGatherParams>(
-            compiledFastLightingUpdate_ ? kLumenTemporalFastUpdateABI : kLumenTemporalGatherABI),
-            .debugName = "LumenTemporalGather"}, kernel_, log);
+        {.parameters = parameters, .debugName = "LumenTemporalGather"}, kernel_, log);
 }
 
 Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
@@ -270,16 +305,18 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
     };
 
     const std::string historyScope = "LumenTemporalGather." + context.passName() + ".";
-    const std::array names{historyScope + "diffuse", historyScope + "geometry", historyScope + "shortRangeAO"};
-    const std::array formats{Format::RGBA16Sfloat, Format::RGBA32Sfloat, Format::R32Uint};
-    const size_t historyCount = compiledShortRangeAO_ ? names.size() : names.size() - 1;
+    const std::array names{historyScope + "diffuse", historyScope + "geometry", historyScope + "shortRangeAO",
+        historyScope + "roughSpecular"};
+    const std::array formats{Format::RGBA16Sfloat, Format::RGBA32Sfloat, Format::R32Uint, Format::RGBA16Sfloat};
+    const std::array enabledHistories{true, true, compiledShortRangeAO_, compiledRoughSpecular_};
     history_.beginFrame(context.frameIndex());
     if (lastContent_ != content || lastFrame_ + 1 != context.frameIndex() || !view || view->frame[1] == 0 ||
         lumenGlobalSunLightingChanged(previousSunIrradianceMax_, sunIrradianceMax)) {
         history_.invalidateAll();
     }
 
-    for (size_t index = 0; index < historyCount; ++index) {
+    for (size_t index = 0; index < names.size(); ++index) {
+        if (!enabledHistories[index]) { continue; }
         const TextureDesc desc{
             .type = TextureType::Texture2D,
             .usage = TextureUsageBits::Sampled | TextureUsageBits::Storage,
@@ -300,11 +337,14 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
     const auto previousDiffuse = history_.texture(names[0], HistorySlot::Previous);
     const auto previousGeometry = history_.texture(names[1], HistorySlot::Previous);
     const auto previousShortRangeAO = compiledShortRangeAO_ ? history_.texture(names[2], HistorySlot::Previous) : HistoryTextureRef{};
-    const bool historyValid = previousDiffuse.valid && previousGeometry.valid && (!compiledShortRangeAO_ || previousShortRangeAO.valid);
+    const auto previousRoughSpecular = compiledRoughSpecular_ ? history_.texture(names[3], HistorySlot::Previous) : HistoryTextureRef{};
+    const bool historyValid = previousDiffuse.valid && previousGeometry.valid &&
+        (!compiledShortRangeAO_ || previousShortRangeAO.valid) && (!compiledRoughSpecular_ || previousRoughSpecular.valid);
 
     auto& commands = context.commandBuffer();
     ParameterWriter writer(*device_, **registry, RenderFrameContext::from(commands));
-    LumenTemporalGatherParams params{};
+    LumenTemporalRoughSpecularParams roughSpecularParams{};
+    auto& params = roughSpecularParams.base;
     params.maxFramesAccumulated = maxFramesAccumulated_;
     if (blueNoiseScalar_) {
         params.blueNoiseScalar = writer.sampledImageHandle(blueNoiseScalar_.get());
@@ -374,6 +414,21 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
             textures.push_back(import("previousShortRangeAO", previousShortRangeAO));
         }
     }
+    if (compiledRoughSpecular_) {
+        const auto currentRoughSpecular = history_.texture(names[3], HistorySlot::Current);
+        roughSpecularParams.roughSpecular = writer.sampledImageHandle(context.inputTexture("currentRoughSpecular").view());
+        roughSpecularParams.roughSpecularOutput = writer.storageImageHandle(context.outputTexture("roughSpecular").view());
+        roughSpecularParams.currentRoughSpecular = writer.storageImageHandle(currentRoughSpecular.view);
+        roughSpecularParams.previousRoughSpecular = historyValid ? writer.sampledImageHandle(previousRoughSpecular.view) :
+            roughSpecularParams.roughSpecular;
+        uses.insert(uses.end(), {{"currentRoughSpecular", Access::TextureSampleRead},
+            {"roughSpecular", Access::TextureStorageWrite}, {"roughSpecularHistory", Access::TextureStorageWrite}});
+        textures.push_back(import("roughSpecularHistory", currentRoughSpecular));
+        if (historyValid) {
+            uses.push_back({"previousRoughSpecular", Access::TextureSampleRead});
+            textures.push_back(import("previousRoughSpecular", previousRoughSpecular));
+        }
+    }
     const bool publishScreenHistory = publishesScreenTraceHistory();
     const auto screenNames = publishScreenHistory ? lumenScreenTraceHistoryNames(context.passName()) : std::array<std::string, 2>{};
     auto& screenHistory = context.graphHistoryResources();
@@ -393,7 +448,9 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
         textures.push_back(import("screenHistoryDepth", depth));
         textures.push_back(import("screenHistoryColor", color));
     }
-    const auto encoded = writer.encode(params, compiledFastLightingUpdate_ ? kLumenTemporalFastUpdateABI : kLumenTemporalGatherABI);
+    const uint64_t baseABI = compiledFastLightingUpdate_ ? kLumenTemporalFastUpdateABI : kLumenTemporalGatherABI;
+    const auto encoded = compiledRoughSpecular_ ? writer.encode(roughSpecularParams, baseABI | kLumenTemporalRoughSpecularABIBit) :
+        writer.encode(params, baseABI);
     if (!encoded) { return makeError(encoded.error()); }
     const RenderGraphStage stages[] = {
         {"Reproject and accumulate diffuse", uses,
@@ -404,7 +461,8 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
     auto result = context.executeStages(stages, {}, textures);
     if (!result) { return result; }
 
-    for (size_t index = 0; index < historyCount; ++index) {
+    for (size_t index = 0; index < names.size(); ++index) {
+        if (!enabledHistories[index]) { continue; }
         result = history_.publishTextureState(commands, names[index], HistorySlot::Current, ResourceState::ShaderRead, true);
         if (!result) { return result; }
     }

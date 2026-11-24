@@ -2714,6 +2714,15 @@ constexpr float kFastLightingPulseAmount = 0.7265625f;
 
 class LumenTemporalInputPass final : public render::UnsafePass {
 public:
+    static constexpr std::array<float, 4> kConstantLighting{0.5f, 0.25f, 0.125f, 1.0f};
+
+    static bool ensureRegistered()
+    {
+        static const bool registered = render::registerRenderGraphPassType("LumenTemporalInputPass", "Lumen test lighting input",
+            [] { return std::make_unique<LumenTemporalInputPass>(); });
+        return registered;
+    }
+
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
     {
         render::RenderPassReflection reflection;
@@ -2726,10 +2735,10 @@ public:
         const bool fastLighting = properties().value("fastLightingSequence", false);
         const auto frame = context.frameIndex();
         const bool pulse = frame == kFastLightingPulseFrame || frame == kFastLightingDisocclusionFrame;
-        const float red = fastLighting && frame >= kFastLightingPulseFrame ? 0.875f : 0.5f;
-        const float alpha = fastLighting ? (pulse ? 0.078125f : 0.004f) : 1.0f;
+        const float red = fastLighting && frame >= kFastLightingPulseFrame ? 0.875f : kConstantLighting[0];
+        const float alpha = fastLighting ? (pulse ? 0.078125f : 0.004f) : kConstantLighting[3];
         return context.commandBuffer().clearColorTexture(*context.outputTexture("indirectDiffuse").texture(),
-            render::TextureLayout::TransferDestination, {red, 0.25f, 0.125f, alpha});
+            render::TextureLayout::TransferDestination, {red, kConstantLighting[1], kConstantLighting[2], alpha});
     }
 };
 
@@ -3027,9 +3036,8 @@ private:
     static bool makeGraph(render::RenderGraph& graph, bool fastLighting)
     {
         using namespace render;
-        static const bool registered = registerRenderGraphPassType("LumenTemporalInputPass", "Diffuse temporal test input",
-            [] { return std::make_unique<LumenTemporalInputPass>(); });
-        if (!registered || !graph.addNode("VisibilityBufferPass", "VBuffer", {{"visualization", "none"}, {"enableClusterRtx", false}}) ||
+        if (!LumenTemporalInputPass::ensureRegistered() ||
+            !graph.addNode("VisibilityBufferPass", "VBuffer", {{"visualization", "none"}, {"enableClusterRtx", false}}) ||
             !graph.addNode("VisibilityBufferDeferredPass", "Deferred", {{"materialBinning", false}, {"outputLinear", true},
                 {"exportLumenReceivers", true}, {"exportLumenPreviousPosition", true}}) ||
             !graph.addNode("LumenTemporalInputPass", "Fixture", {{"fastLightingSequence", fastLighting}}) ||
@@ -3386,9 +3394,13 @@ METALLIC_REGISTER_RHI_TEST(LumenMovingGatherHistoryTest);
 
 class LumenReflectionTest : public RHITest {
 public:
-    explicit LumenReflectionTest(bool classified = false) : classified_(classified)
+    enum class Variant { Software, Classified, RoughSpecularTransition };
+
+    explicit LumenReflectionTest(Variant variant = Variant::Software)
+        : classified_(variant == Variant::Classified), roughSpecular_(variant == Variant::RoughSpecularTransition)
     {
-        name = classified ? "lumen_classified_reflections" : "lumen_software_reflections";
+        name = classified_ ? "lumen_classified_reflections" :
+            roughSpecular_ ? "lumen_rough_specular_transition" : "lumen_software_reflections";
         type = RHITestType::Rendering;
     }
 
@@ -3429,7 +3441,7 @@ public:
         }
 
         RenderGraph graph;
-        if (!makeGraph(graph, field, cards, classified_, false)) {
+        if (!makeGraph(graph, field, cards, classified_, false, roughSpecular_)) {
             return RHITestResult::fail("Could not build the software reflection graph");
         }
         bench::ValidationRecorder validation;
@@ -3472,6 +3484,33 @@ public:
         }
         const RenderGraphSubmitDesc submission{.graphicsQueue = gpu.getQueue(QueueType::Graphics),
             .historyResources = &history, .recordingWorkerLimit = 1};
+        if (roughSpecular_) {
+            auto receiver = document.materials()[0];
+            uint32_t mixedPixels = 0;
+            constexpr std::array ramp{0.0f, 0.29f, 0.32f, 0.35f, 0.38f, 0.399f, 0.401f, 0.6f, 0.85f};
+            for (float roughness : ramp) {
+                if (receiver.roughnessFactor != roughness) {
+                    receiver.roughnessFactor = roughness;
+                    if (!document.setMaterialProperties(0, receiver)) {
+                        return RHITestResult::fail(std::format("Could not set ramp roughness to {}", roughness));
+                    }
+                }
+                view.cameraCut();
+                const auto frame = captureFrame(inspector, executor, submission, false, log);
+                if (!frame) { return RHITestResult::fail(log); }
+                log = verifyRoughSpecularFrame(*frame, roughness, false, mixedPixels);
+                if (!log.empty()) { return RHITestResult::fail(log); }
+            }
+            receiver.unlit = true;
+            if (!document.setMaterialProperties(0, receiver)) { return RHITestResult::fail("Could not set unlit ramp material"); }
+            const auto unlit = captureFrame(inspector, executor, submission, false, log);
+            if (!unlit) { return RHITestResult::fail(log); }
+            log = verifyRoughSpecularFrame(*unlit, receiver.roughnessFactor, true, mixedPixels);
+            if (!log.empty()) { return RHITestResult::fail(log); }
+            if (mixedPixels == 0u) { return RHITestResult::fail("Roughness ramp never exercised two positive specular sources"); }
+            if (validation.failed()) { return RHITestResult::fail("Roughness ramp Vulkan validation: " + validation.snapshot().dump()); }
+            return RHITestResult::pass("Rough and dedicated specular match the shared material-weighted blend across the roughness ramp.");
+        }
         const auto runFrame = [&](float roughness, bool unlit, uint32_t minHits,
                                   ReflectionHistory expectedHistory = ReflectionHistory::Absent) {
             auto frame = captureFrame(inspector, executor, submission, classified_, log);
@@ -3569,6 +3608,7 @@ public:
 
 private:
     static constexpr float kMaxRoughness = 0.75f;
+    static constexpr float kTransitionMaxRoughness = 0.4f;
     static constexpr float kGlossyRoughness = 0.2f;
     static constexpr float kSurfaceHistoryRoughness = 0.68f;
     static constexpr float kMaxTraceDistance = 4.0f;
@@ -3589,7 +3629,7 @@ private:
     };
 
     static bool makeGraph(render::RenderGraph& graph, const std::filesystem::path& field, const std::filesystem::path& cards,
-        bool classified, bool traceHandoff)
+        bool classified, bool traceHandoff, bool roughSpecular = false)
     {
         using render::makeRenderGraphFieldName;
         const auto edge = [&](std::string_view from, std::string_view source, std::string_view to, std::string_view target) {
@@ -3612,14 +3652,22 @@ private:
             !edge("VBuffer", "depth", "ScreenTrace", "depth") || !edge("Deferred", "color", "ScreenTrace", "color"))) {
             return false;
         }
+        if (roughSpecular && (!LumenTemporalInputPass::ensureRegistered() ||
+            !graph.addNode("LumenTemporalInputPass", "RoughSpecular"))) {
+            return false;
+        }
         const auto addReflection = [&](std::string_view name, bool classify) {
             render::RenderGraphProperties properties{{"maxTraceDistance", kMaxTraceDistance}, {"maxRoughness", kMaxRoughness},
                 {"dynamicReprojection", true}, {"classifiedTracing", classify}};
+            if (roughSpecular) {
+                properties.update({{"maxRoughness", kTransitionMaxRoughness}, {"roughSpecular", true}});
+            }
             if (traceHandoff) {
                 properties.update({{"screenTraces", true}, {"detailTracing", true}, {"meshSDFTraceDistance", 3.0f},
                     {"detailDistanceFieldPaths", {field.generic_string()}}});
             }
             if (!graph.addNode("LumenReflectionPass", std::string(name), std::move(properties))) { return false; }
+            if (roughSpecular && !edge("RoughSpecular", "indirectDiffuse", name, "roughSpecular")) { return false; }
             for (const auto* fieldName : {"pageTable", "pageAtlas", "coarseMip", "domain", "objectGrid", "objectGridScene"}) {
                 if (!edge("GDF", fieldName, name, fieldName)) { return false; }
             }
@@ -3690,11 +3738,58 @@ private:
     }
 
     bool classified_;
+    bool roughSpecular_;
 
     static Pixel readHalfPixel(const debug::DebugArtifact& artifact, size_t pixel)
     {
         const auto halfValues = readSurfaceValue<std::array<uint16_t, 4>>(artifact.bytes, pixel);
         return {halfToFloat(halfValues[0]), halfToFloat(halfValues[1]), halfToFloat(halfValues[2]), halfToFloat(halfValues[3])};
+    }
+
+    static std::string verifyRoughSpecularFrame(const ReflectionFrame& frame, float roughness, bool unlit, uint32_t& mixedPixels)
+    {
+        const auto& deferred = frame[0]->artifacts;
+        const auto& reflections = frame[1]->artifacts;
+        if (deferred.size() != 3 || reflections.size() < kReflectionArtifactCount ||
+            deferred[0].bytes.size() != kAtlasPixels * sizeof(Pixel) ||
+            deferred[1].bytes.size() != kAtlasPixels * sizeof(std::array<uint16_t, 4>) ||
+            deferred[2].bytes.size() != kAtlasPixels * sizeof(Pixel) ||
+            reflections[8].bytes.size() != kAtlasPixels * sizeof(std::array<uint16_t, 4>) ||
+            reflections[9].bytes.size() != kAtlasPixels * sizeof(Pixel)) {
+            return "Unexpected rough specular ramp readback layout";
+        }
+        uint32_t receivers = 0;
+        for (size_t pixel = 0; pixel < kAtlasPixels; ++pixel) {
+            const auto position = readSurfaceValue<Pixel>(deferred[0].bytes, pixel);
+            const auto specular = readHalfPixel(deferred[1], pixel);
+            const auto base = readSurfaceValue<Pixel>(deferred[2].bytes, pixel);
+            const auto dedicated = readHalfPixel(reflections[8], pixel);
+            const auto combined = readSurfaceValue<Pixel>(reflections[9].bytes, pixel);
+            const bool receiver = position[3] > 0.0f && (specular[0] > 0.0f || specular[1] > 0.0f || specular[2] > 0.0f);
+            const size_t x = pixel % kAtlasEdge;
+            const size_t y = pixel / kAtlasEdge;
+            if (unlit && receiver && x >= 52 && x < 76 && y >= 52 && y < 76) {
+                return "Unlit ramp receiver received indirect specular";
+            }
+            const float alpha = std::clamp((kTransitionMaxRoughness - specular[3]) * 10.0f, 0.0f, 1.0f);
+            const bool rampReceiver = receiver && std::abs(roughness - specular[3]) < 0.001f;
+            receivers += rampReceiver;
+            mixedPixels += rampReceiver && alpha > 0.0f && alpha < 1.0f && dedicated[3] > 0.0f && dedicated[0] > 0.0f;
+            if (base[3] != combined[3]) { return "Roughness transition changed scene alpha"; }
+            for (size_t channel = 0; channel < 3; ++channel) {
+                float expected = base[channel];
+                if (receiver) {
+                    const float rough = (1.0f - alpha) * LumenTemporalInputPass::kConstantLighting[channel];
+                    const float glossy = alpha > 0.0f && dedicated[3] > 0.0f ? alpha * dedicated[channel] : 0.0f;
+                    expected += (rough + glossy) * specular[channel];
+                }
+                if (!(std::abs(combined[channel] - expected) <= std::max(0.000025f, std::abs(expected) * 0.0002f))) {
+                    return std::format("Roughness {} pixel {} channel {} did not match the complementary fade, got {}, expected {}",
+                        roughness, pixel, channel, combined[channel], expected);
+                }
+            }
+        }
+        return !unlit && receivers < 144u ? "Roughness ramp did not render enough receiver pixels" : std::string{};
     }
 
     static std::string verifyClassifiedFrame(const ReflectionFrame& frame, bool traceHandoff, ReflectionCoverage& coverage)
@@ -4026,10 +4121,17 @@ METALLIC_REGISTER_RHI_TEST(LumenReflectionTest);
 
 class LumenClassifiedReflectionTest final : public LumenReflectionTest {
 public:
-    LumenClassifiedReflectionTest() : LumenReflectionTest(true) {}
+    LumenClassifiedReflectionTest() : LumenReflectionTest(Variant::Classified) {}
 };
 
 METALLIC_REGISTER_RHI_TEST(LumenClassifiedReflectionTest);
+
+class LumenRoughSpecularTransitionTest final : public LumenReflectionTest {
+public:
+    LumenRoughSpecularTransitionTest() : LumenReflectionTest(Variant::RoughSpecularTransition) {}
+};
+
+METALLIC_REGISTER_RHI_TEST(LumenRoughSpecularTransitionTest);
 
 } // namespace
 } // namespace metallic::tests

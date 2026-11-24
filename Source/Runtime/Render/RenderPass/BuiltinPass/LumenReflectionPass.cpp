@@ -26,6 +26,7 @@ constexpr uint64_t kLumenReflectionTiledABI = 0x4c554d454e050004ull;
 constexpr uint64_t kLumenReflectionScheduleABI = 0x4c554d454e050005ull;
 constexpr uint64_t kLumenReflectionTemporalABI = 0x4c554d454e060001ull;
 constexpr uint64_t kLumenReflectionBilateralABI = 0x4c554d454e070002ull;
+constexpr uint64_t kLumenReflectionCompositeABI = 0x4c554d454e080001ull;
 constexpr char kShaderModule[] = "Features/DistanceField/LumenReflection";
 constexpr char kScheduleModule[] = "Features/DistanceField/LumenReflectionSchedule";
 constexpr std::array kHistoryNames{"lighting", "depth", "age"};
@@ -109,6 +110,14 @@ static_assert(offsetof(LumenReflectionBilateralParams, position) == 80 &&
     offsetof(LumenReflectionBilateralParams, bilateralReflections) == 104 &&
     offsetof(LumenReflectionBilateralParams, frameIndex) == 116 && sizeof(LumenReflectionBilateralParams) == 128);
 
+struct LumenReflectionCompositeParams {
+    ShaderSampledImage sceneColor, specular, bilateralReflections, position, roughSpecular;
+    ShaderStorageImage color;
+    uint32_t width, height;
+    float maxRoughness;
+};
+static_assert(offsetof(LumenReflectionCompositeParams, width) == 24 && sizeof(LumenReflectionCompositeParams) == 36);
+
 struct HistoryContent {
     uint64_t reprojectionRevision;
     uint64_t sceneIdentity;
@@ -182,6 +191,10 @@ RenderPassReflection LumenReflectionPass::reflect(const RenderGraphCompileContex
     }
     reflection.addTextureInput("sceneColor", "Scene-linear color before specular reflections")
         .sampledRead().format = Format::RGBA32Sfloat;
+    if (optionEnabled("roughSpecular")) {
+        reflection.addTextureInput("roughSpecular", "Accumulated probe rough-specular radiance before material response")
+            .sampledRead().format = Format::RGBA16Sfloat;
+    }
     if (optionEnabled("screenTraces")) {
         reflection.addBufferInput("closestHZB", "Current closest reversed-Z depth hierarchy")
             .buffer(0, sizeof(float)).storageRead();
@@ -260,7 +273,7 @@ Result<> LumenReflectionPass::compile(const RenderGraphCompileContext& context, 
         log = "Lumen Reflection requires a rendering device and a graphics queue";
         return makeError(Error::InvalidArgument);
     }
-    for (std::string_view option : {"dynamicReprojection", "screenTraces", "detailTracing", "classifiedTracing"}) {
+    for (std::string_view option : {"dynamicReprojection", "screenTraces", "detailTracing", "classifiedTracing", "roughSpecular"}) {
         const auto value = properties().find(option);
         if (value != properties().end() && !value->is_boolean()) {
             log = "Lumen Reflection " + std::string(option) + " must be a boolean";
@@ -350,10 +363,12 @@ Result<> LumenReflectionPass::compile(const RenderGraphCompileContext& context, 
         {.parameters = parameterAbi<LumenReflectionBilateralParams>(kLumenReflectionBilateralABI),
             .debugName = "LumenReflectionBilateral"}, bilateral_, log);
     if (!result) { return result; }
+    std::vector<SlangMacroDefine> compositeDefines;
+    if (optionEnabled("roughSpecular")) { compositeDefines.push_back({"METALLIC_LUMEN_REFLECTION_ROUGH_SPECULAR", "1"}); }
     return registry.getComputeKernel(*device_,
         {.moduleName = kShaderModule, .entryPointName = "lumenReflectionCompositeMain",
-            .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
-        {.parameters = parameterAbi<LumenReflectionParams>(kLumenReflectionABI), .debugName = "LumenReflectionComposite"},
+            .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = compositeDefines},
+        {.parameters = parameterAbi<LumenReflectionCompositeParams>(kLumenReflectionCompositeABI), .debugName = "LumenReflectionComposite"},
         composite_, log);
 }
 
@@ -582,6 +597,21 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
     const auto encodedBilateral = writer.encode(bilateralParams, kLumenReflectionBilateralABI);
     if (!encodedBilateral) { return makeError(encodedBilateral.error()); }
 
+    const bool roughSpecular = optionEnabled("roughSpecular");
+    const LumenReflectionCompositeParams compositeParams{
+        .sceneColor = parameters.sceneColor,
+        .specular = parameters.specular,
+        .bilateralReflections = parameters.bilateralReflections,
+        .position = parameters.position,
+        .roughSpecular = roughSpecular ? sampled("roughSpecular") : ShaderSampledImage{},
+        .color = parameters.color,
+        .width = parameters.width,
+        .height = parameters.height,
+        .maxRoughness = parameters.maxRoughness,
+    };
+    const auto encodedComposite = writer.encode(compositeParams, kLumenReflectionCompositeABI);
+    if (!encodedComposite) { return makeError(encodedComposite.error()); }
+
     using Access = RenderGraphResourceAccess;
     std::vector<RenderGraphStageUse> traceUses{
         {"position", Access::TextureSampleRead}, {"normal", Access::TextureSampleRead},
@@ -631,10 +661,13 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
         {"currentLighting", Access::TextureSampleRead}, {"currentAge", Access::TextureSampleRead},
         {"bilateralReflections", Access::TextureStorageWrite},
     };
-    const RenderGraphStageUse compositeUses[]{
+    std::vector<RenderGraphStageUse> compositeUses{
         {"sceneColor", Access::TextureSampleRead}, {"bilateralReflections", Access::TextureSampleRead},
         {"specular", Access::TextureSampleRead}, {"color", Access::TextureStorageWrite},
     };
+    if (roughSpecular) {
+        compositeUses.insert(compositeUses.end(), {{"position", Access::TextureSampleRead}, {"roughSpecular", Access::TextureSampleRead}});
+    }
     const uint32_t groupsX = reflectionTileCount(parameters.width);
     const uint32_t groupsY = reflectionTileCount(parameters.height);
     std::vector<RenderGraphStage> stages;
@@ -647,7 +680,7 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
                 return bilateral_.dispatch(cmd, *encodedBilateral, groupsX, groupsY);
             }},
             {"Composite reflections", compositeUses, [&](CommandBuffer& cmd) {
-                return composite_.dispatch(cmd, *encoded, groupsX, groupsY);
+                return composite_.dispatch(cmd, *encodedComposite, groupsX, groupsY);
             }},
         });
         return context.executeStages(stages, {}, textures);

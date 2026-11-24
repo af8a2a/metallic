@@ -58,6 +58,12 @@ struct LumenTemporalGatherParams
 #else
     uint shortRangeAOPadding;
 #endif
+#if defined(METALLIC_LUMEN_ROUGH_SPECULAR)
+    ResourceHandle<Texture2D<float4>> roughSpecular;
+    ResourceHandle<Texture2D<float4>> previousRoughSpecular;
+    ResourceHandle<DiffuseTexture> roughSpecularOutput;
+    ResourceHandle<DiffuseTexture> currentRoughSpecular;
+#endif
 };
 
 static const float kLumenHistoryDistanceThreshold = 0.01f;
@@ -290,13 +296,28 @@ float4 unpackHistoryState(float4 packed, float maxFramesAccumulated, out float4 
         encodedNumFramesAccumulated / 15.0f * min(maxFramesAccumulated, 15.0f));
 }
 
+float3 quantizeHistoryLighting(float3 lighting, float randomScalar)
+{
+#if defined(METALLIC_LUMEN_DITHER_HISTORY)
+    // UE QuantizeForFloatRenderTarget / QuantizeFloatColor, RGBA16F has ten mantissa bits.
+    float3 error = lighting * (1.0f / 1024.0f);
+    error = asfloat(asuint(error) & ~0x007fffffu);
+    return lighting + error * randomScalar;
+#else
+    return lighting;
+#endif
+}
+
 // UE 5.7.4 StochasticLightingTileClassification.usf, the opaque linear-depth branch.
 // With instance motion, the previous world point supplies the same two values
 // as GetHistoryScreenPosition: previous screen UV and previous scene depth.
-void accumulateDiffuse(LumenTemporalGatherParams params, float3 worldPosition, float3 previousWorldPosition,
+void accumulateLighting(LumenTemporalGatherParams params, float3 worldPosition, float3 previousWorldPosition,
     float3 normal, float4 newDiffuseLighting, float randomScalar,
 #if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
     inout half4 outShortRangeAO, uint2 shortRangeAOSharedCoord, bool validReconstruction,
+#endif
+#if defined(METALLIC_LUMEN_ROUGH_SPECULAR)
+    inout float3 outRoughSpecular,
 #endif
     out float3 outDiffuseIndirect, out float newNumFramesAccumulated, out float outHistoryWeight,
     out float outFastUpdateAmount)
@@ -388,6 +409,14 @@ void accumulateDiffuse(LumenTemporalGatherParams params, float3 worldPosition, f
     }
     outDiffuseIndirect = lerp(historyDiffuseIndirect, newDiffuseLighting.rgb, alpha);
     outHistoryWeight = 1.0f - alpha;
+#if defined(METALLIC_LUMEN_ROUGH_SPECULAR)
+    // UE LumenScreenProbeGatherTemporal.usf reuses the diffuse geometry taps and age.
+    Texture2D<float4> previousRoughSpecular = resolveUniform(params.previousRoughSpecular);
+    float3 historyRoughSpecular = weightedAverage(previousRoughSpecular.Load(int3(p00, 0)).rgb,
+        previousRoughSpecular.Load(int3(p10, 0)).rgb, previousRoughSpecular.Load(int3(p01, 0)).rgb,
+        previousRoughSpecular.Load(int3(p11, 0)).rgb, finalWeights);
+    outRoughSpecular = lerp(historyRoughSpecular, outRoughSpecular, alpha);
+#endif
 #if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
     Texture2D<uint> previousShortRangeAO = resolveUniform(params.previousShortRangeAO);
     half4 historyShortRangeAO00 = unpackSharedShortRangeAO(previousShortRangeAO.Load(int3(p00, 0)));
@@ -425,6 +454,9 @@ void lumenTemporalGatherMain(uint3 thread : SV_DispatchThreadID, uint3 group : S
     float3 surfaceNormal = surface.w > 0.0f ? normalize(normal.Load(texel).xyz) : 0.0f;
     float4 newDiffuseLighting = indirectDiffuse.Load(texel);
     float3 outDiffuseIndirect = newDiffuseLighting.rgb;
+#if defined(METALLIC_LUMEN_ROUGH_SPECULAR)
+    float3 outRoughSpecular = surface.w > 0.0f ? resolveUniform(params.roughSpecular).Load(texel).rgb : 0.0f;
+#endif
     float newNumFramesAccumulated = 0.0f;
     float outHistoryWeight = 0.0f;
     float outFastUpdateAmount = 0.0f;
@@ -458,9 +490,12 @@ void lumenTemporalGatherMain(uint3 thread : SV_DispatchThreadID, uint3 group : S
         previousSurface = resolveUniform(params.previousPosition).Load(texel);
 #endif
         if (previousSurface.w > 0.0f) {
-            accumulateDiffuse(params, surface.xyz, previousSurface.xyz, surfaceNormal, newDiffuseLighting, randomScalar,
+            accumulateLighting(params, surface.xyz, previousSurface.xyz, surfaceNormal, newDiffuseLighting, randomScalar,
 #if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
                 outShortRangeAO, shortRangeAOSharedCoord, validReconstruction,
+#endif
+#if defined(METALLIC_LUMEN_ROUGH_SPECULAR)
+                outRoughSpecular,
 #endif
                 outDiffuseIndirect, newNumFramesAccumulated, outHistoryWeight, outFastUpdateAmount);
         }
@@ -471,12 +506,11 @@ void lumenTemporalGatherMain(uint3 thread : SV_DispatchThreadID, uint3 group : S
     ScalarTexture historyWeight = resolveUniform(params.historyWeight);
     DiffuseTexture currentDiffuse = resolveUniform(params.currentDiffuse);
     FullPrecisionTexture currentGeometry = resolveUniform(params.currentGeometry);
-    float3 storedDiffuse = outDiffuseIndirect;
-#if defined(METALLIC_LUMEN_DITHER_HISTORY)
-    // UE QuantizeForFloatRenderTarget / QuantizeFloatColor, RGBA16F has ten mantissa bits.
-    float3 error = outDiffuseIndirect * (1.0f / 1024.0f);
-    error = asfloat(asuint(error) & ~0x007fffffu);
-    storedDiffuse = outDiffuseIndirect + error * randomScalar;
+    float3 storedDiffuse = quantizeHistoryLighting(outDiffuseIndirect, randomScalar);
+#if defined(METALLIC_LUMEN_ROUGH_SPECULAR)
+    float3 storedRoughSpecular = quantizeHistoryLighting(-min(-outRoughSpecular, 0.0f), randomScalar);
+    resolveUniform(params.roughSpecularOutput)[thread.xy] = float4(storedRoughSpecular, 0.0f);
+    resolveUniform(params.currentRoughSpecular)[thread.xy] = float4(storedRoughSpecular, 0.0f);
 #endif
     float3 sceneIndirect = outDiffuseIndirect;
 #if defined(METALLIC_LUMEN_SHORT_RANGE_AO)

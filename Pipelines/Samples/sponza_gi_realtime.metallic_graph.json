@@ -49,16 +49,16 @@
             "properties": {
                 "maxTraceDistance": 40, "finalGather": true, "screenTraces": true, "activeProbeDispatch": true, "splitProbeTracing": true, "compactProbeAtlas": true, "screenGDFContinuation": true,
                 "screenTraceRelativeDepthThickness": 0.003, "irradianceFormat": "SH3", "maxRayDirections": 64,
-                "structuredImportanceSampling": true, "fastLightingUpdate": true
+                "structuredImportanceSampling": true, "fastLightingUpdate": true, "roughSpecular": true
             }},
         {"id": 9, "name": "Temporal", "type": "LumenTemporalGatherPass", "position": {"x": 1310, "y": 140},
             "properties": {"publishScreenTraceHistory": true, "dynamicReprojection": true, "fastLightingUpdate": true,
-                "maxFramesAccumulated": 32, "stochasticHistoryQuantization": true}},
+                "maxFramesAccumulated": 32, "stochasticHistoryQuantization": true, "roughSpecular": true}},
         {"id": 10, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 1950, "y": 140}},
         {"id": 11, "name": "Reflections", "type": "LumenReflectionPass", "position": {"x": 1630, "y": 140},
             "properties": {
                 "maxTraceDistance": 40, "dynamicReprojection": true, "screenTraces": true, "detailTracing": true,
-                "classifiedTracing": true,
+                "classifiedTracing": true, "roughSpecular": true,
                 "detailDistanceFieldPaths": ["Asset/Sponza/SponzaGIBakes/SponzaOpaqueReflection.meshdf"]
             }}
     ],
@@ -137,7 +137,10 @@
         {"id": 72, "src": "ScreenTrace.traceView", "dst": "Reflections.traceView"},
         {"id": 73, "src": "VBuffer.depth", "dst": "Reflections.detailDepth"},
         {"id": 74, "src": "Deferred.lumenPreviousPosition", "dst": "Gather.previousPosition"},
-        {"id": 75, "src": "Deferred.lumenPreviousPosition", "dst": "Temporal.previousPosition"}
+        {"id": 75, "src": "Deferred.lumenPreviousPosition", "dst": "Temporal.previousPosition"},
+        {"id": 76, "src": "Deferred.lumenSpecular", "dst": "Gather.specular"},
+        {"id": 77, "src": "Gather.roughSpecular", "dst": "Temporal.currentRoughSpecular"},
+        {"id": 78, "src": "Temporal.roughSpecular", "dst": "Reflections.roughSpecular"}
     ],
     "outputs": ["FinalBlit.color", "Temporal.indirectDiffuse", "Reflections.reflections", "Reflections.trace"],
     "view": {
