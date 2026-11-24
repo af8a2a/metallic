@@ -22,12 +22,26 @@ namespace metallic::render::builtin_pass {
 namespace {
 
 constexpr uint64_t kLumenReflectionABI = 0x4c554d454e050003ull;
+constexpr uint64_t kLumenReflectionTiledABI = 0x4c554d454e050004ull;
+constexpr uint64_t kLumenReflectionScheduleABI = 0x4c554d454e050005ull;
 constexpr uint64_t kLumenReflectionTemporalABI = 0x4c554d454e060001ull;
 constexpr uint64_t kLumenReflectionBilateralABI = 0x4c554d454e070002ull;
 constexpr char kShaderModule[] = "Features/DistanceField/LumenReflection";
+constexpr char kScheduleModule[] = "Features/DistanceField/LumenReflectionSchedule";
 constexpr std::array kHistoryNames{"lighting", "depth", "age"};
 constexpr std::array kHistoryFormats{Format::RGBA16Sfloat, Format::R32Sfloat, Format::R8Unorm};
 constexpr uint32_t kScreenTraceViewStride = sizeof(ViewConstants) + 4 * sizeof(uint32_t);
+constexpr uint32_t kReflectionTileSize = 8;
+constexpr uint32_t kReflectionMaxDispatchX = 65535;
+constexpr uint32_t kReflectionMaxExtent = 1u << 14u;
+constexpr uint32_t kReflectionDispatchBytes = 3 * sizeof(uint32_t);
+
+enum class ReflectionDispatch : uint32_t { ActiveTiles, ClearTiles, CompactRays, DetailRays, GDFRays, Count };
+
+uint32_t reflectionTileCount(uint32_t pixels)
+{
+    return (pixels + kReflectionTileSize - 1u) / kReflectionTileSize;
+}
 
 struct LumenReflectionScreenBindings {
     ShaderBuffer closestHZB;
@@ -53,6 +67,22 @@ static_assert(offsetof(LumenReflectionParams, camera) == 80 && offsetof(LumenRef
     offsetof(LumenReflectionParams, outputRayData) == 184 && offsetof(LumenReflectionParams, rayData) == 200 &&
     offsetof(LumenReflectionParams, screen) == 212 && offsetof(LumenReflectionParams, detail) == 228 &&
     sizeof(LumenReflectionParams) == 304);
+
+struct LumenReflectionTiledParams {
+    LumenReflectionParams base;
+    ShaderBuffer activeTiles, clearTiles, workCounts, rayList;
+    uint32_t maxDispatchX;
+};
+static_assert(offsetof(LumenReflectionTiledParams, activeTiles) == 304 &&
+    offsetof(LumenReflectionTiledParams, maxDispatchX) == 320 && sizeof(LumenReflectionTiledParams) == 336);
+
+struct LumenReflectionScheduleParams {
+    ShaderSampledImage position, specular, rayData, rayHitDistance, trace;
+    ShaderBuffer tileMask, activeTiles, clearTiles, workCounts, rayList, indirectArgs;
+    uint32_t width, height, maxDispatchX;
+    float maxRoughness, meshSDFTraceDistance, cardTraceEndDistance, maxTraceDistance;
+};
+static_assert(offsetof(LumenReflectionScheduleParams, width) == 44 && sizeof(LumenReflectionScheduleParams) == 72);
 
 struct LumenReflectionTemporalParams {
     ShaderSampledImage position, normal, specular, previousPosition;
@@ -109,10 +139,15 @@ private:
         const auto value = properties().find(name);
         return value != properties().end() && *value == true;
     }
+    Result<> compileClassifiedTracing(const std::vector<SlangMacroDefine>& traceDefines, std::string& log);
 
     Device* device_ = nullptr;
     std::unique_ptr<TextureView> blueNoise_;
     ComputeKernel trace_;
+    ComputeKernel initWork_, markTiles_, buildTileLists_, setupTileArgs_;
+    ComputeKernel generateTiledRays_, clearTiles_, traceScreenTiles_;
+    ComputeKernel compactDetailRays_, setupDetailArgs_, traceDetailRays_;
+    ComputeKernel compactGDFRays_, setupGDFArgs_, traceGDFRays_;
     ComputeKernel resolve_;
     ComputeKernel temporal_;
     ComputeKernel bilateral_;
@@ -157,19 +192,42 @@ RenderPassReflection LumenReflectionPass::reflect(const RenderGraphCompileContex
             .buffer(kScreenTraceViewStride, kScreenTraceViewStride).storageRead();
     }
     if (optionEnabled("detailTracing")) { LumenMeshSDFGrid::reflect(reflection, context); }
+    const bool classifiedTracing = optionEnabled("classifiedTracing");
+    if (classifiedTracing) {
+        const uint64_t tileCount = uint64_t(reflectionTileCount(context.width)) * reflectionTileCount(context.height);
+        const uint64_t pixelCount = uint64_t(context.width) * context.height;
+        const auto addWorkBuffer = [&](const char* name, const char* description, uint64_t words) -> auto& {
+            return reflection.addBufferOutput(name, description).buffer(words * sizeof(uint32_t), sizeof(uint32_t))
+                .storageReadWrite().bufferLayout("u32");
+        };
+        addWorkBuffer("reflectionTileMask", "Per-tile reflection participation bit", tileCount)
+            .transient(Initialization::FullOverwrite);
+        addWorkBuffer("reflectionActiveTiles", "Packed full-resolution reflection tiles", tileCount);
+        addWorkBuffer("reflectionClearTiles", "Packed tiles without reflection rays", tileCount);
+        addWorkBuffer("reflectionWorkCounts", "Active tiles, clear tiles, Mesh SDF rays and GDF rays", 4)
+            .transient(Initialization::FullOverwrite);
+        addWorkBuffer("reflectionRayList", "Packed pixel coordinates from the latest unfinished-ray compaction", pixelCount);
+        reflection.addBufferOutput("reflectionDispatchArgs", "Active tiles, clear tiles, compaction, Mesh SDF and GDF dispatches")
+            .buffer(uint32_t(ReflectionDispatch::Count) * kReflectionDispatchBytes, sizeof(uint32_t)).storageWrite()
+            .stageAccess(Access::BufferIndirectRead).transient(Initialization::FullOverwrite);
+    }
 
     auto& reflections = reflection.addTextureOutput("reflections", "Raw scene-linear reflection radiance and roughness fade")
         .storageWrite().stageAccess(Access::TextureSampleRead);
     reflections.format = Format::RGBA16Sfloat;
     reflections.colorEncoding = DisplayColorEncoding::SceneLinear;
-    reflection.addTextureOutput("trace", "Hit distance in meters, trace classification (5 Screen, 9 Mesh SDF), GDF clipmap and card cache classification")
-        .storageWrite().format = Format::RGBA32Sfloat;
+    auto& trace = reflection.addTextureOutput("trace",
+        "Hit distance in meters, trace classification (5 Screen, 9 Mesh SDF), GDF clipmap and card cache classification")
+        .storageWrite();
+    trace.format = Format::RGBA32Sfloat;
+    if (classifiedTracing) { trace.stageAccess(Access::TextureSampleRead); }
     reflection.addTextureOutput("rayData", "Reflection ray direction and reciprocal PDF")
         .storageWrite().stageAccess(Access::TextureSampleRead).transient(Initialization::FullOverwrite)
         .format = Format::RGBA16Sfloat;
-    reflection.addTextureOutput("rayHitDistance", "Encoded reflection ray distance in centimeters")
-        .storageWrite().stageAccess(Access::TextureSampleRead).transient(Initialization::FullOverwrite)
-        .format = Format::R16Sfloat;
+    auto& rayHitDistance = reflection.addTextureOutput("rayHitDistance", "Encoded reflection ray distance in centimeters")
+        .storageWrite().stageAccess(Access::TextureSampleRead).transient(Initialization::FullOverwrite);
+    rayHitDistance.format = Format::R16Sfloat;
+    if (classifiedTracing) { rayHitDistance.stageAccess(Access::TextureStorageReadWrite); }
     auto& resolvedReflections = reflection.addTextureOutput("resolvedReflections",
         "Resolved scene-linear reflection radiance and roughness fade");
     resolvedReflections.storageWrite().stageAccess(Access::TextureSampleRead).transient(Initialization::FullOverwrite);
@@ -202,12 +260,16 @@ Result<> LumenReflectionPass::compile(const RenderGraphCompileContext& context, 
         log = "Lumen Reflection requires a rendering device and a graphics queue";
         return makeError(Error::InvalidArgument);
     }
-    for (std::string_view option : {"dynamicReprojection", "screenTraces", "detailTracing"}) {
+    for (std::string_view option : {"dynamicReprojection", "screenTraces", "detailTracing", "classifiedTracing"}) {
         const auto value = properties().find(option);
         if (value != properties().end() && !value->is_boolean()) {
             log = "Lumen Reflection " + std::string(option) + " must be a boolean";
             return makeError(Error::InvalidArgument);
         }
+    }
+    if (optionEnabled("classifiedTracing") && (context.width > kReflectionMaxExtent || context.height > kReflectionMaxExtent)) {
+        log = "Lumen classified reflection coordinates require a render extent of at most 16384 pixels per axis";
+        return makeError(Error::InvalidArgument);
     }
     try {
         // UE 5.7.4 FPostProcessSettings defaults to 20000 cm and roughness 0.4.
@@ -258,19 +320,25 @@ Result<> LumenReflectionPass::compile(const RenderGraphCompileContext& context, 
     if (!blueNoise) { return makeError(blueNoise.error()); }
     blueNoise_ = std::move(*blueNoise);
     auto& registry = ShaderRegistry::instance();
+    if (optionEnabled("classifiedTracing")) {
+        if (auto result = compileClassifiedTracing(traceDefines, log); !result) { return result; }
+    } else {
+        if (auto result = registry.getComputeKernel(*device_,
+                {.moduleName = kShaderModule, .entryPointName = "lumenReflectionTraceMain",
+                    .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = traceDefines},
+                {.parameters = parameterAbi<LumenReflectionParams>(kLumenReflectionABI), .debugName = "LumenReflectionTrace"},
+                trace_, log); !result) {
+            return result;
+        }
+        if (auto result = registry.getComputeKernel(*device_,
+                {.moduleName = kShaderModule, .entryPointName = "lumenReflectionResolveMain",
+                    .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+                {.parameters = parameterAbi<LumenReflectionParams>(kLumenReflectionABI), .debugName = "LumenReflectionResolve"},
+                resolve_, log); !result) {
+            return result;
+        }
+    }
     auto result = registry.getComputeKernel(*device_,
-        {.moduleName = kShaderModule, .entryPointName = "lumenReflectionTraceMain",
-            .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = traceDefines},
-        {.parameters = parameterAbi<LumenReflectionParams>(kLumenReflectionABI), .debugName = "LumenReflectionTrace"},
-        trace_, log);
-    if (!result) { return result; }
-    result = registry.getComputeKernel(*device_,
-        {.moduleName = kShaderModule, .entryPointName = "lumenReflectionResolveMain",
-            .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
-        {.parameters = parameterAbi<LumenReflectionParams>(kLumenReflectionABI), .debugName = "LumenReflectionResolve"},
-        resolve_, log);
-    if (!result) { return result; }
-    result = registry.getComputeKernel(*device_,
         {.moduleName = kShaderModule, .entryPointName = "lumenReflectionTemporalMain",
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
         {.parameters = parameterAbi<LumenReflectionTemporalParams>(kLumenReflectionTemporalABI),
@@ -287,6 +355,72 @@ Result<> LumenReflectionPass::compile(const RenderGraphCompileContext& context, 
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
         {.parameters = parameterAbi<LumenReflectionParams>(kLumenReflectionABI), .debugName = "LumenReflectionComposite"},
         composite_, log);
+}
+
+Result<> LumenReflectionPass::compileClassifiedTracing(const std::vector<SlangMacroDefine>& traceDefines, std::string& log)
+{
+    auto& registry = ShaderRegistry::instance();
+    const auto caps = device_->capabilities();
+    std::vector<SlangMacroDefine> scheduleDefines;
+    // UE's wave permutation assigns 16 tiles to one 1024-lane group.
+    if (caps.subgroupSize == 32u && caps.minSubgroupSize == 32u && caps.maxComputeWorkgroupSubgroups >= 32u &&
+        caps.computeSubgroupBallotArithmetic && caps.computeSubgroupShuffle) {
+        scheduleDefines.push_back({"METALLIC_LUMEN_REFLECTION_WAVE_OPS", "1"});
+    }
+    const auto schedule = [&](const char* entry, const char* label, ComputeKernel& kernel) {
+        return registry.getComputeKernel(*device_,
+            {.moduleName = kScheduleModule, .entryPointName = entry,
+                .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = scheduleDefines},
+            {.parameters = parameterAbi<LumenReflectionScheduleParams>(kLumenReflectionScheduleABI), .debugName = label},
+            kernel, log);
+    };
+    struct KernelEntry { const char* entry; const char* label; ComputeKernel& kernel; };
+    const KernelEntry scheduleEntries[]{
+        {"lumenReflectionInitWorkMain", "LumenReflectionInitWork", initWork_},
+        {"lumenReflectionMarkTilesMain", "LumenReflectionMarkTiles", markTiles_},
+        {"lumenReflectionBuildTileListsMain", "LumenReflectionBuildTileLists", buildTileLists_},
+        {"lumenReflectionSetupTileArgsMain", "LumenReflectionSetupTileArgs", setupTileArgs_},
+        {"lumenReflectionCompactRaysMain", "LumenReflectionCompactGDFRays", compactGDFRays_},
+        {"lumenReflectionSetupGDFArgsMain", "LumenReflectionSetupGDFArgs", setupGDFArgs_},
+    };
+    for (const auto& [entry, label, kernel] : scheduleEntries) {
+        if (auto result = schedule(entry, label, kernel); !result) { return result; }
+    }
+    if (optionEnabled("detailTracing")) {
+        if (auto result = schedule("lumenReflectionSetupDetailArgsMain", "LumenReflectionSetupDetailArgs", setupDetailArgs_); !result) {
+            return result;
+        }
+        scheduleDefines.push_back({"METALLIC_LUMEN_REFLECTION_COMPACT_DETAIL", "1"});
+        if (auto result = schedule("lumenReflectionCompactRaysMain", "LumenReflectionCompactDetailRays", compactDetailRays_); !result) {
+            return result;
+        }
+    }
+    auto tiledDefines = traceDefines;
+    tiledDefines.push_back({"METALLIC_LUMEN_REFLECTION_TILED_TRACING", "1"});
+    const auto tiled = [&](const char* entry, const char* label, ComputeKernel& kernel) {
+        return registry.getComputeKernel(*device_,
+            {.moduleName = kShaderModule, .entryPointName = entry,
+                .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = tiledDefines},
+            {.parameters = parameterAbi<LumenReflectionTiledParams>(kLumenReflectionTiledABI), .debugName = label}, kernel, log);
+    };
+    const KernelEntry tiledEntries[]{
+        {"lumenReflectionGenerateTiledRaysMain", "LumenReflectionGenerateTiledRays", generateTiledRays_},
+        {"lumenReflectionClearTilesMain", "LumenReflectionClearTiles", clearTiles_},
+        {"lumenReflectionTraceGDFTiledMain", "LumenReflectionTraceGDFRays", traceGDFRays_},
+        {"lumenReflectionResolveTiledMain", "LumenReflectionResolveTiles", resolve_},
+    };
+    for (const auto& [entry, label, kernel] : tiledEntries) {
+        if (auto result = tiled(entry, label, kernel); !result) { return result; }
+    }
+    if (optionEnabled("screenTraces")) {
+        if (auto result = tiled("lumenReflectionTraceScreenTiledMain", "LumenReflectionTraceScreenTiles", traceScreenTiles_); !result) {
+            return result;
+        }
+    }
+    if (optionEnabled("detailTracing")) {
+        return tiled("lumenReflectionTraceDetailTiledMain", "LumenReflectionTraceDetailRays", traceDetailRays_);
+    }
+    return {};
 }
 
 Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
@@ -501,31 +635,150 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
         {"sceneColor", Access::TextureSampleRead}, {"bilateralReflections", Access::TextureSampleRead},
         {"specular", Access::TextureSampleRead}, {"color", Access::TextureStorageWrite},
     };
-    const uint32_t groupsX = (parameters.width + 7u) / 8u;
-    const uint32_t groupsY = (parameters.height + 7u) / 8u;
+    const uint32_t groupsX = reflectionTileCount(parameters.width);
+    const uint32_t groupsY = reflectionTileCount(parameters.height);
     std::vector<RenderGraphStage> stages;
-    if (meshGridFrame) {
-        LumenMeshSDFGrid::appendTraceUses(traceUses);
-        meshGrid_.appendStages(stages, *meshGridFrame);
+    const auto executeWithDenoising = [&] {
+        stages.insert(stages.end(), {
+            {"Reproject and accumulate reflections", temporalUses, [&](CommandBuffer& cmd) {
+                return temporal_.dispatch(cmd, *encodedTemporal, groupsX, groupsY);
+            }},
+            {"Bilateral filter reflections", bilateralUses, [&](CommandBuffer& cmd) {
+                return bilateral_.dispatch(cmd, *encodedBilateral, groupsX, groupsY);
+            }},
+            {"Composite reflections", compositeUses, [&](CommandBuffer& cmd) {
+                return composite_.dispatch(cmd, *encoded, groupsX, groupsY);
+            }},
+        });
+        return context.executeStages(stages, {}, textures);
+    };
+    Result<> result;
+    if (optionEnabled("classifiedTracing")) {
+        const auto work = [&](const char* name) { return writer.buffer(context.outputBuffer(name).buffer()); };
+        const LumenReflectionTiledParams tiledParams{parameters, work("reflectionActiveTiles"),
+            work("reflectionClearTiles"), work("reflectionWorkCounts"), work("reflectionRayList"), kReflectionMaxDispatchX};
+        const auto tiled = writer.encode(tiledParams, kLumenReflectionTiledABI);
+        if (!tiled) { return makeError(tiled.error()); }
+        const auto schedule = writer.encode(LumenReflectionScheduleParams{
+            parameters.position, parameters.specular, parameters.rayData, parameters.rayHitDistance, sampledOutput("trace"),
+            work("reflectionTileMask"), tiledParams.activeTiles, tiledParams.clearTiles, tiledParams.workCounts,
+            tiledParams.rayList, work("reflectionDispatchArgs"), parameters.width, parameters.height, kReflectionMaxDispatchX,
+            parameters.maxRoughness, meshSDFTraceDistance_, kLumenCardTraceEndDistance, parameters.maxTraceDistance},
+            kLumenReflectionScheduleABI);
+        if (!schedule) { return makeError(schedule.error()); }
+        const auto indirect = [&](ComputeKernel& kernel, const EncodedParameters& args, ReflectionDispatch kind,
+                                  CommandBuffer& cmd) -> Result<> {
+            const auto dispatch = context.outputBuffer("reflectionDispatchArgs").buffer()->slice(
+                {uint32_t(kind) * kReflectionDispatchBytes, kReflectionDispatchBytes});
+            if (!dispatch) { return makeError(dispatch.error()); }
+            return kernel.dispatchIndirect(cmd, args, *dispatch);
+        };
+
+        constexpr Access read = Access::BufferStorageRead;
+        constexpr Access write = Access::BufferStorageWrite;
+        constexpr Access readWrite = Access::BufferStorageReadWrite;
+        constexpr Access sample = Access::TextureSampleRead;
+        constexpr Access store = Access::TextureStorageWrite;
+        constexpr RenderGraphStageUse dispatchArgs{"reflectionDispatchArgs", Access::BufferIndirectRead};
+        constexpr RenderGraphStageUse workCounts{"reflectionWorkCounts", read};
+        constexpr RenderGraphStageUse activeTiles{"reflectionActiveTiles", read};
+        const RenderGraphStageUse initUses[]{{"reflectionWorkCounts", write}};
+        const RenderGraphStageUse markUses[]{{"position", sample}, {"specular", sample}, {"reflectionTileMask", write}};
+        const RenderGraphStageUse listUses[]{{"reflectionTileMask", read}, {"reflectionWorkCounts", readWrite},
+            {"reflectionActiveTiles", write}, {"reflectionClearTiles", write}};
+        const RenderGraphStageUse setupUses[]{workCounts, {"reflectionDispatchArgs", write}};
+        const RenderGraphStageUse generateUses[]{dispatchArgs, workCounts, activeTiles,
+            {"position", sample}, {"normal", sample}, {"specular", sample},
+            {"reflections", store}, {"trace", store}, {"rayData", store}, {"rayHitDistance", store}};
+        const RenderGraphStageUse clearUses[]{dispatchArgs, workCounts, {"reflectionClearTiles", read},
+            {"reflections", store}, {"trace", store}, {"rayData", store}, {"rayHitDistance", store},
+            {"resolvedReflections", store}, {"resolvedHitDistance", store}};
+        const RenderGraphStageUse screenUses[]{dispatchArgs, workCounts, activeTiles,
+            {"position", sample}, {"normal", sample}, {"specular", sample}, {"rayData", sample},
+            {"closestHZB", read}, {"previousDepth", sample}, {"previousColor", sample}, {"traceView", read},
+            {"reflections", store}, {"trace", store}, {"rayHitDistance", store}};
+        const RenderGraphStageUse compactUses[]{dispatchArgs, activeTiles, {"reflectionWorkCounts", readWrite},
+            {"position", sample}, {"rayData", sample}, {"rayHitDistance", sample}, {"trace", sample},
+            {"reflectionRayList", write}};
+        const RenderGraphStageUse traceListUses[]{dispatchArgs, workCounts, {"reflectionRayList", read},
+            {"position", sample}, {"specular", sample}, {"rayData", sample},
+            {"reflections", store}, {"trace", store}, {"rayHitDistance", Access::TextureStorageReadWrite},
+            {"pageTable", sample}, {"pageAtlas", sample}, {"coarseMip", sample}, {"domain", read},
+            {"objectGrid", read}, {"objectGridScene", read}, {"cards", read}, {"cardScene", read},
+            {"cardDepth", sample}, {"cardLighting", sample}};
+        std::vector<RenderGraphStageUse> detailUses(std::begin(traceListUses), std::end(traceListUses));
+        std::vector<RenderGraphStageUse> tiledResolveUses(std::begin(resolveUses), std::end(resolveUses));
+        tiledResolveUses.insert(tiledResolveUses.end(), {dispatchArgs, workCounts, activeTiles});
+        stages.insert(stages.end(), {
+            {"Initialize reflection work counts", initUses, [&](CommandBuffer& cmd) {
+                return initWork_.dispatch(cmd, *schedule, 1, 1);
+            }},
+            {"Mark reflection tiles", markUses, [&](CommandBuffer& cmd) {
+                return markTiles_.dispatch(cmd, *schedule, groupsX, groupsY);
+            }},
+            {"Build active and clear reflection tile lists", listUses, [&](CommandBuffer& cmd) {
+                return buildTileLists_.dispatch(cmd, *schedule, reflectionTileCount(groupsX), reflectionTileCount(groupsY));
+            }},
+            {"Set up reflection tile dispatches", setupUses, [&](CommandBuffer& cmd) {
+                return setupTileArgs_.dispatch(cmd, *schedule, 1, 1);
+            }},
+            {"Generate reflection rays in active tiles", generateUses, [&](CommandBuffer& cmd) {
+                return indirect(generateTiledRays_, *tiled, ReflectionDispatch::ActiveTiles, cmd);
+            }},
+            {"Clear unused reflection tiles", clearUses, [&](CommandBuffer& cmd) {
+                return indirect(clearTiles_, *tiled, ReflectionDispatch::ClearTiles, cmd);
+            }},
+        });
+        if (screenTraces) {
+            stages.push_back({"Trace screen reflections in active tiles", screenUses, [&](CommandBuffer& cmd) {
+                return indirect(traceScreenTiles_, *tiled, ReflectionDispatch::ActiveTiles, cmd);
+            }});
+        }
+        if (meshGridFrame) {
+            LumenMeshSDFGrid::appendTraceUses(detailUses);
+            meshGrid_.appendStages(stages, *meshGridFrame);
+            stages.insert(stages.end(), {
+                {"Compact unfinished reflections for Mesh SDF", compactUses, [&](CommandBuffer& cmd) {
+                    return indirect(compactDetailRays_, *schedule, ReflectionDispatch::CompactRays, cmd);
+                }},
+                {"Set up reflection Mesh SDF dispatch", setupUses, [&](CommandBuffer& cmd) {
+                    return setupDetailArgs_.dispatch(cmd, *schedule, 1, 1);
+                }},
+                {"Trace compacted reflections through Mesh SDF", detailUses, [&](CommandBuffer& cmd) {
+                    return indirect(traceDetailRays_, *tiled, ReflectionDispatch::DetailRays, cmd);
+                }},
+            });
+        }
+        stages.insert(stages.end(), {
+            {"Compact remaining reflections for GDF", compactUses, [&](CommandBuffer& cmd) {
+                return indirect(compactGDFRays_, *schedule, ReflectionDispatch::CompactRays, cmd);
+            }},
+            {"Set up reflection GDF dispatch", setupUses, [&](CommandBuffer& cmd) {
+                return setupGDFArgs_.dispatch(cmd, *schedule, 1, 1);
+            }},
+            {"Trace compacted reflections through GDF", traceListUses, [&](CommandBuffer& cmd) {
+                return indirect(traceGDFRays_, *tiled, ReflectionDispatch::GDFRays, cmd);
+            }},
+            {"Resolve active reflection tiles", tiledResolveUses, [&](CommandBuffer& cmd) {
+                return indirect(resolve_, *tiled, ReflectionDispatch::ActiveTiles, cmd);
+            }},
+        });
+        result = executeWithDenoising();
+    } else {
+        if (meshGridFrame) {
+            LumenMeshSDFGrid::appendTraceUses(traceUses);
+            meshGrid_.appendStages(stages, *meshGridFrame);
+        }
+        stages.insert(stages.end(), {
+            {"Trace software reflections", traceUses, [&](CommandBuffer& cmd) {
+                return trace_.dispatch(cmd, *encoded, groupsX, groupsY);
+            }},
+            {"Resolve reflections", resolveUses, [&](CommandBuffer& cmd) {
+                return resolve_.dispatch(cmd, *encoded, groupsX, groupsY);
+            }},
+        });
+        result = executeWithDenoising();
     }
-    stages.insert(stages.end(), {
-        {"Trace software reflections", traceUses, [&](CommandBuffer& cmd) {
-            return trace_.dispatch(cmd, *encoded, groupsX, groupsY);
-        }},
-        {"Resolve reflections", resolveUses, [&](CommandBuffer& cmd) {
-            return resolve_.dispatch(cmd, *encoded, groupsX, groupsY);
-        }},
-        {"Reproject and accumulate reflections", temporalUses, [&](CommandBuffer& cmd) {
-            return temporal_.dispatch(cmd, *encodedTemporal, groupsX, groupsY);
-        }},
-        {"Bilateral filter reflections", bilateralUses, [&](CommandBuffer& cmd) {
-            return bilateral_.dispatch(cmd, *encodedBilateral, groupsX, groupsY);
-        }},
-        {"Composite reflections", compositeUses, [&](CommandBuffer& cmd) {
-            return composite_.dispatch(cmd, *encoded, groupsX, groupsY);
-        }},
-    });
-    auto result = context.executeStages(stages, {}, textures);
     if (!result) { return result; }
     for (const auto* name : kHistoryNames) {
         result = history_.publishTextureState(commands, name, HistorySlot::Current, ResourceState::ShaderRead, true);

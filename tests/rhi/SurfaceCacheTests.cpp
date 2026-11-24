@@ -23,6 +23,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <spdlog/spdlog.h>
 
 namespace metallic::tests {
 namespace {
@@ -3383,11 +3384,11 @@ private:
 
 METALLIC_REGISTER_RHI_TEST(LumenMovingGatherHistoryTest);
 
-class LumenReflectionTest final : public RHITest {
+class LumenReflectionTest : public RHITest {
 public:
-    LumenReflectionTest()
+    explicit LumenReflectionTest(bool classified = false) : classified_(classified)
     {
-        name = "lumen_software_reflections";
+        name = classified ? "lumen_classified_reflections" : "lumen_software_reflections";
         type = RHITestType::Rendering;
     }
 
@@ -3428,7 +3429,9 @@ public:
         }
 
         RenderGraph graph;
-        if (!makeGraph(graph, field, cards)) { return RHITestResult::fail("Could not build the software reflection graph"); }
+        if (!makeGraph(graph, field, cards, classified_, false)) {
+            return RHITestResult::fail("Could not build the software reflection graph");
+        }
         bench::ValidationRecorder validation;
         auto device = render::createDevice({.applicationName = "Lumen software reflection regression",
             .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
@@ -3471,8 +3474,14 @@ public:
             .historyResources = &history, .recordingWorkerLimit = 1};
         const auto runFrame = [&](float roughness, bool unlit, uint32_t minHits,
                                   ReflectionHistory expectedHistory = ReflectionHistory::Absent) {
-            auto frame = captureFrame(inspector, executor, submission, log);
-            if (frame) { log = verifyFrame(*frame, roughness, unlit, minHits, expectedHistory); }
+            auto frame = captureFrame(inspector, executor, submission, classified_, log);
+            if (frame) {
+                log = verifyFrame(*frame, roughness, unlit, minHits, expectedHistory);
+                if (log.empty() && classified_) {
+                    ReflectionCoverage coverage;
+                    log = verifyClassifiedFrame(*frame, false, coverage);
+                }
+            }
             return frame && log.empty();
         };
 
@@ -3527,6 +3536,33 @@ public:
         receiver.unlit = true;
         if (!document.setMaterialProperties(0, receiver)) { return RHITestResult::fail("Could not set the unlit receiver material"); }
         if (!runFrame(0.0f, true, 0u)) { return RHITestResult::fail("Unlit receiver: " + log); }
+        if (classified_) {
+            receiver.unlit = false;
+            if (!document.setMaterialProperties(0, receiver)) { return RHITestResult::fail("Could not restore the mirror receiver"); }
+            camera.eye = {0.0f, 0.3f, 3.0f};
+            camera.center = {0.0f, 0.3f, 0.0f};
+            camera.orthographic = false;
+            camera.fovDegrees = 63.0f;
+            if (!view.setCamera(camera)) { return RHITestResult::fail("Could not initialize the reflection handoff camera"); }
+            view.cameraCut();
+            RenderGraph handoffGraph;
+            if (!makeGraph(handoffGraph, field, cards, true, true) ||
+                !executor.compile(gpu, handoffGraph, kAtlasEdge, kAtlasEdge, RenderGraphCompileOptions{.enableDebugReadback = true}, log)) {
+                return RHITestResult::fail("Reflection handoff graph compile: " + log);
+            }
+            ReflectionCoverage coverage;
+            for (uint32_t frameIndex = 0; frameIndex < 4u; ++frameIndex) {
+                auto frame = captureFrame(inspector, executor, submission, true, log);
+                if (!frame) { return RHITestResult::fail(log); }
+                log = verifyClassifiedFrame(*frame, true, coverage);
+                if (!log.empty()) { return RHITestResult::fail("Screen and Mesh SDF handoff: " + log); }
+            }
+            if (coverage.detailRays == 0 || coverage.gdfRays == 0) {
+                return RHITestResult::fail("Reflection handoff did not exercise both world-space ray queues");
+            }
+            spdlog::info("Reflection handoff: {} Screen hits, {} Mesh SDF hits, {} Mesh SDF rays, {} GDF rays",
+                coverage.screenHits, coverage.detailHits, coverage.detailRays, coverage.gdfRays);
+        }
         if (validation.failed()) { return RHITestResult::fail("Lumen reflection Vulkan validation: " + validation.snapshot().dump()); }
         return RHITestResult::pass("Resolve reused neighboring hits. Reflection history reprojected, and Bilateral filtered rough reflections before composite.");
     }
@@ -3538,11 +3574,22 @@ private:
     static constexpr float kMaxTraceDistance = 4.0f;
     static constexpr float kOrthoHeight = 1.25f;
     static constexpr float kPanDistance = 0.12f;
-    using ReflectionFrame = std::array<CardCapture, 2>;
+    static constexpr uint32_t kReflectionTileEdge = 8u;
+    static constexpr uint32_t kTilesPerAxis = kAtlasEdge / kReflectionTileEdge;
+    static constexpr uint32_t kTileCount = kTilesPerAxis * kTilesPerAxis;
+    static constexpr size_t kReflectionArtifactCount = 10;
+    using ReflectionFrame = std::array<CardCapture, 3>;
     using Pixel = std::array<float, 4>;
     enum class ReflectionHistory { Absent, FirstVirtual, Accumulated, Disoccluded, FirstSurface };
+    struct ReflectionCoverage {
+        uint32_t screenHits = 0;
+        uint32_t detailHits = 0;
+        uint32_t detailRays = 0;
+        uint32_t gdfRays = 0;
+    };
 
-    static bool makeGraph(render::RenderGraph& graph, const std::filesystem::path& field, const std::filesystem::path& cards)
+    static bool makeGraph(render::RenderGraph& graph, const std::filesystem::path& field, const std::filesystem::path& cards,
+        bool classified, bool traceHandoff)
     {
         using render::makeRenderGraphFieldName;
         const auto edge = [&](std::string_view from, std::string_view source, std::string_view to, std::string_view target) {
@@ -3555,33 +3602,51 @@ private:
                 {"center", {0.0f, 0.5f, 0.75f}}, {"extent", 2.5f}, {"resolution", 112}, {"maxPhysicalPages", 1728},
                 {"quantized", true}, {"buildObjectGrid", true}, {"persistentPages", true}}) ||
             !graph.addNode("LumenSurfaceCachePass", "SurfaceCache", {{"meshCardPaths", {cards.generic_string()}},
-                {"atlasSize", kAtlasEdge}, {"tileResolution", kTileEdge}, {"persistentCards", true}}) ||
-            !graph.addNode("LumenReflectionPass", "Reflections",
-                {{"maxTraceDistance", kMaxTraceDistance}, {"maxRoughness", kMaxRoughness}, {"dynamicReprojection", true}})) {
+                {"atlasSize", kAtlasEdge}, {"tileResolution", kTileEdge}, {"persistentCards", true}})) {
             return false;
         }
         for (const auto* name : {"visibility", "depth", "rasterInfo"}) {
             if (!edge("VBuffer", name, "Deferred", name)) { return false; }
         }
-        for (const auto* name : {"pageTable", "pageAtlas", "coarseMip", "domain", "objectGrid", "objectGridScene"}) {
-            if (!edge("GDF", name, "Reflections", name)) { return false; }
+        if (traceHandoff && (!graph.addNode("LumenScreenTraceSetupPass", "ScreenTrace") ||
+            !edge("VBuffer", "depth", "ScreenTrace", "depth") || !edge("Deferred", "color", "ScreenTrace", "color"))) {
+            return false;
         }
-        constexpr std::array surfaceBindings{std::pair{"cards", "cards"}, std::pair{"scene", "cardScene"},
-            std::pair{"depth", "cardDepth"}, std::pair{"lighting", "cardLighting"}};
-        for (const auto& [from, to] : surfaceBindings) {
-            if (!edge("SurfaceCache", from, "Reflections", to)) { return false; }
-        }
-        return edge("Deferred", "lumenPosition", "Reflections", "position") &&
-            edge("Deferred", "lumenNormal", "Reflections", "normal") &&
-            edge("Deferred", "lumenSpecular", "Reflections", "specular") &&
-            edge("Deferred", "lumenPreviousPosition", "Reflections", "previousPosition") &&
-            edge("Deferred", "color", "Reflections", "sceneColor") && graph.markOutput("Reflections.color");
+        const auto addReflection = [&](std::string_view name, bool classify) {
+            render::RenderGraphProperties properties{{"maxTraceDistance", kMaxTraceDistance}, {"maxRoughness", kMaxRoughness},
+                {"dynamicReprojection", true}, {"classifiedTracing", classify}};
+            if (traceHandoff) {
+                properties.update({{"screenTraces", true}, {"detailTracing", true}, {"meshSDFTraceDistance", 3.0f},
+                    {"detailDistanceFieldPaths", {field.generic_string()}}});
+            }
+            if (!graph.addNode("LumenReflectionPass", std::string(name), std::move(properties))) { return false; }
+            for (const auto* fieldName : {"pageTable", "pageAtlas", "coarseMip", "domain", "objectGrid", "objectGridScene"}) {
+                if (!edge("GDF", fieldName, name, fieldName)) { return false; }
+            }
+            constexpr std::array surfaceBindings{std::pair{"cards", "cards"}, std::pair{"scene", "cardScene"},
+                std::pair{"depth", "cardDepth"}, std::pair{"lighting", "cardLighting"}};
+            for (const auto& [from, to] : surfaceBindings) {
+                if (!edge("SurfaceCache", from, name, to)) { return false; }
+            }
+            if (traceHandoff) {
+                for (const auto* fieldName : {"closestHZB", "previousDepth", "previousColor", "traceView"}) {
+                    if (!edge("ScreenTrace", fieldName, name, fieldName)) { return false; }
+                }
+                if (!edge("VBuffer", "depth", name, "detailDepth")) { return false; }
+            }
+            return edge("Deferred", "lumenPosition", name, "position") &&
+                edge("Deferred", "lumenNormal", name, "normal") &&
+                edge("Deferred", "lumenSpecular", name, "specular") &&
+                edge("Deferred", "lumenPreviousPosition", name, "previousPosition") &&
+                edge("Deferred", "color", name, "sceneColor") && graph.markOutput(makeRenderGraphFieldName(name, "color"));
+        };
+        return addReflection("Reflections", classified) && (!classified || addReflection("FusedReflections", false));
     }
 
     static std::optional<ReflectionFrame> captureFrame(CardUpdateInspector& inspector, render::RenderGraphExecutor& executor,
-        const render::RenderGraphSubmitDesc& submission, std::string& log)
+        const render::RenderGraphSubmitDesc& submission, bool classified, std::string& log)
     {
-        inspector.request = {{"method", "capture.batch"}, {"params", {{"batches", debug::DebugValue::array({
+        auto batches = debug::DebugValue::array({
             {{"pass", "Deferred"}, {"resources", debug::DebugValue::array({cardAtlasCapture("Deferred.lumenPosition"),
                 cardAtlasCapture("Deferred.lumenSpecular"), cardAtlasCapture("Deferred.color")})}},
             {{"pass", "Reflections"}, {"resources", debug::DebugValue::array({cardAtlasCapture("Reflections.reflections"),
@@ -3590,7 +3655,19 @@ private:
                 cardAtlasCapture("Reflections.resolvedHitDistance"), cardAtlasCapture("Reflections.temporalReflections"),
                 cardAtlasCapture("Reflections.temporalState"), cardAtlasCapture("Reflections.bilateralReflections"),
                 cardAtlasCapture("Reflections.color")})}},
-        })}}}};
+        });
+        if (classified) {
+            auto& schedule = batches[1]["resources"];
+            schedule.push_back(cardBufferCapture("Reflections.reflectionWorkCounts", 4u));
+            schedule.push_back(cardBufferCapture("Reflections.reflectionActiveTiles", kTileCount));
+            schedule.push_back(cardBufferCapture("Reflections.reflectionClearTiles", kTileCount));
+            schedule.push_back(cardBufferCapture("Reflections.reflectionDispatchArgs", 15u));
+            schedule.push_back(cardBufferCapture("Reflections.reflectionRayList", kAtlasPixels));
+            batches.push_back({{"pass", "FusedReflections"}, {"resources", debug::DebugValue::array({
+                cardAtlasCapture("FusedReflections.reflections"), cardAtlasCapture("FusedReflections.trace"),
+                cardAtlasCapture("FusedReflections.rayData"), cardAtlasCapture("FusedReflections.rayHitDistance")})}});
+        }
+        inspector.request = {{"method", "capture.batch"}, {"params", {{"batches", std::move(batches)}}}};
         if (const auto result = executor.execute(submission); !result) {
             log = std::string(render::resultToString(result));
             return std::nullopt;
@@ -3601,7 +3678,7 @@ private:
         auto& core = inspector.runtime.core();
         const auto& jobs = inspector.response.at("result").at("jobs");
         ReflectionFrame captures;
-        for (size_t index = 0; index < captures.size(); ++index) {
+        for (size_t index = 0; index < (classified ? captures.size() : captures.size() - 1u); ++index) {
             const auto id = jobs.at(index).at("job").get<std::string>();
             captures[index] = core.completedCapture(id);
             if (!captures[index]) {
@@ -3612,10 +3689,126 @@ private:
         return captures;
     }
 
+    bool classified_;
+
     static Pixel readHalfPixel(const debug::DebugArtifact& artifact, size_t pixel)
     {
         const auto halfValues = readSurfaceValue<std::array<uint16_t, 4>>(artifact.bytes, pixel);
         return {halfToFloat(halfValues[0]), halfToFloat(halfValues[1]), halfToFloat(halfValues[2]), halfToFloat(halfValues[3])};
+    }
+
+    static std::string verifyClassifiedFrame(const ReflectionFrame& frame, bool traceHandoff, ReflectionCoverage& coverage)
+    {
+        const auto& staged = frame[1]->artifacts;
+        const auto& fused = frame[2]->artifacts;
+        constexpr std::array imageStrides{8u, 16u, 8u, 2u};
+        constexpr std::array bufferSizes{4u, kTileCount, kTileCount, 15u, uint32_t(kAtlasPixels)};
+        if (staged.size() != kReflectionArtifactCount + bufferSizes.size() || fused.size() != imageStrides.size()) {
+            return "Missing classified reflection comparison artifacts";
+        }
+        for (size_t image = 0; image < imageStrides.size(); ++image) {
+            if (staged[image].bytes.size() != kAtlasPixels * imageStrides[image] ||
+                fused[image].bytes.size() != staged[image].bytes.size()) {
+                return "Unexpected classified reflection image readback layout";
+            }
+        }
+        for (size_t buffer = 0; buffer < bufferSizes.size(); ++buffer) {
+            if (staged[kReflectionArtifactCount + buffer].bytes.size() != bufferSizes[buffer] * sizeof(uint32_t)) {
+                return "Unexpected classified reflection work buffer layout";
+            }
+        }
+        const auto& counterBytes = staged[kReflectionArtifactCount].bytes;
+        const auto [activeTiles, clearTiles, detailRays, gdfRays] = readSurfaceValue<std::array<uint32_t, 4>>(counterBytes, 0);
+        if (activeTiles > kTileCount || clearTiles != kTileCount - activeTiles || gdfRays > kAtlasPixels ||
+            detailRays > kAtlasPixels || (!traceHandoff && detailRays != 0)) {
+            return "Classified reflection counters exceed capacity or lost a tile";
+        }
+        constexpr float kScreenHit = 5.0f;
+        constexpr float kMeshSDFHit = 9.0f;
+        std::array<bool, kTileCount> tileHasRay{};
+        std::array<bool, kAtlasPixels> needsGDF{};
+        uint32_t screenHits = 0, detailHits = 0, expectedGDFRays = 0;
+        for (size_t pixel = 0; pixel < kAtlasPixels; ++pixel) {
+            const auto stagedTrace = readSurfaceValue<Pixel>(staged[1].bytes, pixel);
+            const auto fusedTrace = readSurfaceValue<Pixel>(fused[1].bytes, pixel);
+            const auto stagedRay = readSurfaceValue<std::array<uint16_t, 4>>(staged[2].bytes, pixel);
+            const auto fusedRay = readSurfaceValue<std::array<uint16_t, 4>>(fused[2].bytes, pixel);
+            const auto stagedDistance = readSurfaceValue<uint16_t>(staged[3].bytes, pixel);
+            const auto fusedDistance = readSurfaceValue<uint16_t>(fused[3].bytes, pixel);
+            // Separate trace kernels can round a world-space hit to an adjacent R16F
+            // centimeter code. Keep the hit sign and the untraced sentinel exact.
+            const bool distancesMatch = stagedDistance == fusedDistance ||
+                (traceHandoff && stagedRay[3] != 0 && ((stagedDistance ^ fusedDistance) & 0x8000u) == 0u &&
+                    std::abs(int(stagedDistance) - int(fusedDistance)) == 1);
+            if (stagedRay != fusedRay || !distancesMatch ||
+                !std::equal(stagedTrace.begin() + 1, stagedTrace.end(), fusedTrace.begin() + 1) ||
+                !(std::abs(stagedTrace[0] - fusedTrace[0]) <= 0.001f)) {
+                return std::format("Classified reflection trace differs from fused at pixel {} (class {} vs {}, "
+                    "distance {} vs {} m, packed 0x{:04x} vs 0x{:04x}, ray equal {})", pixel, stagedTrace[1], fusedTrace[1],
+                    stagedTrace[0], fusedTrace[0], stagedDistance, fusedDistance, stagedRay == fusedRay);
+            }
+            const auto stagedLighting = readHalfPixel(staged[0], pixel);
+            const auto fusedLighting = readHalfPixel(fused[0], pixel);
+            if (!std::ranges::equal(stagedLighting, fusedLighting, [](float a, float b) {
+                return std::abs(a - b) <= std::max(0.0001f, std::abs(b) * 0.001f);
+            })) {
+                return std::format("Classified reflection radiance differs from fused at pixel {} (class {}, "
+                    "RGB [{}, {}, {}] vs [{}, {}, {}])", pixel, stagedTrace[1], stagedLighting[0], stagedLighting[1],
+                    stagedLighting[2], fusedLighting[0], fusedLighting[1], fusedLighting[2]);
+            }
+            if (stagedRay[3] == 0) { continue; }
+            const auto tile = (pixel / kAtlasEdge / kReflectionTileEdge) * kTilesPerAxis +
+                pixel % kAtlasEdge / kReflectionTileEdge;
+            tileHasRay[tile] = true;
+            screenHits += stagedTrace[1] == kScreenHit;
+            detailHits += stagedTrace[1] == kMeshSDFHit;
+            needsGDF[pixel] = stagedTrace[1] != kScreenHit && stagedTrace[1] != kMeshSDFHit;
+            expectedGDFRays += needsGDF[pixel];
+        }
+        if (detailHits > detailRays || detailRays > expectedGDFRays + detailHits || gdfRays != expectedGDFRays) {
+            return std::format("Invalid reflection handoff counts ({} Screen hits, {} Detail hits, {} Detail rays, {} GDF rays, "
+                "{} expected GDF rays)", screenHits, detailHits, detailRays, gdfRays, expectedGDFRays);
+        }
+        std::array<bool, kTileCount> visitedTiles{};
+        const auto checkTiles = [&](size_t buffer, uint32_t count, bool active) {
+            for (uint32_t index = 0; index < count; ++index) {
+                const uint32_t packed = readSurfaceValue<uint32_t>(staged[buffer].bytes, index);
+                const uint32_t x = packed & 0xfffu, y = packed >> 12u;
+                if (x >= kTilesPerAxis || y >= kTilesPerAxis) { return false; }
+                const uint32_t tile = y * kTilesPerAxis + x;
+                if (visitedTiles[tile] || tileHasRay[tile] != active) { return false; }
+                visitedTiles[tile] = true;
+            }
+            return true;
+        };
+        if (!checkTiles(kReflectionArtifactCount + 1u, activeTiles, true) ||
+            !checkTiles(kReflectionArtifactCount + 2u, clearTiles, false)) {
+            return "Active and clear reflection tile lists did not partition the view";
+        }
+        const auto& args = staged[kReflectionArtifactCount + 3u].bytes;
+        const auto checkArgs = [&](size_t index, uint32_t expectedX) {
+            const auto [x, y, z] = readSurfaceValue<std::array<uint32_t, 3>>(args, index);
+            return x == expectedX && z == 1u && (y == 1u || (x == 0 && y == 0));
+        };
+        if (!checkArgs(0, activeTiles) || !checkArgs(1, clearTiles) ||
+            !(checkArgs(2, activeTiles) || checkArgs(2, (activeTiles + 15u) / 16u)) ||
+            (traceHandoff && !checkArgs(3, (detailRays + 63u) / 64u)) || !checkArgs(4, (gdfRays + 63u) / 64u)) {
+            return "Indirect reflection arguments did not match their compacted work counts";
+        }
+        const auto& compacted = staged[kReflectionArtifactCount + 4u].bytes;
+        for (uint32_t index = 0; index < gdfRays; ++index) {
+            const uint32_t packed = readSurfaceValue<uint32_t>(compacted, index);
+            const uint32_t x = packed & 0x3fffu, y = packed >> 14u;
+            if (x >= kAtlasEdge || y >= kAtlasEdge || !needsGDF[y * kAtlasEdge + x]) {
+                return "GDF reflection queue contained a duplicate ray or a ray completed by an earlier stage";
+            }
+            needsGDF[y * kAtlasEdge + x] = false;
+        }
+        coverage.screenHits += screenHits;
+        coverage.detailHits += detailHits;
+        coverage.detailRays += detailRays;
+        coverage.gdfRays += gdfRays;
+        return {};
     }
 
     static bool withinBilateralNeighborhood(const debug::DebugArtifact& input, uint32_t x, uint32_t y,
@@ -3650,9 +3843,10 @@ private:
         const auto& deferred = frame[0]->artifacts;
         const auto& reflections = frame[1]->artifacts;
         const auto matchesLayout = [](const auto& artifacts, const auto& strides) {
-            return std::ranges::equal(artifacts, strides, [](const auto& artifact, size_t stride) {
-                return artifact.bytes.size() == kAtlasPixels * stride;
-            });
+            return artifacts.size() >= strides.size() && std::equal(strides.begin(), strides.end(), artifacts.begin(),
+                [](size_t stride, const auto& artifact) {
+                    return artifact.bytes.size() == kAtlasPixels * stride;
+                });
         };
         if (!matchesLayout(deferred, std::array{16u, 8u, 16u}) ||
             !matchesLayout(reflections, std::array{8u, 16u, 8u, 2u, 8u, 2u, 8u, 4u, 8u, 16u})) {
@@ -3829,6 +4023,13 @@ private:
 };
 
 METALLIC_REGISTER_RHI_TEST(LumenReflectionTest);
+
+class LumenClassifiedReflectionTest final : public LumenReflectionTest {
+public:
+    LumenClassifiedReflectionTest() : LumenReflectionTest(true) {}
+};
+
+METALLIC_REGISTER_RHI_TEST(LumenClassifiedReflectionTest);
 
 } // namespace
 } // namespace metallic::tests

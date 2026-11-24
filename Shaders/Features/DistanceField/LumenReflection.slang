@@ -62,6 +62,11 @@ struct LumenReflectionParams
     ResourceHandle<Texture2D<float4>> bilateralReflections;
     LumenReflectionScreenBindings screen;
     LumenReflectionMeshSDFBindings detail;
+#if defined(METALLIC_LUMEN_REFLECTION_TILED_TRACING)
+    uint2 basePadding;
+    ResourceHandle<StructuredBuffer<uint>> activeTiles, clearTiles, workCounts, rayList;
+    uint maxDispatchX;
+#endif
 };
 
 static const float kGGXSamplingBias = 0.1f;
@@ -71,6 +76,8 @@ static const float kMaxRayIntensity = 40.0f;
 static const float kInvRoughnessFadeLength = 1.0f / 0.1f;
 static const uint kReflectionScreenHit = 5u;
 static const uint kReflectionMeshSDFHit = 9u;
+static const float4 kEmptyReflectionTrace = float4(-1.0f, float(kGlobalDistanceFieldEmpty), -1.0f, 0.0f);
+static const float3 kInvalidReflectionLighting = float3(65024.0f, 65024.0f, 64512.0f);
 
 // UE 5.7.4 MonteCarlo.ush, isotropic material tangent basis.
 float3x3 getReflectionTangentBasis(float3 tangentZ)
@@ -150,71 +157,77 @@ float4 generateReflectionRay(LumenReflectionParams params, uint2 pixel, float3 w
     return f16tof32(f32tof16(float4(rayDirection, coneAngle)));
 }
 
-float reflectionTraceDistanceThroughR16(float distance)
+float quantizeReflectionDistanceCm(float distanceCm)
 {
-    return f16tof32(f32tof16(distance * 100.0f)) * 0.01f;
+    return f16tof32(f32tof16(distanceCm));
 }
 
-float3 traceSoftwareReflection(LumenReflectionParams params, uint2 pixel, float4 position, float3 normal,
-    float4 rayData, out float4 debugTrace, out float rayHitDistance)
+float reflectionTraceDistanceThroughR16(float distance)
 {
-    const float maxTraceDistanceCm = min(params.maxTraceDistance * 100.0f, 65504.0f);
-    const float maxTraceDistance = f16tof32(f32tof16(maxTraceDistanceCm) & 0x7fffu) * 0.01f;
-    float traceHitDistance = 0.0f;
+    return quantizeReflectionDistanceCm(distance * 100.0f) * 0.01f;
+}
+
+float reflectionTraceDistanceCm(LumenReflectionParams params)
+{
+    return min(params.maxTraceDistance * 100.0f, 65504.0f);
+}
+
+float reflectionQuantizedMaxDistance(float maxTraceDistanceCm)
+{
+    return f16tof32(f32tof16(maxTraceDistanceCm) & 0x7fffu) * 0.01f;
+}
+
 #if defined(METALLIC_LUMEN_REFLECTION_SCREEN_TRACES)
+bool traceReflectionScreen(LumenReflectionParams params, uint2 pixel, float3 position, float3 normal,
+    float3 direction, float maxTraceDistance, out float3 lighting, out float hitDistance)
+{
     const LumenScreenTraceInputs screen = {resolveUniform(params.screen.closestHZB),
         resolveUniform(params.screen.previousDepth), resolveUniform(params.screen.previousColor),
         resolveUniform(params.screen.traceView)};
-    float3 screenLighting;
-    if (traceLumenReflectionScreenRay(screen, pixel, position.xyz, normal, rayData.xyz, maxTraceDistance,
-            params.frameIndex, screenLighting, traceHitDistance)) {
-        debugTrace = float4(traceHitDistance, float(kReflectionScreenHit), -1.0f, 0.0f);
-        rayHitDistance = -max(traceHitDistance * 100.0f, 0.0f);
-        return screenLighting;
-    }
-    traceHitDistance = reflectionTraceDistanceThroughR16(traceHitDistance);
+    return traceLumenReflectionScreenRay(screen, pixel, position, normal, direction, maxTraceDistance,
+        params.frameIndex, lighting, hitDistance);
+}
 #endif
 
-    const float3 samplePosition = position.xyz + kSurfaceBias * rayData.xyz;
-    const LumenGlobalTraceScene scene = resolveLumenGlobalTraceScene(params.scene, params.clipmapCount);
 #if defined(METALLIC_LUMEN_REFLECTION_DETAIL_TRACING)
+bool traceReflectionDetail(LumenReflectionParams params, LumenGlobalTraceScene scene, uint2 pixel, float4 position,
+    float3 samplePosition, float3 rayDirection, float maxTraceDistance, float traceStart,
+    out float3 lighting, out float opaqueHitDistance, out uint cardState)
+{
     const LumenReflectionMeshSDFBindings detail = params.detail;
     const float maxMeshSDFTraceDistance = detail.maxMeshSDFTraceDistance;
     const float cardTraceEndDistance = detail.cardTraceEndDistance;
-    // UE 5.7.4 ReflectionCompactTracesCS, then TraceMeshSDFs for the unresolved near rays.
-    if (scene.identityMatches && detail.grid.w != 0u && position.w < cardTraceEndDistance &&
-        traceHitDistance <= maxMeshSDFTraceDistance) {
-        const uint cellIndex = lumenMeshSDFGridCellIndex(pixel, position.w, detail.grid.xyz);
-        const uint2 cell = resolveUniform(detail.gridCells)[cellIndex];
-        const MeshDistanceFieldResources meshes = {resolveUniform(detail.mips), resolveUniform(detail.indirection),
-            resolveUniform(detail.atlas), resolveUniform(detail.atlasSampler), detail.bricksPerAxis};
-        const LumenMeshSDFTraceScene meshScene = {meshes, resolveUniform(detail.instances),
-            resolveUniform(detail.gridIndices), scene.cache};
-        const LumenMeshSDFTraceInput meshRay = {samplePosition, rayData.xyz,
-            max(traceHitDistance - kSurfaceBias, 0.0f), maxTraceDistance, maxMeshSDFTraceDistance,
-            cell.x, cell.y, false};
-        const LumenMeshSDFTraceResult meshHit = traceLumenMeshSDFs(meshScene, meshRay);
-        const float opaqueHitDistance = meshHit.hitDistance;
-        const float distanceFromViewpoint = length(detail.cameraPosition - position.xyz);
-        float distanceFade = saturate(4.0f * distanceFromViewpoint / cardTraceEndDistance - 3.0f);
-        distanceFade = max(distanceFade, saturate((opaqueHitDistance - maxMeshSDFTraceDistance * .7f) /
-            (maxMeshSDFTraceDistance * .3f)));
-        const float transparency = lerp(meshHit.transparency, 1.0f, distanceFade);
-        if (transparency < screenTraceNoise(float2(pixel) + 0.5f, 0.0f)) {
-            const uint cardState = meshHit.cardCovered ? kCacheSampled : kCacheUncovered;
-            debugTrace = float4(opaqueHitDistance, float(kReflectionMeshSDFHit), -1.0f, float(cardState));
-            rayHitDistance = -max(opaqueHitDistance * 100.0f, 0.0f);
-            return meshHit.radiance;
-        }
-        traceHitDistance = reflectionTraceDistanceThroughR16(opaqueHitDistance);
-    }
+    const uint cellIndex = lumenMeshSDFGridCellIndex(pixel, position.w, detail.grid.xyz);
+    const uint2 cell = resolveUniform(detail.gridCells)[cellIndex];
+    const MeshDistanceFieldResources meshes = {resolveUniform(detail.mips), resolveUniform(detail.indirection),
+        resolveUniform(detail.atlas), resolveUniform(detail.atlasSampler), detail.bricksPerAxis};
+    const LumenMeshSDFTraceScene meshScene = {meshes, resolveUniform(detail.instances),
+        resolveUniform(detail.gridIndices), scene.cache};
+    const LumenMeshSDFTraceInput meshRay = {samplePosition, rayDirection,
+        max(traceStart - kSurfaceBias, 0.0f), maxTraceDistance, maxMeshSDFTraceDistance,
+        cell.x, cell.y, false};
+    const LumenMeshSDFTraceResult meshHit = traceLumenMeshSDFs(meshScene, meshRay);
+    opaqueHitDistance = meshHit.hitDistance;
+    const float distanceFromViewpoint = length(detail.cameraPosition - position.xyz);
+    float distanceFade = saturate(4.0f * distanceFromViewpoint / cardTraceEndDistance - 3.0f);
+    distanceFade = max(distanceFade, saturate((opaqueHitDistance - maxMeshSDFTraceDistance * .7f) /
+        (maxMeshSDFTraceDistance * .3f)));
+    const float transparency = lerp(meshHit.transparency, 1.0f, distanceFade);
+    lighting = meshHit.radiance;
+    cardState = meshHit.cardCovered ? kCacheSampled : kCacheUncovered;
+    return transparency < screenTraceNoise(float2(pixel) + 0.5f, 0.0f);
+}
 #endif
 
+float3 traceReflectionVoxels(LumenReflectionParams params, LumenGlobalTraceScene scene, uint2 pixel, float3 position,
+    float3 samplePosition, float4 rayData, float traceHitDistance, float maxTraceDistance, float maxTraceDistanceCm,
+    out float4 debugTrace, out float rayHitDistance)
+{
     float startDistance = 0.0f;
 #if defined(METALLIC_LUMEN_REFLECTION_SCREEN_TRACES) || defined(METALLIC_LUMEN_REFLECTION_DETAIL_TRACING)
     // UE TraceVoxels pulls back four half-voxel extents from the previous method's endpoint.
     const uint clipmapForSurfaceExpand = computeGlobalDistanceFieldClipmapIndex(scene.domains, scene.clipmapCount,
-        position.xyz + traceHitDistance * rayData.xyz);
+        position + traceHitDistance * rayData.xyz);
     const float pullbackForSurfaceExpand = scene.domains[clipmapForSurfaceExpand].minAndVoxelSize.w * 2.0f;
     startDistance = max(traceHitDistance - pullbackForSurfaceExpand, 0.0f);
 #endif
@@ -229,6 +242,61 @@ float3 traceSoftwareReflection(LumenReflectionParams params, uint2 pixel, float4
     return hit.radiance.xyz;
 }
 
+float3 traceSoftwareReflection(LumenReflectionParams params, uint2 pixel, float4 position, float3 normal,
+    float4 rayData, out float4 debugTrace, out float rayHitDistance)
+{
+    const float maxTraceDistanceCm = reflectionTraceDistanceCm(params);
+    const float maxTraceDistance = reflectionQuantizedMaxDistance(maxTraceDistanceCm);
+    float traceHitDistance = 0.0f;
+#if defined(METALLIC_LUMEN_REFLECTION_SCREEN_TRACES)
+    float3 screenLighting;
+    if (traceReflectionScreen(params, pixel, position.xyz, normal, rayData.xyz, maxTraceDistance,
+            screenLighting, traceHitDistance)) {
+        debugTrace = float4(traceHitDistance, float(kReflectionScreenHit), -1.0f, 0.0f);
+        rayHitDistance = -max(traceHitDistance * 100.0f, 0.0f);
+        return screenLighting;
+    }
+    traceHitDistance = reflectionTraceDistanceThroughR16(traceHitDistance);
+#endif
+
+    const float3 samplePosition = position.xyz + kSurfaceBias * rayData.xyz;
+    const LumenGlobalTraceScene scene = resolveLumenGlobalTraceScene(params.scene, params.clipmapCount);
+#if defined(METALLIC_LUMEN_REFLECTION_DETAIL_TRACING)
+    // UE 5.7.4 ReflectionCompactTracesCS, then TraceMeshSDFs for the unresolved near rays.
+    const LumenReflectionMeshSDFBindings detail = params.detail;
+    if (scene.identityMatches && detail.grid.w != 0u && position.w < detail.cardTraceEndDistance &&
+        traceHitDistance <= detail.maxMeshSDFTraceDistance) {
+        float3 lighting;
+        float opaqueHitDistance;
+        uint cardState;
+        if (traceReflectionDetail(params, scene, pixel, position, samplePosition, rayData.xyz, maxTraceDistance,
+                traceHitDistance, lighting, opaqueHitDistance, cardState)) {
+            debugTrace = float4(opaqueHitDistance, float(kReflectionMeshSDFHit), -1.0f, float(cardState));
+            rayHitDistance = -max(opaqueHitDistance * 100.0f, 0.0f);
+            return lighting;
+        }
+        traceHitDistance = reflectionTraceDistanceThroughR16(opaqueHitDistance);
+    }
+#endif
+    return traceReflectionVoxels(params, scene, pixel, position.xyz, samplePosition, rayData, traceHitDistance,
+        maxTraceDistance, maxTraceDistanceCm, debugTrace, rayHitDistance);
+}
+
+float reflectionRoughnessFade(LumenReflectionParams params, float roughness)
+{
+    // UE 5.7.4 LumenReflectionsCombine.ush, opaque single-lobe fade.
+    return saturate((params.maxRoughness - roughness) * kInvRoughnessFadeLength);
+}
+
+float4 clampReflectionLighting(float3 lighting, float fadeAlpha)
+{
+    float maxLighting = max(lighting.x, max(lighting.y, lighting.z));
+    if (maxLighting > kMaxRayIntensity) {
+        lighting *= kMaxRayIntensity / maxLighting;
+    }
+    return float4(lighting, fadeAlpha);
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void lumenReflectionTraceMain(uint3 thread : SV_DispatchThreadID)
@@ -239,10 +307,9 @@ void lumenReflectionTraceMain(uint3 thread : SV_DispatchThreadID)
 
     const float4 position = resolveUniform(params.position).Load(int3(pixel, 0));
     const float4 specular = resolveUniform(params.specular).Load(int3(pixel, 0));
-    // UE 5.7.4 LumenReflectionsCombine.ush, opaque single-lobe fade.
-    const float fadeAlpha = saturate((params.maxRoughness - specular.w) * kInvRoughnessFadeLength);
+    const float fadeAlpha = reflectionRoughnessFade(params, specular.w);
     float4 reflections = 0.0f;
-    float4 debugTrace = float4(-1.0f, float(kGlobalDistanceFieldEmpty), -1.0f, 0.0f);
+    float4 debugTrace = kEmptyReflectionTrace;
     float4 rayData = 0.0f;
     float rayHitDistance = 0.0f;
     if (position.w > 0.0f && any(specular.xyz > 0.0f) && fadeAlpha > 0.0f) {
@@ -250,11 +317,7 @@ void lumenReflectionTraceMain(uint3 thread : SV_DispatchThreadID)
         rayData = generateReflectionRay(params, pixel, position.xyz, normal, specular.w);
 
         float3 lighting = traceSoftwareReflection(params, pixel, position, normal, rayData, debugTrace, rayHitDistance);
-        float maxLighting = max(lighting.x, max(lighting.y, lighting.z));
-        if (maxLighting > kMaxRayIntensity) {
-            lighting *= kMaxRayIntensity / maxLighting;
-        }
-        reflections = float4(lighting, fadeAlpha);
+        reflections = clampReflectionLighting(lighting, fadeAlpha);
     }
     resolveUniform(params.outputReflections)[pixel] = reflections;
     resolveUniform(params.trace)[pixel] = debugTrace;
@@ -262,10 +325,164 @@ void lumenReflectionTraceMain(uint3 thread : SV_DispatchThreadID)
     resolveUniform(params.outputRayHitDistance)[pixel] = rayHitDistance;
 }
 
+#if defined(METALLIC_LUMEN_REFLECTION_TILED_TRACING)
+bool getReflectionTilePixel(LumenReflectionParams params, uint2 group, uint2 lane, bool clear, out uint2 pixel)
+{
+    const uint tileCount = resolveUniform(params.workCounts)[clear ? 1u : 0u];
+    const uint tileIndex = group.y * min(tileCount, params.maxDispatchX) + group.x;
+    pixel = 0;
+    if (tileIndex >= tileCount) { return false; }
+    const uint tile = clear ? resolveUniform(params.clearTiles)[tileIndex] : resolveUniform(params.activeTiles)[tileIndex];
+    pixel = uint2(tile & 0xfffu, tile >> 12u) * 8u + lane;
+    return all(pixel < uint2(params.width, params.height));
+}
+
+bool getReflectionCompactedPixel(LumenReflectionParams params, uint2 group, uint lane, uint countIndex, out uint2 pixel)
+{
+    const uint rayCount = resolveUniform(params.workCounts)[countIndex];
+    const uint groupCount = (rayCount + 63u) / 64u;
+    const uint rayIndex = (group.y * min(groupCount, params.maxDispatchX) + group.x) * 64u + lane;
+    pixel = 0;
+    if (rayIndex >= rayCount) { return false; }
+    const uint ray = resolveUniform(params.rayList)[rayIndex];
+    pixel = uint2(ray & 0x3fffu, ray >> 14u);
+    return true;
+}
+
+void initializeTiledReflectionTrace(LumenReflectionParams params, uint2 pixel, float4 rayData, float fadeAlpha)
+{
+    resolveUniform(params.outputReflections)[pixel] = float4(0.0f, 0.0f, 0.0f, fadeAlpha);
+    resolveUniform(params.trace)[pixel] = kEmptyReflectionTrace;
+    resolveUniform(params.outputRayData)[pixel] = rayData;
+    resolveUniform(params.outputRayHitDistance)[pixel] = 0.0f;
+}
+
+void writeTiledReflectionTrace(LumenReflectionParams params, uint2 pixel, float3 lighting, float4 debugTrace)
+{
+    const float roughness = resolveUniform(params.specular).Load(int3(pixel, 0)).w;
+    resolveUniform(params.outputReflections)[pixel] = clampReflectionLighting(lighting, reflectionRoughnessFade(params, roughness));
+    resolveUniform(params.trace)[pixel] = debugTrace;
+}
+
+// UE 5.7.4 ReflectionGenerateRaysCS, reading the full-resolution tracing tiles.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void lumenReflectionGenerateTiledRaysMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID)
+{
+    const LumenReflectionParams params = getParameters<LumenReflectionParams>();
+    uint2 pixel;
+    if (!getReflectionTilePixel(params, group.xy, lane.xy, false, pixel)) { return; }
+
+    const float4 position = resolveUniform(params.position).Load(int3(pixel, 0));
+    const float4 specular = resolveUniform(params.specular).Load(int3(pixel, 0));
+    float fadeAlpha = reflectionRoughnessFade(params, specular.w);
+    float4 rayData = 0.0f;
+    if (position.w > 0.0f && any(specular.xyz > 0.0f) && fadeAlpha > 0.0f) {
+        const float3 normal = normalize(resolveUniform(params.normal).Load(int3(pixel, 0)).xyz);
+        rayData = generateReflectionRay(params, pixel, position.xyz, normal, specular.w);
+    } else {
+        fadeAlpha = 0.0f;
+    }
+    initializeTiledReflectionTrace(params, pixel, rayData, fadeAlpha);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void lumenReflectionClearTilesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID)
+{
+    const LumenReflectionParams params = getParameters<LumenReflectionParams>();
+    uint2 pixel;
+    if (!getReflectionTilePixel(params, group.xy, lane.xy, true, pixel)) { return; }
+
+    initializeTiledReflectionTrace(params, pixel, 0.0f, 0.0f);
+    resolveUniform(params.outputResolvedReflections)[pixel] = float4(kInvalidReflectionLighting, 0.0f);
+    resolveUniform(params.outputResolvedHitDistance)[pixel] = asfloat(0x7f7fffffu);
+}
+
+#if defined(METALLIC_LUMEN_REFLECTION_SCREEN_TRACES)
+// UE 5.7.4 ReflectionTraceScreenTexturesCS, preserving the miss endpoint in centimeters.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void lumenReflectionTraceScreenTiledMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID)
+{
+    const LumenReflectionParams params = getParameters<LumenReflectionParams>();
+    uint2 pixel;
+    if (!getReflectionTilePixel(params, group.xy, lane.xy, false, pixel)) { return; }
+    const float4 rayData = resolveUniform(params.rayData).Load(int3(pixel, 0));
+    if (rayData.w <= 0.0f) { return; }
+
+    const float3 position = resolveUniform(params.position).Load(int3(pixel, 0)).xyz;
+    const float3 normal = normalize(resolveUniform(params.normal).Load(int3(pixel, 0)).xyz);
+    const float maxTraceDistance = reflectionQuantizedMaxDistance(reflectionTraceDistanceCm(params));
+    float3 lighting;
+    float hitDistance;
+    const bool hit = traceReflectionScreen(params, pixel, position, normal, rayData.xyz, maxTraceDistance, lighting, hitDistance);
+    if (hit) {
+        writeTiledReflectionTrace(params, pixel, lighting, float4(hitDistance, float(kReflectionScreenHit), -1.0f, 0.0f));
+    }
+    const float hitDistanceCm = hitDistance * 100.0f;
+    // Use the explicit half conversion of the fused handoff before the R16F store.
+    resolveUniform(params.outputRayHitDistance)[pixel] = hit ? -max(hitDistanceCm, 0.0f) : quantizeReflectionDistanceCm(hitDistanceCm);
+}
+#endif
+
+#if defined(METALLIC_LUMEN_REFLECTION_DETAIL_TRACING)
+// UE 5.7.4 ReflectionTraceMeshSDFsCS, using the first compacted ray list.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void lumenReflectionTraceDetailTiledMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    const LumenReflectionParams params = getParameters<LumenReflectionParams>();
+    uint2 pixel;
+    if (!getReflectionCompactedPixel(params, group.xy, lane, 2u, pixel)) { return; }
+    const LumenGlobalTraceScene scene = resolveLumenGlobalTraceScene(params.scene, params.clipmapCount);
+    if (!scene.identityMatches || params.detail.grid.w == 0u) { return; }
+
+    const float4 position = resolveUniform(params.position).Load(int3(pixel, 0));
+    const float3 direction = resolveUniform(params.rayData).Load(int3(pixel, 0)).xyz;
+    const float3 samplePosition = position.xyz + kSurfaceBias * direction;
+    const float maxTraceDistance = reflectionQuantizedMaxDistance(reflectionTraceDistanceCm(params));
+    let rayHitDistance = resolveUniform(params.outputRayHitDistance);
+    float3 lighting;
+    float hitDistance;
+    uint cardState;
+    const bool hit = traceReflectionDetail(params, scene, pixel, position, samplePosition, direction, maxTraceDistance,
+        rayHitDistance[pixel] * 0.01f, lighting, hitDistance, cardState);
+    if (hit) {
+        writeTiledReflectionTrace(params, pixel, lighting, float4(hitDistance, float(kReflectionMeshSDFHit), -1.0f, float(cardState)));
+    }
+    const float hitDistanceCm = hitDistance * 100.0f;
+    rayHitDistance[pixel] = hit ? -max(hitDistanceCm, 0.0f) : quantizeReflectionDistanceCm(hitDistanceCm);
+}
+#endif
+
+// UE 5.7.4 ReflectionTraceVoxelsCS, using the remaining compacted rays.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void lumenReflectionTraceGDFTiledMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    const LumenReflectionParams params = getParameters<LumenReflectionParams>();
+    uint2 pixel;
+    if (!getReflectionCompactedPixel(params, group.xy, lane, 3u, pixel)) { return; }
+    const float3 position = resolveUniform(params.position).Load(int3(pixel, 0)).xyz;
+    const float4 rayData = resolveUniform(params.rayData).Load(int3(pixel, 0));
+    const float3 samplePosition = position + kSurfaceBias * rayData.xyz;
+    const LumenGlobalTraceScene scene = resolveLumenGlobalTraceScene(params.scene, params.clipmapCount);
+    const float maxTraceDistanceCm = reflectionTraceDistanceCm(params);
+    const float maxTraceDistance = reflectionQuantizedMaxDistance(maxTraceDistanceCm);
+    let rayHitDistance = resolveUniform(params.outputRayHitDistance);
+    float4 debugTrace;
+    float hitDistanceCm;
+    const float3 lighting = traceReflectionVoxels(params, scene, pixel, position, samplePosition, rayData,
+        rayHitDistance[pixel] * 0.01f, maxTraceDistance, maxTraceDistanceCm, debugTrace, hitDistanceCm);
+    writeTiledReflectionTrace(params, pixel, lighting, debugTrace);
+    rayHitDistance[pixel] = hitDistanceCm;
+}
+#endif
+
 static const uint kSpatialReconstructionNumSamples = 5u;
 static const float kSpatialReconstructionKernelRadius = 8.0f;
 static const float kDenoiserOneOverTonemapRange = 1.0f / 10.0f;
-static const float3 kInvalidReflectionLighting = float3(65024.0f, 65024.0f, 64512.0f);
 
 // UE 5.7.4 MonteCarlo.ush, UniformSampleDiskConcentric.
 float2 uniformSampleDiskConcentric(float2 e)
@@ -304,14 +521,9 @@ float3 reflectionDenoiserSpaceToRGB(float3 lighting)
 }
 
 // UE 5.7.4 LumenReflectionResolve.usf, 1x1, opaque single-lobe spatial reconstruction.
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void lumenReflectionResolveMain(uint3 thread : SV_DispatchThreadID)
+void resolveReflectionPixel(LumenReflectionParams params, uint2 pixel)
 {
-    LumenReflectionParams params = getParameters<LumenReflectionParams>();
-    uint2 pixel = thread.xy;
     uint2 extent = uint2(params.width, params.height);
-    if (any(pixel >= extent)) { return; }
 
     let reflections = resolveUniform(params.reflections);
     let rayData = resolveUniform(params.rayData);
@@ -399,6 +611,27 @@ void lumenReflectionResolveMain(uint3 thread : SV_DispatchThreadID)
     resolveUniform(params.outputResolvedReflections)[pixel] = float4(centerLighting, centerReflection.a);
     resolveUniform(params.outputResolvedHitDistance)[pixel] = minRayHitT;
 }
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void lumenReflectionResolveMain(uint3 thread : SV_DispatchThreadID)
+{
+    const LumenReflectionParams params = getParameters<LumenReflectionParams>();
+    if (any(thread.xy >= uint2(params.width, params.height))) { return; }
+    resolveReflectionPixel(params, thread.xy);
+}
+
+#if defined(METALLIC_LUMEN_REFLECTION_TILED_TRACING)
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void lumenReflectionResolveTiledMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID)
+{
+    const LumenReflectionParams params = getParameters<LumenReflectionParams>();
+    uint2 pixel;
+    if (!getReflectionTilePixel(params, group.xy, lane.xy, false, pixel)) { return; }
+    resolveReflectionPixel(params, pixel);
+}
+#endif
 
 [shader("compute")]
 [numthreads(8, 8, 1)]

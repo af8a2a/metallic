@@ -58,6 +58,7 @@
         {"id": 11, "name": "Reflections", "type": "LumenReflectionPass", "position": {"x": 1630, "y": 140},
             "properties": {
                 "maxTraceDistance": 40, "dynamicReprojection": true, "screenTraces": true, "detailTracing": true,
+                "classifiedTracing": true,
                 "detailDistanceFieldPaths": ["Asset/Sponza/SponzaGIBakes/SponzaOpaqueReflection.meshdf"]
             }}
     ],
