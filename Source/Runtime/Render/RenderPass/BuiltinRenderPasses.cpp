@@ -64,6 +64,8 @@ void registerBuiltInRenderGraphPasses()
         []() { return builtin_pass::createLumenReflectionPass(); });
     registerRenderGraphPassType("LumenScreenProbeGatherPass", "Gather single-bounce Surface Cache lighting for visible diffuse receivers",
         []() { return builtin_pass::createLumenScreenProbeGatherPass(); });
+    registerRenderGraphPassType("LumenScreenProbePlacementPass", "Place a compact screen probe atlas for Final Gather and World Radiance Cache",
+        []() { return builtin_pass::createLumenScreenProbePlacementPass(); });
     registerRenderGraphPassType("LumenScreenTraceSetupPass", "Build the current closest depth hierarchy and retain screen trace history",
         []() { return builtin_pass::createLumenScreenTraceSetupPass(); });
     registerRenderGraphPassType("LumenTemporalGatherPass", "Reproject and accumulate Lumen indirect diffuse",

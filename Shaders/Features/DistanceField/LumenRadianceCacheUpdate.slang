@@ -32,6 +32,20 @@ struct LumenRadianceCacheUpdateParams
     float3 cameraPosition;
 };
 
+struct LumenCompactRadianceCacheMarkParams
+{
+    LumenRadianceCacheUpdateParams update;
+    ResourceHandle<StructuredBuffer<uint>> adaptiveCount;
+    uint uniformCount;
+};
+
+struct LumenRadianceCachePriorityParams
+{
+    ResourceHandle<RWStructuredBuffer<uint>> updateState;
+    uint probeTraceBudget;
+    uint globalLightingChanged;
+};
+
 // Compact buffer adaptation of the UE 5.7.4 allocator, update and histogram buffers.
 static const uint kProbeAllocator = 0u;
 static const uint kFreeListCount = 1u;
@@ -48,6 +62,8 @@ static const uint kReusedMarkedProbes = 25u;
 static const uint kAllocatedProbes = 26u;
 static const uint kEvictedProbes = 27u;
 static const uint kOverflowProbes = 28u;
+static const uint kEffectivePriorityBudget = 30u;
+static const uint kGlobalLightingChange = 31u;
 static const uint kUpdateStateCount = 32u;
 
 // UE 5.7.4 LumenRadianceCacheUpdate.ush and LumenRadianceCache.cpp defaults.
@@ -118,17 +134,10 @@ void lumenClearRadianceCacheUpdateMain(uint3 thread : SV_DispatchThreadID)
     }
 }
 
-// UE MarkRadianceProbesUsedByScreenProbesCS. Gather already supplies the placed
-// probe's visible surface position in world meters.
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void lumenMarkRadianceCacheProbesMain(uint3 thread : SV_DispatchThreadID)
+// UE MarkRadianceProbesUsedByScreenProbesCS, with world meters from the Deferred receiver texture.
+void markRadianceCacheProbe(LumenRadianceCacheUpdateParams params, uint index)
 {
-    LumenRadianceCacheUpdateParams params = getParameters<LumenRadianceCacheUpdateParams>();
-    if (thread.x >= params.screenProbeCount) {
-        return;
-    }
-    uint2 pixel = resolveUniform(params.screenProbePositions)[thread.x];
+    uint2 pixel = resolveUniform(params.screenProbePositions)[index];
     if (pixel.x == kLumenInvalidProbe) {
         return;
     }
@@ -157,6 +166,28 @@ void lumenMarkRadianceCacheProbesMain(uint3 thread : SV_DispatchThreadID)
                 InterlockedAdd(state[kMarkedProbes], 1u);
             }
         }
+    }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void lumenMarkRadianceCacheProbesMain(uint3 thread : SV_DispatchThreadID)
+{
+    LumenRadianceCacheUpdateParams params = getParameters<LumenRadianceCacheUpdateParams>();
+    if (thread.x < params.screenProbeCount) {
+        markRadianceCacheProbe(params, thread.x);
+    }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void lumenMarkCompactRadianceCacheProbesMain(uint3 thread : SV_DispatchThreadID)
+{
+    LumenCompactRadianceCacheMarkParams params = getParameters<LumenCompactRadianceCacheMarkParams>();
+    uint adaptiveCapacity = params.update.screenProbeCount - params.uniformCount;
+    uint probeCount = params.uniformCount + min(resolveUniform(params.adaptiveCount)[0], adaptiveCapacity);
+    if (thread.x < probeCount) {
+        markRadianceCacheProbe(params.update, thread.x);
     }
 }
 
@@ -257,9 +288,10 @@ void lumenAllocateRadianceCacheProbesMain(uint3 thread : SV_DispatchThreadID)
 [numthreads(1, 1, 1)]
 void lumenSelectRadianceCachePriorityMain()
 {
-    LumenRadianceCacheUpdateParams params = getParameters<LumenRadianceCacheUpdateParams>();
+    LumenRadianceCachePriorityParams params = getParameters<LumenRadianceCachePriorityParams>();
     RWStructuredBuffer<uint> state = resolveUniform(params.updateState);
-    uint budget = params.probeTraceBudget * kNormalTraceCost;
+    // Clamp the normalized cost before multiplying. The saturated value exceeds all representable probe work.
+    uint budget = min(params.probeTraceBudget, 0xffffffffu / kNormalTraceCost) * kNormalTraceCost;
     uint traceSum = 0u;
     uint bucketIndex = 0u;
     uint lastBucketBudget = budget;
@@ -273,6 +305,8 @@ void lumenSelectRadianceCachePriorityMain()
     }
     state[kMaxUpdateBucket] = bucketIndex;
     state[kLastBucketBudget] = lastBucketBudget;
+    state[kEffectivePriorityBudget] = params.probeTraceBudget;
+    state[kGlobalLightingChange] = params.globalLightingChanged;
 }
 
 // UE AllocateProbeTracesCS. Newly mapped slots are always traced before a

@@ -1045,7 +1045,8 @@ debug::DebugValue cardBufferCapture(std::string id, uint32_t count)
 
 class LumenProbeDispatchComparison : public RHITest {
 protected:
-    enum class Variant { ActiveProbes, SplitTracing, SplitDetail, CompactAtlas, CompactAtlasSaturated };
+    enum class Variant { ActiveProbes, SplitTracing, SplitDetail, CompactAtlas, CompactAtlasSaturated,
+        SharedCacheAtlas, SharedCacheAtlasSaturated };
 
     LumenProbeDispatchComparison(const char* testName, Variant variant)
         : variant_(variant), candidatePass_(compactAtlas() ? "CompactGather" : splitTracing() ? "SplitGather" : "ActiveGather")
@@ -1095,20 +1096,30 @@ public:
         preview.setLighting(document.lighting());
         preview.setDebugObserver(&inspector);
         preview.setRecordingWorkerLimit(1);
-        inspector.request = {{"method", "capture.batch"}, {"params", {{"batches", debug::DebugValue::array({
+        auto batches = debug::DebugValue::array({
             {{"pass", "Gather"}, {"resources", captureResources("Gather")}},
             {{"pass", candidatePass_}, {"resources", captureResources(candidatePass_)}},
-        })}}}};
+        });
+        if (sharedPlacement()) {
+            batches.push_back({{"pass", "DenseCache"}, {"resources", captureCache("DenseCache")}});
+            batches.push_back({{"pass", "CompactCache"}, {"resources", captureCache("CompactCache")}});
+        }
+        inspector.request = {{"method", "capture.batch"}, {"params", {{"batches", std::move(batches)}}}};
 
         auto emptyCamera = camera;
         emptyCamera.eye[0] += 20.0f;
         emptyCamera.center[0] += 20.0f;
+        auto shiftedCamera = camera;
+        shiftedCamera.eye[0] += kCacheCellSize;
+        shiftedCamera.center[0] += kCacheCellSize;
         constexpr size_t kInitial = 0;
         const size_t emptyFrame = splitTracing() ? 4 : 2;
         const size_t restoredFrame = emptyFrame + 1;
         RayHandoffCoverage coverage;
         for (size_t frame = kInitial; frame <= restoredFrame; ++frame) {
             const bool empty = frame == emptyFrame;
+            const bool scroll = sharedPlacement() && frame == 3;
+            if (scroll && !view.setCamera(shiftedCamera)) { return RHITestResult::fail("Could not scroll the cache clipmap"); }
             if (frame >= emptyFrame) {
                 if (!view.setCamera(empty ? emptyCamera : camera)) { return RHITestResult::fail("Could not change camera"); }
                 view.cameraCut();
@@ -1116,7 +1127,7 @@ public:
             if (!preview.render(graph, kSingleBounceEdge, kSingleBounceEdge, "Gather.indirectDiffuse", false)) {
                 return RHITestResult::fail(preview.lastLog());
             }
-            log = compareFrame(inspector, empty, frame > kInitial && frame < emptyFrame, coverage);
+            log = compareFrame(inspector, empty, frame > kInitial && frame < emptyFrame, scroll, coverage);
             if (!log.empty()) { return RHITestResult::fail("Frame " + std::to_string(frame) + ": " + log); }
         }
         if (splitTracing() && !coverage.mixedScreenAndGDF) {
@@ -1128,11 +1139,21 @@ public:
         if (compactAtlas() && (!coverage.adaptiveProbes || (saturatedAtlas() && !coverage.adaptiveOverflow))) {
             return RHITestResult::fail("Fixture did not exercise the requested adaptive admission and budget");
         }
+        if (sharedPlacement() && (!coverage.cacheSampled || !coverage.cacheScrolled)) {
+            return RHITestResult::fail("Fixture did not sample the shared cache and reuse cells as its clipmap scrolled");
+        }
+        if (comparesSharedInterpolation() && !coverage.signedEdgeTap) {
+            return RHITestResult::fail("Fixture did not exercise a signed edge interpolation tap");
+        }
         if (validation.failed()) {
             return RHITestResult::fail("Probe dispatch Vulkan validation: " + validation.snapshot().dump());
         }
         if (splitDetail()) {
             return RHITestResult::pass("Fused and split Detail matched across Screen, Mesh SDF and compacted GDF");
+        }
+        if (sharedPlacement()) {
+            return RHITestResult::pass("Verified world cells from shared probes, cache sampling and scrolling reuse" +
+                (comparesSharedInterpolation() ? "; equal-weight alternate taps: " + std::to_string(coverage.alternateAdaptiveTaps) : ""));
         }
         if (compactAtlas()) {
             return RHITestResult::pass("Verified packed probe membership, atlas addresses, ray dispatch and empty-frame recovery");
@@ -1150,6 +1171,10 @@ private:
         bool detailMiss = false;
         bool adaptiveProbes = false;
         bool adaptiveOverflow = false;
+        bool cacheSampled = false;
+        bool cacheScrolled = false;
+        bool signedEdgeTap = false;
+        uint32_t alternateAdaptiveTaps = 0;
     };
 
     static constexpr uint32_t kTileAxis = render::builtin_pass::lumenScreenProbeTiles(kSingleBounceEdge);
@@ -1160,6 +1185,12 @@ private:
     static constexpr uint32_t kRaysPerSlot = 8 * 8;
     static constexpr uint32_t kProbeRays = kProbeSlots * kRaysPerSlot;
     static constexpr uint32_t kSHAtlasEdge = kTileAxis * 3;
+    static constexpr uint32_t kCacheGridResolution = 16;
+    static constexpr uint32_t kCacheAtlasProbeAxis = 16;
+    static constexpr uint32_t kCacheGridCells = kCacheGridResolution * kCacheGridResolution * kCacheGridResolution;
+    static constexpr uint32_t kCacheSlots = kCacheAtlasProbeAxis * kCacheAtlasProbeAxis;
+    static constexpr float kCacheWorldExtent = 4.0f;
+    static constexpr float kCacheCellSize = 2.0f * kCacheWorldExtent / kCacheGridResolution;
     static constexpr std::array<uint32_t, 4> kReadbackROI{1, 1, 6, 6};
     static constexpr std::array<uint32_t, 4> kFullReadbackROI{0, 0, kTileAxis, kTileAxis};
     static constexpr size_t kReadbackStride = sizeof(render::LumenProbeTraceReadbackRecord);
@@ -1172,11 +1203,17 @@ private:
         std::pair{"probeSHDirectional", std::array{kSHAtlasEdge * 6, kSHAtlasEdge, 8u}},
         std::pair{"indirectDiffuse", std::array{kSingleBounceEdge, kSingleBounceEdge, 8u}},
         std::pair{"color", std::array{kSingleBounceEdge, kSingleBounceEdge, 16u}}};
+    static constexpr size_t kTraceRecords = kBufferedResources.size() + kTextures.size();
+    static constexpr size_t kWorkState = kTraceRecords + 1;
+    static constexpr size_t kOrigins = kWorkState + 4;
+    static constexpr size_t kAdaptiveCount = kOrigins + 1;
 
     bool splitTracing() const { return variant_ != Variant::ActiveProbes; }
     bool splitDetail() const { return variant_ == Variant::SplitDetail; }
-    bool compactAtlas() const { return variant_ == Variant::CompactAtlas || saturatedAtlas(); }
-    bool saturatedAtlas() const { return variant_ == Variant::CompactAtlasSaturated; }
+    bool compactAtlas() const { return variant_ == Variant::CompactAtlas || saturatedAtlas() || sharedPlacement(); }
+    bool saturatedAtlas() const { return variant_ == Variant::CompactAtlasSaturated || variant_ == Variant::SharedCacheAtlasSaturated; }
+    bool sharedPlacement() const { return variant_ == Variant::SharedCacheAtlas || variant_ == Variant::SharedCacheAtlasSaturated; }
+    bool comparesSharedInterpolation() const { return sharedPlacement() && !saturatedAtlas(); }
     uint32_t adaptiveBudget() const { return saturatedAtlas() ? 1u : kTileCount * kAdaptivePerTile; }
     uint32_t packedCapacity() const { return kTileCount + adaptiveBudget(); }
     uint32_t packedAtlasHeight() const { return (packedCapacity() + kTileAxis - 1u) / kTileAxis; }
@@ -1201,6 +1238,10 @@ private:
         properties["activeProbeDispatch"] = splitTracing();
         if (splitTracing()) { properties["screenGDFContinuation"] = true; }
         if (compactAtlas()) { properties["splitProbeTracing"] = true; }
+        if (sharedPlacement()) { properties["radianceCache"] = true; }
+        if (comparesSharedInterpolation()) {
+            properties["probeInterpolationReadback"] = {0, 0, kSingleBounceEdge, kSingleBounceEdge};
+        }
         if (splitDetail()) {
             const auto* fields = graph.findNode("GlobalDistanceFieldPages");
             if (!fields || !graph.addEdge("VBuffer.depth", "Gather.detailDepth")) { return false; }
@@ -1233,7 +1274,72 @@ private:
                 return false;
             }
         }
+        return !sharedPlacement() || wireSharedCache(graph);
+    }
+
+    bool wireSharedCache(render::RenderGraph& graph) const
+    {
+        using render::makeRenderGraphFieldName;
+        if (!graph.addNode("LumenScreenProbePlacementPass", "Placement",
+                {{"adaptiveProbeAllocationFraction", double(adaptiveBudget()) / kTileCount}}) ||
+            !graph.addEdge("Deferred.lumenPosition", "Placement.position") ||
+            !graph.addEdge("Deferred.lumenNormal", "Placement.normal")) {
+            return false;
+        }
+        for (const std::string_view field : {"probePositions", "probeOrigins", "probeAdaptiveCount",
+                 "probeTileAdaptiveCounts", "probeTileAdaptiveIndices"}) {
+            if (!graph.addEdge(makeRenderGraphFieldName("Placement", field), makeRenderGraphFieldName(candidatePass_, field))) {
+                return false;
+            }
+        }
+        const render::RenderGraphProperties cacheProperties{
+            {"gridResolution", kCacheGridResolution}, {"clipmapCount", 1u}, {"probeResolution", 8u},
+            {"atlasProbesPerAxis", kCacheAtlasProbeAxis}, {"traceBudget", kCacheSlots}, {"worldExtent", kCacheWorldExtent},
+            {"maxTraceDistance", 5.0f}};
+        auto compactProperties = cacheProperties;
+        compactProperties["compactProbeAtlas"] = true;
+        if (!graph.addNode("LumenRadianceCachePass", "DenseCache", cacheProperties) ||
+            !graph.addNode("LumenRadianceCachePass", "CompactCache", compactProperties) ||
+            !graph.addEdge("Deferred.lumenNormal", "DenseCache.normal") ||
+            !graph.addEdge("DenseCache.placedProbes", "Gather.placedProbes") ||
+            !graph.addEdge("Placement.probePositions", "CompactCache.probePositions") ||
+            !graph.addEdge("Placement.probeAdaptiveCount", "CompactCache.probeAdaptiveCount")) {
+            return false;
+        }
+        constexpr std::array<std::string_view, 11> inputs{"position", "pageTable", "pageAtlas", "coarseMip", "domain",
+            "objectGrid", "objectGridScene", "cards", "cardScene", "cardDepth", "cardLighting"};
+        const auto edges = graph.edges();
+        for (const auto& edge : edges) {
+            if (edge.dstPass == "Gather" && std::ranges::find(inputs, edge.dstField) != inputs.end()) {
+                const auto source = makeRenderGraphFieldName(edge.srcPass, edge.srcField);
+                if (!graph.addEdge(source, makeRenderGraphFieldName("DenseCache", edge.dstField)) ||
+                    !graph.addEdge(source, makeRenderGraphFieldName("CompactCache", edge.dstField))) {
+                    return false;
+                }
+            }
+        }
+        // In the parity case both Gather layouts sample the same physical WRC atlas.
+        // DenseCache still executes and captures residency because it supplies legacy placement.
+        const std::string_view baselineCache = comparesSharedInterpolation() ? "CompactCache" : "DenseCache";
+        for (const std::string_view output : {"cacheIndirection", "cacheClipmaps", "cacheRadiance"}) {
+            if (!graph.addEdge(makeRenderGraphFieldName(baselineCache, output), makeRenderGraphFieldName("Gather", output)) ||
+                !graph.addEdge(makeRenderGraphFieldName("CompactCache", output), makeRenderGraphFieldName(candidatePass_, output))) {
+                return false;
+            }
+        }
         return true;
+    }
+
+    static debug::DebugValue captureCache(std::string_view pass)
+    {
+        using render::makeRenderGraphFieldName;
+        return debug::DebugValue::array({cardBufferCapture(makeRenderGraphFieldName(pass, "cacheIndirection"), kCacheGridCells),
+            cardBufferCapture(makeRenderGraphFieldName(pass, "probeFrames"), 2u * kCacheSlots),
+            cardBufferCapture(makeRenderGraphFieldName(pass, "cacheClipmaps"), 12u),
+            cardBufferCapture(makeRenderGraphFieldName(pass, "previousClipmaps"), 12u),
+            cardBufferCapture(makeRenderGraphFieldName(pass, "updateState"), 32u),
+            {{"id", makeRenderGraphFieldName(pass, "position")}, {"roi", {{"x", 0}, {"y", 0},
+                {"width", kSingleBounceEdge}, {"height", kSingleBounceEdge}}}}});
     }
 
     debug::DebugValue captureResources(std::string_view pass) const
@@ -1243,7 +1349,8 @@ private:
         const bool packed = compactAtlas() && pass == candidatePass_;
         for (const auto& [field, words] : kBufferedResources) {
             const uint32_t count = packed ? words / kProbeSlots * packedCapacity() : words;
-            resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, field), count));
+            const auto name = sharedPlacement() && !packed && std::string_view(field) == "probePositions" ? "placedProbes" : field;
+            resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, name), count));
         }
         for (const auto& [field, layout] : kTextures) {
             const bool packedSH = packed && std::string_view(field).starts_with("probeSH");
@@ -1268,10 +1375,19 @@ private:
                     kTileCount * kAdaptivePerTile));
             }
         }
+        if (comparesSharedInterpolation()) {
+            resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "probeInterpolationReadback"),
+                8u * kSingleBounceEdge * kSingleBounceEdge));
+        }
         return resources;
     }
 
     using DispatchArgs = std::array<uint32_t, 3>;
+
+    struct Interpolation {
+        std::array<uint32_t, 4> indices;
+        std::array<float, 4> weights;
+    };
 
     std::string compareRayDispatch(const std::vector<uint8_t>& rayCountBytes,
         const std::vector<uint8_t>& rayArgsBytes, uint32_t validRays, uint32_t gdfRays, uint32_t detailRays) const
@@ -1297,17 +1413,99 @@ private:
         return {};
     }
 
+    std::string compareCacheCells(const debug::DebugCapture& dense, const debug::DebugCapture& compact,
+        const std::vector<uint8_t>& positions, uint32_t admitted, bool scroll, RayHandoffCoverage& coverage) const
+    {
+        struct Clipmap {
+            std::array<float, 4> cornerAndCellSize, traceSettings;
+            std::array<uint32_t, 4> layout;
+        };
+        constexpr std::array<size_t, 6> sizes{kCacheGridCells * sizeof(uint32_t),
+            kCacheSlots * 2 * sizeof(uint32_t), sizeof(Clipmap), sizeof(Clipmap), 32 * sizeof(uint32_t),
+            size_t(kSingleBounceEdge) * kSingleBounceEdge * 4 * sizeof(float)};
+        if (dense.artifacts.size() != sizes.size() || compact.artifacts.size() != sizes.size() ||
+            dense.snapshot.evidence.execution != compact.snapshot.evidence.execution) {
+            return "Missing same-frame WRC evidence";
+        }
+        for (size_t index = 0; index < sizes.size(); ++index) {
+            if (dense.artifacts[index].bytes.size() != sizes[index] || compact.artifacts[index].bytes.size() != sizes[index]) {
+                return "Unexpected WRC capture size";
+            }
+        }
+        constexpr uint32_t invalid = std::numeric_limits<uint32_t>::max();
+        const auto clipmap = readSurfaceValue<Clipmap>(compact.artifacts[2].bytes, 0);
+        if (clipmap.cornerAndCellSize[3] != kCacheCellSize || clipmap.layout[0] != kCacheGridResolution || clipmap.layout[1] != 1u) {
+            return "Unexpected WRC clipmap layout";
+        }
+        std::array<bool, kCacheGridCells> expected{};
+        for (uint32_t index = 0; index < kTileCount + admitted; ++index) {
+            const auto pixel = readSurfaceValue<std::array<uint32_t, 2>>(positions, index);
+            if (pixel[0] == invalid) { continue; }
+            if (pixel[0] >= kSingleBounceEdge || pixel[1] >= kSingleBounceEdge) { return "Invalid shared probe pixel"; }
+            const auto receiver = readSurfaceValue<std::array<float, 4>>(compact.artifacts[5].bytes,
+                pixel[1] * kSingleBounceEdge + pixel[0]);
+            if (!(receiver[3] > 0.0f)) { return "Shared probe does not address a receiver"; }
+            std::array<int32_t, 3> corner{};
+            bool inside = true;
+            for (size_t axis = 0; axis < corner.size(); ++axis) {
+                const float coord = (receiver[axis] - clipmap.cornerAndCellSize[axis]) / kCacheCellSize - 0.5f;
+                inside &= 0.0f < coord && coord < float(kCacheGridResolution - 1u);
+                corner[axis] = int32_t(std::floor(coord));
+            }
+            if (!inside) { continue; }
+            for (uint32_t offset = 0; offset < 8u; ++offset) {
+                const uint32_t x = uint32_t(corner[0]) + (offset >> 2u);
+                const uint32_t y = uint32_t(corner[1]) + ((offset >> 1u) & 1u);
+                const uint32_t z = uint32_t(corner[2]) + (offset & 1u);
+                expected[x + (y + z * kCacheGridResolution) * kCacheGridResolution] = true;
+            }
+        }
+        const uint32_t marked = uint32_t(std::ranges::count(expected, true));
+        const auto& counters = compact.artifacts[4].bytes;
+        constexpr size_t kMarked = 24, kReused = 25, kOverflow = 28;
+        if (readSurfaceValue<uint32_t>(counters, kMarked) != marked || readSurfaceValue<uint32_t>(counters, kOverflow) != 0u) {
+            return "WRC requests do not match the marked cells from the shared positions";
+        }
+        std::array<bool, kCacheSlots> usedSlots{};
+        std::array<uint32_t, kCacheGridCells> lastUsed{};
+        uint32_t latestUse = 0;
+        for (uint32_t cell = 0; cell < kCacheGridCells; ++cell) {
+            const uint32_t slot = readSurfaceValue<uint32_t>(compact.artifacts[0].bytes, cell);
+            const uint32_t denseSlot = readSurfaceValue<uint32_t>(dense.artifacts[0].bytes, cell);
+            if (!saturatedAtlas() && (slot == invalid) != (denseSlot == invalid)) {
+                return "Unsaturated shared WRC changed the resident world-cell set";
+            }
+            if (slot == invalid) { continue; }
+            if (slot >= kCacheSlots || usedSlots[slot]) { return "Invalid or aliased resident WRC slot"; }
+            usedSlots[slot] = true;
+            lastUsed[cell] = readSurfaceValue<uint32_t>(compact.artifacts[1].bytes, slot * 2u + 1u);
+            latestUse = std::max(latestUse, lastUsed[cell]);
+        }
+        // A retained cell may still be resident without having been requested this frame.
+        // Last-use stamps identify exactly the current request set whenever it is nonempty.
+        if (marked != 0u) {
+            for (size_t cell = 0; cell < expected.size(); ++cell) {
+                if ((latestUse != 0u && lastUsed[cell] == latestUse) != expected[cell]) {
+                    return "WRC marked the wrong world cell " + std::to_string(cell);
+                }
+            }
+        }
+        if (scroll) {
+            const auto previous = readSurfaceValue<Clipmap>(compact.artifacts[3].bytes, 0);
+            coverage.cacheScrolled |= clipmap.cornerAndCellSize[0] - previous.cornerAndCellSize[0] == kCacheCellSize &&
+                readSurfaceValue<uint32_t>(counters, kReused) != 0u;
+        }
+        return {};
+    }
+
     std::string compareCompactAtlas(const debug::DebugCapture& baselineCapture, const debug::DebugCapture& candidateCapture,
         bool empty, bool historyExpected, RayHandoffCoverage& coverage) const
     {
         const auto& baseline = baselineCapture.artifacts;
         const auto& candidate = candidateCapture.artifacts;
-        constexpr size_t kTraceRecords = kBufferedResources.size() + kTextures.size();
-        constexpr size_t kWorkState = kTraceRecords + 1;
-        constexpr size_t kOrigins = kWorkState + 4;
         const auto& positions = candidate[0].bytes;
         const auto& origins = candidate[kOrigins].bytes;
-        const auto& adaptiveCounter = candidate[kOrigins + 1].bytes;
+        const auto& adaptiveCounter = candidate[kAdaptiveCount].bytes;
         const auto& counts = candidate[kOrigins + 2].bytes;
         const auto& indices = candidate[kOrigins + 3].bytes;
         if (origins.size() != packedCapacity() * sizeof(uint32_t) || adaptiveCounter.size() != sizeof(uint32_t) ||
@@ -1350,6 +1548,8 @@ private:
         std::array<bool, kProbeSlots> validOrigin{};
         uint32_t active = 0;
         uint32_t screenHits = 0;
+        // Dropping probes may remove world-cache coverage at retained receivers.
+        const bool compareLighting = !sharedPlacement() || !saturatedAtlas();
         for (uint32_t packed = 0; packed < kTileCount + admitted; ++packed) {
             const uint32_t origin = readSurfaceValue<uint32_t>(origins, packed);
             if (origin >= kProbeSlots || mapped[origin] ||
@@ -1365,6 +1565,12 @@ private:
             if (pixel[0] == invalid) { continue; }
             validOrigin[origin] = true;
             ++active;
+            for (uint32_t lane = 0; lane < kRaysPerSlot; ++lane) {
+                const auto radiance = readSurfaceValue<std::array<float, 4>>(candidate[1].bytes, packed * kRaysPerSlot + lane);
+                screenHits += radiance[3] == 5.0f;
+                coverage.cacheSampled |= radiance[3] == 6.0f;
+            }
+            if (!compareLighting) { continue; }
             for (size_t i = 1; i < kBufferedResources.size(); ++i) {
                 const size_t stride = kBufferedResources[i].second / kProbeSlots * sizeof(uint32_t);
                 if (std::memcmp(baseline[i].bytes.data() + origin * stride, candidate[i].bytes.data() + packed * stride, stride) != 0) {
@@ -1389,10 +1595,6 @@ private:
                     }
                 }
             }
-            for (uint32_t lane = 0; lane < kRaysPerSlot; ++lane) {
-                const auto radiance = readSurfaceValue<std::array<float, 4>>(candidate[1].bytes, packed * kRaysPerSlot + lane);
-                screenHits += radiance[3] == 5.0f;
-            }
         }
 
         std::array<bool, kProbeSlots> listed{};
@@ -1414,14 +1616,45 @@ private:
             return "Packed probe count does not match the active tile lists";
         }
 
+        std::vector<bool> alternateTaps;
+        if (comparesSharedInterpolation()) {
+            if (auto log = compareInterpolation(baseline.back(), candidate.back(), validOrigin, alternateTaps, coverage); !log.empty()) {
+                return log;
+            }
+        }
         for (size_t i = 2; i < kTextures.size(); ++i) {
             const auto& [field, layout] = kTextures[i];
             const auto& oldData = baseline[kBufferedResources.size() + i].bytes;
             const auto& newData = candidate[kBufferedResources.size() + i].bytes;
             const size_t bytes = size_t(layout[0]) * layout[1] * layout[2];
-            if (oldData.size() != bytes || newData.size() != bytes ||
-                ((!saturatedAtlas() || empty) && oldData != newData)) {
-                return "Packed integration differs in " + std::string(field);
+            if (oldData.size() != bytes || newData.size() != bytes) { return "Invalid integration capture size"; }
+            if (saturatedAtlas() && !empty) { continue; }
+            if (alternateTaps.empty() || empty) {
+                if (oldData != newData) { return "Packed integration differs in " + std::string(field); }
+                continue;
+            }
+            for (size_t pixel = 0; pixel < alternateTaps.size(); ++pixel) {
+                const auto* first = oldData.data() + pixel * layout[2];
+                const auto* second = newData.data() + pixel * layout[2];
+                const size_t alphaBytes = layout[2] / 4u;
+                if ((!alternateTaps[pixel] && std::memcmp(first, second, layout[2]) != 0) ||
+                    std::memcmp(first + 3u * alphaBytes, second + 3u * alphaBytes, alphaBytes) != 0) {
+                    const auto describe = [&](const auto& data, const auto& readback) {
+                        std::array<float, 4> rgba;
+                        if (alphaBytes == sizeof(float)) {
+                            rgba = readSurfaceValue<std::array<float, 4>>(data, pixel);
+                        } else {
+                            const auto packed = readSurfaceValue<std::array<uint16_t, 4>>(data, pixel);
+                            std::ranges::transform(packed, rgba.begin(), halfToFloat);
+                        }
+                        const auto taps = readSurfaceValue<Interpolation>(readback.bytes, pixel);
+                        return std::format("RGBA [{:.9g}, {:.9g}, {:.9g}, {:.9g}] taps [{}, {}, {}, {}] weights [{:.9g}, {:.9g}, {:.9g}, {:.9g}]",
+                            rgba[0], rgba[1], rgba[2], rgba[3], taps.indices[0], taps.indices[1], taps.indices[2], taps.indices[3],
+                            taps.weights[0], taps.weights[1], taps.weights[2], taps.weights[3]);
+                    };
+                    return std::format("Packed integration differs in {} at pixel {} with alternate taps {}. Dense {}. Compact {}.",
+                        field, pixel, bool(alternateTaps[pixel]), describe(oldData, baseline.back()), describe(newData, candidate.back()));
+                }
             }
         }
 
@@ -1442,7 +1675,14 @@ private:
                         const size_t address = (localTile * kSlotsPerTile + slot) * kRaysPerSlot + lane;
                         const auto actual = readSurfaceValue<Record>(afterTrace, address);
                         const auto expected = valid ? readSurfaceValue<Record>(beforeTrace, address) : invalidRecord;
-                        if (std::memcmp(&actual, &expected, sizeof(Record)) != 0) {
+                        if (!compareLighting && valid) {
+                            constexpr uint32_t kReceiver = 1u << 0u, kScreen = 1u << 2u, kGDF = 1u << 5u;
+                            constexpr uint32_t kCovered = 1u << 6u, kSampled = 1u << 7u;
+                            if ((actual.flags & kReceiver) == 0u || ((actual.flags & kScreen) == 0u) == ((actual.flags & kGDF) == 0u) ||
+                                ((actual.flags & kSampled) != 0u && (actual.flags & (kCovered | kGDF)) != (kCovered | kGDF))) {
+                                return "Invalid packed cache trace handoff";
+                            }
+                        } else if (std::memcmp(&actual, &expected, sizeof(Record)) != 0) {
                             return "Packed trace ROI differs at logical ray " + std::to_string(address);
                         }
                     }
@@ -1467,26 +1707,65 @@ private:
         return compareRayDispatch(candidate[kWorkState + 2].bytes, candidate[kWorkState + 3].bytes, validRays, gdfRays, 0u);
     }
 
-    std::string compareFrame(CardUpdateInspector& inspector, bool empty, bool historyExpected,
+    static std::string compareInterpolation(const debug::DebugArtifact& dense, const debug::DebugArtifact& compact,
+        const std::array<bool, kProbeSlots>& valid, std::vector<bool>& alternateTaps, RayHandoffCoverage& coverage)
+    {
+        constexpr size_t pixelCount = size_t(kSingleBounceEdge) * kSingleBounceEdge;
+        if (dense.bytes.size() != pixelCount * sizeof(Interpolation) || compact.bytes.size() != dense.bytes.size()) {
+            return "Invalid probe interpolation capture size";
+        }
+        alternateTaps.resize(pixelCount);
+        for (size_t pixel = 0; pixel < pixelCount; ++pixel) {
+            const auto first = readSurfaceValue<Interpolation>(dense.bytes, pixel);
+            const auto second = readSurfaceValue<Interpolation>(compact.bytes, pixel);
+            if (first.weights != second.weights) {
+                return "Probe interpolation weights differ at pixel " + std::to_string(pixel);
+            }
+            for (size_t tap = 0; tap < first.indices.size(); ++tap) {
+                const uint32_t a = first.indices[tap];
+                const uint32_t b = second.indices[tap];
+                const float weight = first.weights[tap];
+                coverage.signedEdgeTap |= weight < 0.0f;
+                if (weight == 0.0f || a == b) { continue; }
+                // Both layouts keep the first maximum score. The atomic tile list can
+                // choose a different admitted adaptive probe when two scores tie.
+                if (weight < 0.0f || a >= kProbeSlots || b >= kProbeSlots || !valid[a] || !valid[b] ||
+                    a / kSlotsPerTile != b / kSlotsPerTile || a % kSlotsPerTile == 0u || b % kSlotsPerTile == 0u) {
+                    return "Equal-weight interpolation selected unrelated probes at pixel " + std::to_string(pixel);
+                }
+                alternateTaps[pixel] = true;
+                ++coverage.alternateAdaptiveTaps;
+            }
+        }
+        return {};
+    }
+
+    std::string compareFrame(CardUpdateInspector& inspector, bool empty, bool historyExpected, bool scroll,
         RayHandoffCoverage& coverage) const
     {
         inspector.runtime.poll();
         if (inspector.response.value("status", "") != "ok") { return inspector.response.dump(); }
         auto& core = inspector.runtime.core();
         const auto& jobs = inspector.response.at("result").at("jobs");
-        std::array<CardCapture, 2> captures;
-        for (size_t index = 0; index < captures.size(); ++index) {
+        std::array<CardCapture, 4> captures;
+        const size_t captureCount = sharedPlacement() ? 4u : 2u;
+        for (size_t index = 0; index < captureCount; ++index) {
             const auto id = jobs.at(index).at("job").get<std::string>();
             captures[index] = core.completedCapture(id);
             if (!captures[index]) { return core.dispatch({{"method", "jobs.get"}, {"params", {{"job", id}}}}).dump(); }
             const size_t modeResources = index == 1 ? (compactAtlas() ? 8 : splitTracing() ? 4 : 2) : 0;
-            if (captures[index]->artifacts.size() != kBufferedResources.size() + kTextures.size() + 1 + modeResources) {
+            if (index < 2 && captures[index]->artifacts.size() != kTraceRecords + 1u + modeResources + comparesSharedInterpolation()) {
                 return "Unexpected Gather artifact count";
             }
         }
         const auto& baseline = captures[0]->artifacts;
         const auto& candidate = captures[1]->artifacts;
-        if (compactAtlas()) { return compareCompactAtlas(*captures[0], *captures[1], empty, historyExpected, coverage); }
+        if (compactAtlas()) {
+            auto log = compareCompactAtlas(*captures[0], *captures[1], empty, historyExpected, coverage);
+            if (!log.empty() || !sharedPlacement()) { return log; }
+            const uint32_t admitted = std::min(readSurfaceValue<uint32_t>(candidate[kAdaptiveCount].bytes, 0), adaptiveBudget());
+            return compareCacheCells(*captures[2], *captures[3], candidate[0].bytes, admitted, scroll, coverage);
+        }
         const auto compare = [&](size_t index, std::string_view field, size_t expectedBytes) -> std::string {
             if (baseline[index].bytes.size() != expectedBytes || candidate[index].bytes.size() != expectedBytes) {
                 return "Unexpected readback size for " + std::string(field);
@@ -1641,11 +1920,218 @@ public:
         : LumenProbeDispatchComparison("lumen_compact_probe_atlas_saturation", Variant::CompactAtlasSaturated) {}
 };
 
+class LumenSharedCachePlacementTest final : public LumenProbeDispatchComparison {
+public:
+    LumenSharedCachePlacementTest()
+        : LumenProbeDispatchComparison("lumen_shared_cache_placement", Variant::SharedCacheAtlas) {}
+};
+
+class LumenSharedCachePlacementSaturationTest final : public LumenProbeDispatchComparison {
+public:
+    LumenSharedCachePlacementSaturationTest()
+        : LumenProbeDispatchComparison("lumen_shared_cache_placement_saturation", Variant::SharedCacheAtlasSaturated) {}
+};
+
 METALLIC_REGISTER_RHI_TEST(LumenActiveProbeDispatchTest);
 METALLIC_REGISTER_RHI_TEST(LumenSplitProbeTracingTest);
 METALLIC_REGISTER_RHI_TEST(LumenSplitDetailTracingTest);
 METALLIC_REGISTER_RHI_TEST(LumenCompactProbeAtlasTest);
 METALLIC_REGISTER_RHI_TEST(LumenCompactProbeAtlasSaturationTest);
+METALLIC_REGISTER_RHI_TEST(LumenSharedCachePlacementTest);
+METALLIC_REGISTER_RHI_TEST(LumenSharedCachePlacementSaturationTest);
+
+class LumenWRCSunRefreshTest final : public RHITest {
+public:
+    LumenWRCSunRefreshTest()
+    {
+        name = "lumen_wrc_sun_refresh";
+        type = RHITestType::Rendering;
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        scene::SceneDocument document;
+        RenderGraph graph;
+        std::string log;
+        if (!loadSingleBounceFixture(context, document, graph, log)) { return RHITestResult::fail(log); }
+        if (!prepareGraph(graph)) { return RHITestResult::fail("Could not wire the compact WRC refresh fixture"); }
+
+        RenderView view;
+        ViewCamera camera;
+        camera.eye = {1.1f, 0.72f, 3.0f};
+        camera.center = {0.1f, 0.66f, 0.48f};
+        camera.fovDegrees = 58.0f;
+        camera.farPlane = 8.0f;
+        if (!view.setCamera(camera) || !view.setRenderResolution(kSingleBounceEdge, kSingleBounceEdge)) {
+            return RHITestResult::fail("Invalid WRC refresh camera");
+        }
+
+        bench::ValidationRecorder validation;
+        CardUpdateInspector inspector;
+        RenderGraphPreviewRenderer preview;
+        preview.bindRuntimeScene(&document);
+        preview.bindRenderView(&view);
+        if (!preview.initialize(context.enableValidation, false, false, context.enableValidation, validation.sink())) {
+            return RHITestResult::fail("WRC refresh preview setup: " + preview.lastLog());
+        }
+        preview.setEnvironment({.enabled = false, .visible = false});
+        preview.setDebugObserver(&inspector);
+        preview.setRecordingWorkerLimit(1);
+        inspector.request = {{"method", "capture.batch"}, {"params", {{"batches", debug::DebugValue::array({
+            {{"pass", "RadianceCache"}, {"resources", debug::DebugValue::array({
+                cardBufferCapture("RadianceCache.updateState", 32),
+                cardBufferCapture("RadianceCache.cacheIndirection", kGridCells)})}},
+            {{"pass", "GlobalDistanceFieldPages"}, {"resources", debug::DebugValue::array({
+                cardBufferCapture("GlobalDistanceFieldPages.updateStatistics", 4)})}},
+        })}}}};
+
+        environment::WorldEnvironment world;
+        world.source = environment::EnvironmentSource::HDRI;
+        world.astronomy.mode = environment::AstronomyMode::Manual;
+        world.moon.enabled = false;
+        world.sun.enabled = true;
+        world.sun.illuminance = 4.0f;
+        world.sun.direction = {0.0f, -0.8f, -0.6f};
+        if (!preview.setLighting(document.lighting()) || !preview.setWorldEnvironment(world)) {
+            return RHITestResult::fail("Could not initialize WRC fixture lighting");
+        }
+
+        std::vector<uint8_t> previousIndirection;
+        const auto check = [&](std::string_view stage, bool retain, bool globalChange, bool first = false) -> std::string {
+            if (!preview.render(graph, kSingleBounceEdge, kSingleBounceEdge, "RadianceCache.cacheRadiance", false)) {
+                return "WRC refresh rendering failed: " + preview.lastLog();
+            }
+            inspector.runtime.poll();
+            const auto& response = inspector.response;
+            if (response.value("status", "") != "ok") { return response.dump(); }
+            auto& core = inspector.runtime.core();
+            const auto& jobs = response.at("result").at("jobs");
+            const auto cache = core.completedCapture(jobs.at(0).at("job").get<std::string>());
+            const auto gdf = core.completedCapture(jobs.at(1).at("job").get<std::string>());
+            if (!cache || !gdf || cache->artifacts.size() != 2u || gdf->artifacts.size() != 1u ||
+                    cache->snapshot.evidence.execution != gdf->snapshot.evidence.execution ||
+                    cache->snapshot.evidence.generation != gdf->snapshot.evidence.generation) {
+                return std::string(stage) + ": Missing same-frame cache or GDF evidence";
+            }
+            using CacheStatistics = std::array<uint32_t, 32>;
+            using GdfStatistics = std::array<uint32_t, 4>;
+            const auto& counters = cache->artifacts[0].bytes;
+            const auto& indirection = cache->artifacts[1].bytes;
+            if (counters.size() != sizeof(CacheStatistics) || indirection.size() != kGridCells * sizeof(uint32_t) ||
+                    gdf->artifacts[0].bytes.size() != sizeof(GdfStatistics)) {
+                return std::string(stage) + ": Unexpected cache or GDF readback size";
+            }
+            const auto stats = readSurfaceValue<CacheStatistics>(counters, 0);
+            const auto gdfStats = readSurfaceValue<GdfStatistics>(gdf->artifacts[0].bytes, 0);
+            constexpr uint32_t kPagesPerAxis = 84 / 7;
+            constexpr uint32_t kPages = kPagesPerAxis * kPagesPerAxis * kPagesPerAxis;
+            const GdfStatistics expectedGdf = first ? GdfStatistics{1u, kPages, 0u, 1u} : GdfStatistics{0u, 0u, kPages, 0u};
+            if (gdfStats != expectedGdf) {
+                return std::string(stage) + ": Light edit changed geometry page updates " + nlohmann::json(gdfStats).dump();
+            }
+            const uint32_t marked = stats[24], reused = stats[25], allocated = stats[26];
+            if (marked == 0u || marked != reused + allocated || stats[28] != 0u || stats[29] == 0u ||
+                    retain != (reused != 0u) || stats[30] != kTraceBudget * (globalChange ? 4u : 1u) ||
+                    stats[31] != uint32_t(globalChange)) {
+                return std::string(stage) + ": Unexpected WRC scheduling or residency " +
+                    nlohmann::json(stats).dump();
+            }
+            if (retain) {
+                uint32_t overlap = 0;
+                for (size_t cell = 0; cell < kGridCells; ++cell) {
+                    const uint32_t before = readSurfaceValue<uint32_t>(previousIndirection, cell);
+                    const uint32_t after = readSurfaceValue<uint32_t>(indirection, cell);
+                    if (before < kAtlasSlots && after < kAtlasSlots) {
+                        if (before != after) { return std::string(stage) + ": Resident world cell changed physical slots"; }
+                        ++overlap;
+                    }
+                }
+                if (overlap < reused) { return std::string(stage) + ": WRC reuse counters exceed retained world cells"; }
+            }
+            previousIndirection = indirection;
+            return {};
+        };
+        if (auto message = check("Cold start with active Sun", false, true, true); !message.empty()) {
+            return RHITestResult::fail(message);
+        }
+        struct SunEdit {
+            const char* label;
+            float3 direction;
+            float illuminance;
+            bool globalChange;
+        };
+        const SunEdit edits[]{
+            {"Drag Sun first direction", {-0.4f, -0.6f, -0.6f}, 4.0f, false},
+            {"Drag Sun second direction", {0.4f, -0.5f, -0.6f}, 4.0f, false},
+            {"Increase Sun intensity at the 4x boundary", {0.4f, -0.5f, -0.6f}, 16.0f, false},
+            {"Jump Sun intensity beyond the 4x boundary", {0.4f, -0.5f, -0.6f}, 96.0f, true},
+        };
+        for (const auto& edit : edits) {
+            world.sun.direction = edit.direction;
+            world.sun.illuminance = edit.illuminance;
+            if (!preview.setWorldEnvironment(world)) {
+                return RHITestResult::fail(std::string("Could not edit the WRC fixture Sun: ") + edit.label);
+            }
+            if (auto message = check(edit.label, !edit.globalChange, edit.globalChange); !message.empty()) {
+                return RHITestResult::fail(message);
+            }
+        }
+        if (auto message = check("Frame after global change", true, false); !message.empty()) {
+            return RHITestResult::fail(message);
+        }
+        auto lighting = document.lighting();
+        scene::PunctualLight point;
+        point.properties.intensityUnit = scene::LightUnit::Candela;
+        point.properties.intensity = 4.0f;
+        point.properties.range = 4.0f;
+        point.position = {0.0f, 1.2f, 0.95f};
+        lighting.lights.push_back(std::move(point));
+        if (!preview.setLighting(std::move(lighting))) { return RHITestResult::fail("Could not add the WRC fixture point light"); }
+        if (auto message = check("Point-light edit", false, false); !message.empty()) { return RHITestResult::fail(message); }
+        if (validation.failed()) { return RHITestResult::fail("WRC refresh Vulkan validation: " + validation.snapshot().dump()); }
+        return RHITestResult::pass("Verified Sun-only reuse, the 4x threshold and boosted budget, normal recovery, and point-light reset");
+    }
+
+private:
+    static constexpr uint32_t kGridResolution = 16;
+    static constexpr uint32_t kGridCells = kGridResolution * kGridResolution * kGridResolution;
+    static constexpr uint32_t kAtlasProbeAxis = 16;
+    static constexpr uint32_t kAtlasSlots = kAtlasProbeAxis * kAtlasProbeAxis;
+    static constexpr uint32_t kTraceBudget = 16;
+
+    static bool prepareGraph(render::RenderGraph& graph)
+    {
+        using render::makeRenderGraphFieldName;
+        const auto* fields = graph.findNode("GlobalDistanceFieldPages");
+        auto fieldProperties = fields->properties;
+        fieldProperties["persistentPages"] = true;
+        if (!graph.setNodeProperties(fields->id, std::move(fieldProperties)) ||
+            !graph.addNode("LumenScreenProbePlacementPass", "Placement", {}) ||
+            !graph.addNode("LumenRadianceCachePass", "RadianceCache", {{"gridResolution", kGridResolution},
+                {"clipmapCount", 1u}, {"probeResolution", 8u}, {"atlasProbesPerAxis", kAtlasProbeAxis},
+                {"traceBudget", kTraceBudget}, {"worldExtent", 4.0f}, {"maxTraceDistance", 5.0f}, {"compactProbeAtlas", true}}) ||
+            !graph.addEdge("Deferred.lumenPosition", "Placement.position") ||
+            !graph.addEdge("Deferred.lumenNormal", "Placement.normal") ||
+            !graph.addEdge("Placement.probePositions", "RadianceCache.probePositions") ||
+            !graph.addEdge("Placement.probeAdaptiveCount", "RadianceCache.probeAdaptiveCount")) {
+            return false;
+        }
+        constexpr std::array<std::string_view, 11> inputs{"position", "pageTable", "pageAtlas", "coarseMip", "domain",
+            "objectGrid", "objectGridScene", "cards", "cardScene", "cardDepth", "cardLighting"};
+        const auto edges = graph.edges();
+        for (const auto& edge : edges) {
+            if (edge.dstPass == "Gather" && std::ranges::find(inputs, edge.dstField) != inputs.end() &&
+                !graph.addEdge(makeRenderGraphFieldName(edge.srcPass, edge.srcField), makeRenderGraphFieldName("RadianceCache", edge.dstField))) {
+                return false;
+            }
+        }
+        return graph.unmarkOutput("FinalBlit.color") && graph.unmarkOutput("Gather.indirectDiffuse") &&
+            graph.markOutput("RadianceCache.cacheRadiance");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(LumenWRCSunRefreshTest);
 
 debug::DebugValue surfaceUpdateCaptures(std::string_view pass)
 {

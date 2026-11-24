@@ -1,5 +1,6 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/LumenGlobalTraceBindings.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/LumenLightingHistory.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/LumenScreenProbePlacement.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -20,11 +21,15 @@ namespace {
 
 constexpr uint64_t kUpdateABI = 0x4c554d454e050001ull;
 constexpr uint64_t kTraceABI = 0x4c554d454e050002ull;
+constexpr uint64_t kCompactMarkABI = 0x4c554d454e050003ull;
+constexpr uint64_t kPriorityABI = 0x4c554d454e050004ull;
+constexpr uint32_t kGlobalLightingTraceBudgetScale = 4;
 constexpr uint32_t kMaxClipmaps = 6;
 constexpr uint32_t kTraceGroupEdge = 8;
 constexpr uint32_t kUpdateThreads = 64;
 constexpr uint32_t kUpdateStateWords = 32;
 constexpr uint32_t kIndirectDispatchCount = 4;
+constexpr uint32_t kProbePositionStride = 2 * sizeof(uint32_t);
 constexpr uint64_t kMaxAtlasBufferBytes = 128ull * 1024 * 1024;
 
 struct RadianceCacheClipmap {
@@ -43,6 +48,19 @@ struct RadianceCacheUpdateParams {
     std::array<float, 3> cameraPosition;
 };
 static_assert(sizeof(RadianceCacheUpdateParams) == 88);
+
+struct CompactRadianceCacheMarkParams {
+    RadianceCacheUpdateParams update;
+    ShaderBuffer adaptiveCount;
+    uint32_t uniformCount;
+};
+static_assert(sizeof(CompactRadianceCacheMarkParams) == 96 && offsetof(CompactRadianceCacheMarkParams, adaptiveCount) == 88);
+
+struct RadianceCachePriorityParams {
+    ShaderBuffer updateState;
+    uint32_t probeTraceBudget, globalLightingChanged;
+};
+static_assert(sizeof(RadianceCachePriorityParams) == 12);
 
 struct RadianceCacheTraceParams {
     ShaderLumenGlobalTraceBindings scene;
@@ -100,7 +118,8 @@ std::optional<RadianceCacheLayout> readLayout(const RenderGraphProperties& prope
             !std::has_single_bit(layout.atlasProbesPerAxis) || layout.atlasProbesPerAxis > 128 ||
             layout.atlasTexels() * 2u * sizeof(uint32_t) > kMaxAtlasBufferBytes ||
             layout.gridCells() > UINT16_MAX * kUpdateThreads ||
-            layout.traceBudget > UINT32_MAX / 4u || !std::isfinite(layout.worldExtent) || layout.worldExtent <= 0.0f ||
+            layout.traceBudget > UINT32_MAX / kGlobalLightingTraceBudgetScale ||
+            !std::isfinite(layout.worldExtent) || layout.worldExtent <= 0.0f ||
             !std::isfinite(layout.maxTraceDistance) || layout.maxTraceDistance <= 0.05f || layout.maxTraceDistance > 65504.0f) {
             return std::nullopt;
         }
@@ -133,8 +152,15 @@ std::array<RadianceCacheClipmap, kMaxClipmaps> makeClipmaps(const RadianceCacheL
 }
 
 struct CacheContent {
-    uint64_t sceneIdentity, sceneContent, transform, visibility, lighting, environment;
+    uint64_t sceneIdentity, sceneContent, transform, visibility, nonSunLighting, environment;
     bool operator==(const CacheContent&) const = default;
+};
+
+struct SunLightingSample {
+    const RenderWorld* world = nullptr;
+    const scene::Scene* scene = nullptr;
+    uint64_t sceneLifetime = 0;
+    float maximum = 0.0f;
 };
 
 class LumenRadianceCachePass final : public ComputePass {
@@ -155,8 +181,11 @@ public:
 private:
     Device* device_ = nullptr;
     RadianceCacheLayout layout_;
+    bool compactProbeAtlas_ = false;
     std::optional<CacheContent> previousContent_;
     std::shared_ptr<SubmissionTransaction> previousSubmission_;
+    SunLightingSample recordedSunLighting_;
+    std::optional<SunLightingSample> submittedSunLighting_;
     std::array<RadianceCacheClipmap, kMaxClipmaps> previousClipmaps_{};
     uint64_t previousFrame_ = 0;
     ComputeKernel place_, clear_, mark_, remap_, allocate_, priority_, select_, setupArgs_, save_;
@@ -171,14 +200,22 @@ RenderPassReflection LumenRadianceCachePass::reflect(const RenderGraphCompileCon
     auto& position = reflection.addTextureInput("position", "Receiver world position and depth").sampledRead();
     position.format = Format::RGBA32Sfloat;
     position.matchOutputExtent = false;
-    auto& normal = reflection.addTextureInput("normal", "Receiver shading normal").sampledRead();
-    normal.format = Format::RGBA16Sfloat;
-    normal.matchOutputExtent = false;
-
-    const uint64_t placements = uint64_t(lumenScreenProbeTiles(context.width)) *
-        lumenScreenProbeTiles(context.height) * kLumenScreenProbeSlotsPerTile;
-    reflection.addBufferOutput("placedProbes", "Uniform and adaptive screen probe positions")
-        .buffer(placements * 8u, 8).storageReadWrite().transient(RenderGraphInitialization::FullOverwrite);
+    const auto compact = properties().find("compactProbeAtlas");
+    if (compact != properties().end() && *compact == true) {
+        reflection.addBufferInput("probePositions", "Shared compact screen probe positions")
+            .buffer(0, kProbePositionStride).storageRead();
+        reflection.addBufferInput("probeAdaptiveCount", "Attempted adaptive allocations for shared placement")
+            .buffer(sizeof(uint32_t), sizeof(uint32_t)).storageRead();
+    } else {
+        auto& normal = reflection.addTextureInput("normal", "Receiver shading normal").sampledRead();
+        normal.format = Format::RGBA16Sfloat;
+        normal.matchOutputExtent = false;
+        const uint64_t placements = uint64_t(lumenScreenProbeTiles(context.width)) *
+            lumenScreenProbeTiles(context.height) * kLumenScreenProbeSlotsPerTile;
+        reflection.addBufferOutput("placedProbes", "Uniform and adaptive screen probe positions")
+            .buffer(placements * kProbePositionStride, kProbePositionStride).storageReadWrite()
+            .transient(RenderGraphInitialization::FullOverwrite);
+    }
     for (const auto* name : {"cacheClipmaps", "previousClipmaps"}) {
         reflection.addBufferOutput(name, "Camera-centered radiance cache clipmap descriptors")
             .buffer(layout.clipmapCount * sizeof(RadianceCacheClipmap), sizeof(RadianceCacheClipmap)).transferWrite()
@@ -216,25 +253,42 @@ Result<> LumenRadianceCachePass::compile(const RenderGraphCompileContext& contex
         log = "Invalid Lumen Radiance Cache clipmap layout, atlas size, distance or update budget";
         return makeError(Error::InvalidArgument);
     }
+    const auto compact = properties().find("compactProbeAtlas");
+    if (compact != properties().end() && !compact->is_boolean()) {
+        log = "Lumen Radiance Cache compactProbeAtlas must be a boolean";
+        return makeError(Error::InvalidArgument);
+    }
     device_ = context.device;
     layout_ = *layout;
+    compactProbeAtlas_ = compact != properties().end() && *compact == true;
+    // A cache rebuild ends residency without creating a new Sun lighting change.
     previousContent_.reset();
-    previousSubmission_.reset();
     const auto compileKernel = [&](const char* module, const char* entry, ParameterABI abi, ComputeKernel& kernel) {
         return ShaderRegistry::instance().getComputeKernel(*device_,
             {.moduleName = module, .entryPointName = entry, .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
             {.parameters = abi, .debugName = entry}, kernel, log);
     };
-    if (auto result = compileKernel("Features/DistanceField/LumenScreenProbeFilter", "lumenPlaceAdaptiveProbesMain",
-        parameterAbi<LumenScreenProbeFilterParams>(kScreenProbeFilterABI), place_); !result) { return result; }
+    if (!compactProbeAtlas_) {
+        if (auto result = compileKernel("Features/DistanceField/LumenScreenProbeFilter", "lumenPlaceAdaptiveProbesMain",
+            parameterAbi<LumenScreenProbeFilterParams>(kScreenProbeFilterABI), place_); !result) { return result; }
+    }
 
     constexpr char update[] = "Features/DistanceField/LumenRadianceCacheUpdate";
     constexpr char trace[] = "Features/DistanceField/LumenRadianceCacheTrace";
+    const auto markResult = compactProbeAtlas_ ?
+        compileKernel(update, "lumenMarkCompactRadianceCacheProbesMain",
+            parameterAbi<CompactRadianceCacheMarkParams>(kCompactMarkABI), mark_) :
+        compileKernel(update, "lumenMarkRadianceCacheProbesMain", parameterAbi<RadianceCacheUpdateParams>(kUpdateABI), mark_);
+    if (!markResult) { return markResult; }
+    if (auto result = compileKernel(update, "lumenSelectRadianceCachePriorityMain",
+            parameterAbi<RadianceCachePriorityParams>(kPriorityABI), priority_); !result) {
+        return result;
+    }
     using KernelEntry = std::pair<const char*, ComputeKernel*>;
     const KernelEntry updates[]{
-        {"lumenClearRadianceCacheUpdateMain", &clear_}, {"lumenMarkRadianceCacheProbesMain", &mark_},
+        {"lumenClearRadianceCacheUpdateMain", &clear_},
         {"lumenRemapRadianceCacheProbesMain", &remap_}, {"lumenAllocateRadianceCacheProbesMain", &allocate_},
-        {"lumenSelectRadianceCachePriorityMain", &priority_}, {"lumenSelectRadianceCacheTraceProbesMain", &select_},
+        {"lumenSelectRadianceCacheTraceProbesMain", &select_},
         {"lumenSetupRadianceCacheDispatchMain", &setupArgs_}, {"lumenSaveRadianceCacheIndirectionMain", &save_},
     };
     for (const auto& [entry, kernel] : updates) {
@@ -273,10 +327,19 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
     const auto* scene = world ? world->scene() : context.runtimeScene();
     const CacheContent content{scene ? scene->resourceIdentity() : 0, scene ? scene->contentRevision() : 0,
         scene ? scene->geometryTransformRevision() : 0, scene ? scene->visibilityRevision() : 0,
-        world ? world->lightingRevision() : 0, world ? world->environmentRevision() : 0};
+        world ? world->nonSunLightingRevision() : 0, world ? world->environmentRevision() : 0};
+    const bool previousSubmitted = previousSubmission_ && previousSubmission_->resolved() && !previousSubmission_->cancelled();
+    if (previousSubmitted) { submittedSunLighting_ = recordedSunLighting_; }
+    const SunLightingSample currentSunLighting{world, scene, scene ? scene->sceneGraph().lifetimeRevision() : 0,
+        world ? world->sunIrradianceMax() : 0.0f};
+    const bool sameLightingScene = submittedSunLighting_ && submittedSunLighting_->world == world &&
+        submittedSunLighting_->scene == scene && submittedSunLighting_->sceneLifetime == currentSunLighting.sceneLifetime;
+    const float previousSunMax = sameLightingScene ? submittedSunLighting_->maximum : 0.0f;
+    // UE UpdateGlobalLightingState also compares Sky Light. This software permutation has no skylight.
+    const bool globalLightingChanged = world && world->worldEnvironment().astronomy.mode == environment::AstronomyMode::Manual &&
+        !world->worldEnvironment().moon.enabled && lumenGlobalSunLightingChanged(previousSunMax, currentSunLighting.maximum);
     const bool historyValid = previousContent_ == content && previousFrame_ + 1u == context.frameIndex() &&
-        context.temporalValid("previousIndirection") &&
-        previousSubmission_ && previousSubmission_->resolved() && !previousSubmission_->cancelled();
+        context.temporalValid("previousIndirection") && previousSubmitted && !globalLightingChanged;
     const std::array eye{view->current.eye[0], view->current.eye[1], view->current.eye[2]};
     const auto clipmaps = makeClipmaps(layout_, eye);
     const uint64_t clipmapBytes = layout_.clipmapCount * sizeof(RadianceCacheClipmap);
@@ -310,33 +373,53 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
     const uint32_t height = position.desc().height;
     const uint32_t probeWidth = lumenScreenProbeTiles(width);
     const uint32_t probeHeight = lumenScreenProbeTiles(height);
-    const uint32_t probeCount = probeWidth * probeHeight * kLumenScreenProbeSlotsPerTile;
-    if (context.outputBuffer("placedProbes").desc().size != uint64_t(probeCount) * 8u ||
-        width != uint32_t(view->current.viewport[1]) || height != uint32_t(view->current.viewport[2])) {
+    if (width != uint32_t(view->current.viewport[1]) || height != uint32_t(view->current.viewport[2])) {
         spdlog::error("Lumen Radiance Cache guides must match the graph render extent");
         return makeError(Error::InvalidArgument);
     }
+    const uint32_t uniformCount = probeWidth * probeHeight;
+    const uint32_t denseCount = uniformCount * kLumenScreenProbeSlotsPerTile;
+    const auto probePositions = compactProbeAtlas_ ? context.inputBuffer("probePositions") : context.outputBuffer("placedProbes");
+    const uint64_t probeCount = probePositions.desc().size / kProbePositionStride;
+    if (probePositions.desc().structureStride != kProbePositionStride ||
+        probePositions.desc().size % kProbePositionStride != 0 ||
+        probeCount < (compactProbeAtlas_ ? uniformCount : denseCount) || probeCount > denseCount) {
+        spdlog::error("Lumen Radiance Cache {} probe positions are incompatible with receiver extent {}x{} "
+            "(graph extent {}x{}, {} bytes with stride {}, expected {} to {} probes)",
+            compactProbeAtlas_ ? "shared" : "dense", width, height, context.width(), context.height(),
+            probePositions.desc().size, probePositions.desc().structureStride, compactProbeAtlas_ ? uniformCount : denseCount, denseCount);
+        return makeError(Error::InvalidArgument);
+    }
     const auto positionHandle = writer.sampledImageHandle(position.view());
-    const auto placement = writer.encode(LumenScreenProbeFilterParams{
-        positionHandle, writer.sampledImageHandle(context.inputTexture("normal").view()),
-        bind("placedProbes"), {}, {}, {}, {}, width, height, probeWidth, probeHeight,
-        uint32_t(context.frameIndex())}, kScreenProbeFilterABI);
-    if (!placement) { return makeError(placement.error()); }
-    const auto update = writer.encode(RadianceCacheUpdateParams{
-        positionHandle, bind("placedProbes"), bind("cacheClipmaps"), bind("previousClipmaps"),
+    const auto screenProbeHandle = writer.buffer(probePositions.buffer());
+    EncodedParameters placement;
+    if (!compactProbeAtlas_) {
+        const auto encodedPlacement = writer.encode(LumenScreenProbeFilterParams{
+            positionHandle, writer.sampledImageHandle(context.inputTexture("normal").view()),
+            screenProbeHandle, {}, {}, {}, {}, width, height, probeWidth, probeHeight,
+            uint32_t(context.frameIndex())}, kScreenProbeFilterABI);
+        if (!encodedPlacement) { return makeError(encodedPlacement.error()); }
+        placement = *encodedPlacement;
+    }
+    const RadianceCacheUpdateParams updateParams{
+        positionHandle, screenProbeHandle, bind("cacheClipmaps"), bind("previousClipmaps"),
         bind("cacheIndirection"), bind("previousIndirection"), bind("freeList"), bind("probeFrames"),
         bind("updateState"), bind("traceData"), bind("indirectArgs"),
-        layout_.gridResolution, layout_.clipmapCount, layout_.probeCapacity(), probeCount,
-        uint32_t(context.frameIndex() + 1u), historyValid, layout_.traceBudget, layout_.probeResolution, eye},
-        kUpdateABI);
+        layout_.gridResolution, layout_.clipmapCount, layout_.probeCapacity(), uint32_t(probeCount),
+        uint32_t(context.frameIndex() + 1u), historyValid, layout_.traceBudget, layout_.probeResolution, eye};
+    const auto update = writer.encode(updateParams, kUpdateABI);
     if (!update) { return makeError(update.error()); }
-    const auto saveUpdate = writer.encode(RadianceCacheUpdateParams{
-        positionHandle, bind("placedProbes"), bind("cacheClipmaps"), bind("previousClipmaps"),
-        bind("cacheIndirection"), bind("savedIndirection"), bind("freeList"), bind("probeFrames"),
-        bind("updateState"), bind("traceData"), bind("indirectArgs"),
-        layout_.gridResolution, layout_.clipmapCount, layout_.probeCapacity(), probeCount,
-        uint32_t(context.frameIndex() + 1u), historyValid, layout_.traceBudget, layout_.probeResolution, eye},
-        kUpdateABI);
+    // UE boosts the priority histogram only. New-probe downsampling still uses the input budget.
+    const uint32_t priorityBudget = layout_.traceBudget * (globalLightingChanged ? kGlobalLightingTraceBudgetScale : 1u);
+    const auto priority = writer.encode(RadianceCachePriorityParams{
+        updateParams.updateState, priorityBudget, static_cast<uint32_t>(globalLightingChanged)}, kPriorityABI);
+    if (!priority) { return makeError(priority.error()); }
+    const auto mark = compactProbeAtlas_ ? writer.encode(CompactRadianceCacheMarkParams{updateParams,
+        writer.buffer(context.inputBuffer("probeAdaptiveCount").buffer()), uniformCount}, kCompactMarkABI) : update;
+    if (!mark) { return makeError(mark.error()); }
+    auto saveParams = updateParams;
+    saveParams.previousIndirection = bind("savedIndirection");
+    const auto saveUpdate = writer.encode(saveParams, kUpdateABI);
     if (!saveUpdate) { return makeError(saveUpdate.error()); }
     const auto trace = writer.encode(RadianceCacheTraceParams{
         bindLumenGlobalTrace(context, writer), bind("cacheClipmaps"), bind("cacheIndirection"), bind("traceData"),
@@ -363,11 +446,13 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
         }
         return {};
     }});
-    stages.push_back({"Place screen probes", placeUses, [&](CommandBuffer& cmd) {
-        return place_.dispatch(cmd, *placement, probeWidth, probeHeight, 1);
-    }});
+    if (!compactProbeAtlas_) {
+        stages.push_back({"Place screen probes", placeUses, [&](CommandBuffer& cmd) {
+            return place_.dispatch(cmd, placement, probeWidth, probeHeight, 1);
+        }});
+    }
     const auto groups = (layout_.gridCells() + kUpdateThreads - 1u) / kUpdateThreads;
-    const auto markGroups = (probeCount + kUpdateThreads - 1u) / kUpdateThreads;
+    const uint32_t markGroups = (uint32_t(probeCount) + kUpdateThreads - 1u) / kUpdateThreads;
     using Use = RenderGraphStageUse;
     constexpr Access read = Access::BufferStorageRead;
     constexpr Access write = Access::BufferStorageWrite;
@@ -399,8 +484,14 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
         }});
     };
     dispatch("Clear world probe requests", clear_, *update, groups, {{"cacheIndirection", write}, {"updateState", rw}});
-    dispatch("Mark world probes from screen probes", mark_, *update, markGroups,
-        {{"cacheClipmaps", read}, {"placedProbes", read}, {"position", sample}, {"cacheIndirection", rw}, {"updateState", rw}});
+    if (compactProbeAtlas_) {
+        dispatch("Mark world probes from screen probes", mark_, *mark, markGroups,
+            {{"cacheClipmaps", read}, {"probePositions", read}, {"probeAdaptiveCount", read}, {"position", sample},
+                {"cacheIndirection", rw}, {"updateState", rw}});
+    } else {
+        dispatch("Mark world probes from screen probes", mark_, *mark, markGroups,
+            {{"cacheClipmaps", read}, {"placedProbes", read}, {"position", sample}, {"cacheIndirection", rw}, {"updateState", rw}});
+    }
     if (historyValid) {
         dispatch("Remap persistent world probes", remap_, *update, groups,
             {{"cacheClipmaps", read}, {"previousClipmaps", read}, {"previousIndirection", read},
@@ -408,7 +499,7 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
     }
     dispatch("Allocate requested world probes", allocate_, *update, groups,
         {{"cacheClipmaps", read}, {"cacheIndirection", rw}, {"updateState", rw}, {"probeFrames", rw}, {"freeList", read}});
-    dispatch("Select probe priority budget", priority_, *update, 1, {{"updateState", rw}});
+    dispatch("Select probe priority budget", priority_, *priority, 1, {{"updateState", rw}});
     dispatch("Select probes to trace", select_, *update, groups,
         {{"cacheClipmaps", read}, {"cacheIndirection", read}, {"updateState", rw}, {"probeFrames", rw}, {"traceData", write}});
     dispatch("Set up probe dispatches", setupArgs_, *update, 1, {{"updateState", rw}, {"indirectArgs", write}});
@@ -433,6 +524,7 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
     auto submission = std::make_shared<SubmissionTransaction>([] {}, [] {});
     if (auto result = commands.addSubmissionTransaction(submission); !result) { return result; }
     previousSubmission_ = std::move(submission);
+    recordedSunLighting_ = currentSunLighting;
     previousContent_ = content;
     previousClipmaps_ = clipmaps;
     previousFrame_ = context.frameIndex();

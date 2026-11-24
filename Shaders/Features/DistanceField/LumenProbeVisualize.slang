@@ -33,7 +33,33 @@ struct LumenProbeVisualizeParams
     uint probeSlot;
     uint traceResolution;
     float distanceRange;
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+    ResourceHandle<StructuredBuffer<uint>> probeOrigins;
+    ResourceHandle<StructuredBuffer<uint>> probeTileAdaptiveCounts;
+    ResourceHandle<StructuredBuffer<uint>> probeTileAdaptiveIndices;
+#endif
 };
+
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+uint findCompactProbe(uint2 tile, LumenProbeVisualizeParams params)
+{
+    const uint tileIndex = lumenPackedUniformProbeIndex(tile, params.probeWidth);
+    if (params.probeSlot == 0u) { return tileIndex; }
+
+    const uint uniformCount = params.probeWidth * params.probeHeight;
+    const uint logicalIndex = lumenProbeIndex(tile, params.probeSlot, params.probeWidth);
+    let origins = resolveUniform(params.probeOrigins);
+    let tileCounts = resolveUniform(params.probeTileAdaptiveCounts);
+    let tileIndices = resolveUniform(params.probeTileAdaptiveIndices);
+    const uint listStart = tileIndex * kLumenAdaptiveProbesPerTile;
+    const uint listCount = tileCounts[tileIndex];
+    for (uint entry = 0u; entry < listCount; ++entry) {
+        const uint probe = uniformCount + tileIndices[listStart + entry];
+        if (origins[probe] == logicalIndex) { return probe; }
+    }
+    return kLumenInvalidProbe;
+}
+#endif
 
 // UE 5.7.4 LumenScreenProbeDebug.usf: DrawPoint paints a two-pixel quad,
 // yellow for a uniform probe and magenta for an adaptive probe.
@@ -44,19 +70,36 @@ bool inProbeMarker(uint2 pixel, uint2 probePixel)
 }
 
 float3 probePlacementColor(uint2 pixel, uint2 tile, uint2 probeSize, StructuredBuffer<uint2> positions,
-    float3 sceneColor)
+    float3 sceneColor, LumenProbeVisualizeParams params)
 {
     // Adaptive placement can spill one tile forward. The marker can extend
     // one pixel backward from a tile's origin.
     const uint2 lo = max(tile, 1u) - 1u;
     const uint2 hi = min((pixel + 1u) / kLumenProbeDownsampleFactor, probeSize - 1u);
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+    const uint uniformCount = probeSize.x * probeSize.y;
+    let tileCounts = resolveUniform(params.probeTileAdaptiveCounts);
+    let tileIndices = resolveUniform(params.probeTileAdaptiveIndices);
+#endif
     bool uniformMarker = false;
     for (uint y = lo.y; y <= hi.y; ++y) {
         for (uint x = lo.x; x <= hi.x; ++x) {
-            const uint index = lumenProbeIndex(uint2(x, y), 0u, probeSize.x);
-            uniformMarker = uniformMarker || inProbeMarker(pixel, positions[index]);
-            for (uint slot = 1u; slot < kLumenProbeSlotsPerTile; ++slot) {
-                if (inProbeMarker(pixel, positions[index + slot])) {
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+            const uint uniformIndex = lumenPackedUniformProbeIndex(uint2(x, y), probeSize.x);
+            const uint listStart = uniformIndex * kLumenAdaptiveProbesPerTile;
+            const uint listCount = tileCounts[uniformIndex];
+#else
+            const uint uniformIndex = lumenProbeIndex(uint2(x, y), 0u, probeSize.x);
+            const uint listCount = kLumenAdaptiveProbesPerTile;
+#endif
+            uniformMarker = uniformMarker || inProbeMarker(pixel, positions[uniformIndex]);
+            for (uint entry = 0u; entry < listCount; ++entry) {
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+                const uint probe = uniformCount + tileIndices[listStart + entry];
+#else
+                const uint probe = uniformIndex + 1u + entry;
+#endif
+                if (inProbeMarker(pixel, positions[probe])) {
                     return float3(1.0f, 0.0f, 1.0f);
                 }
             }
@@ -99,12 +142,18 @@ void lumenProbeVisualizeMain(uint3 id : SV_DispatchThreadID)
     const uint2 probeSize = uint2(params.probeWidth, params.probeHeight);
     StructuredBuffer<uint2> positions = resolveUniform(params.probePositions);
     resolveUniform(params.placement)[pixel] = float4(probePlacementColor(pixel, tile, probeSize, positions,
-        resolveUniform(params.sceneColor).Load(int3(pixel, 0)).rgb), 1.0f);
+        resolveUniform(params.sceneColor).Load(int3(pixel, 0)).rgb, params), 1.0f);
     const float history = resolveUniform(params.historyWeight).Load(int3(pixel, 0));
     resolveUniform(params.historyWeightView)[pixel] = float4(history.xxx, 1.0f);
 
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+    const uint probe = findCompactProbe(tile, params);
+    bool placed = false;
+    if (probe != kLumenInvalidProbe) { placed = positions[probe].x != kLumenInvalidProbe; }
+#else
     const uint probe = lumenProbeIndex(tile, params.probeSlot, probeSize.x);
     const bool placed = positions[probe].x != kLumenInvalidProbe;
+#endif
     const float missing = ((((pixel.x / 4u) ^ (pixel.y / 4u)) & 1u) != 0u) ? 0.035f : 0.015f;
     float3 sourceColor = missing.xxx;
     float3 distanceColor = missing.xxx;

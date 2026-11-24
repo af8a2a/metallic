@@ -24,6 +24,7 @@ std::unique_ptr<RenderGraphPass> createLumenRadianceCachePass();
 std::unique_ptr<RenderGraphPass> createLumenGlobalTracingPass();
 std::unique_ptr<RenderGraphPass> createLumenReflectionPass();
 std::unique_ptr<RenderGraphPass> createLumenScreenProbeGatherPass();
+std::unique_ptr<RenderGraphPass> createLumenScreenProbePlacementPass();
 std::unique_ptr<RenderGraphPass> createLumenScreenTraceSetupPass();
 std::unique_ptr<RenderGraphPass> createLumenTemporalGatherPass();
 std::unique_ptr<RenderGraphPass> createLumenShortRangeAOPass();
