@@ -81,10 +81,12 @@ public:
     // consumers still own their camera, light and geometry content signatures.
     uint64_t geometryReprojectionInvalidationRevision() const;
 
+    // Opt in only when consumers validate and reproject rigid surface motion.
     Result<> ensureTexture(
         std::string_view name,
         const TextureDesc& desc,
-        TextureViewDesc viewDesc = {});
+        TextureViewDesc viewDesc = {},
+        bool preserveGeometryMotion = false);
 
     Result<> ensureBuffer(
         std::string_view name,

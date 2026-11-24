@@ -20,6 +20,7 @@ namespace metallic::render::builtin_pass {
 namespace {
 
 constexpr uint64_t kLumenTemporalGatherABI = 0x4c554d454e030006ull;
+constexpr uint64_t kLumenTemporalFastUpdateABI = 0x4c554d454e030007ull;
 
 struct LumenTemporalGatherParams {
     ShaderSampledImage indirectDiffuse, position, normal, directColor;
@@ -40,13 +41,14 @@ struct LumenTemporalGatherParams {
     ShaderStorageImage shortRangeAO, currentShortRangeAO;
     ShaderSampledImage diffuseAlbedo;
     float currentJitter[2];
-    uint32_t padding;
+    ShaderStorageImage fastUpdateAmount;
 };
 static_assert(sizeof(LumenTemporalGatherParams) == 288 &&
     offsetof(LumenTemporalGatherParams, maxFramesAccumulated) == 240 &&
     offsetof(LumenTemporalGatherParams, previousPosition) == 252 &&
     offsetof(LumenTemporalGatherParams, shortRangeAORaw) == 256 &&
-    offsetof(LumenTemporalGatherParams, currentJitter) == 276);
+    offsetof(LumenTemporalGatherParams, currentJitter) == 276 &&
+    offsetof(LumenTemporalGatherParams, fastUpdateAmount) == 284);
 
 struct HistoryContent {
     uint64_t reprojectionRevision = 0;
@@ -71,7 +73,11 @@ public:
     Result<> prepare(const RenderGraphCompileContext& context, std::string& log) override
     {
         const auto ao = properties().value("shortRangeAO", RenderGraphProperties(false));
-        return !ao.is_boolean() || ao != compiledShortRangeAO_ ? compile(context, log) : Result<>{};
+        const auto dynamic = properties().value("dynamicReprojection", RenderGraphProperties(false));
+        const auto fast = properties().value("fastLightingUpdate", RenderGraphProperties(false));
+        return !ao.is_boolean() || ao != compiledShortRangeAO_ ||
+            !dynamic.is_boolean() || dynamic != compiledDynamicReprojection_ ||
+            !fast.is_boolean() || fast != compiledFastLightingUpdate_ ? compile(context, log) : Result<>{};
     }
     Result<> execute(RenderGraphExecutionContext& context) override;
     bool supportsFrameOverlap() const override { return true; }
@@ -96,11 +102,19 @@ private:
         return value != properties().end() && *value == true;
     }
 
+    bool fastLightingUpdateEnabled() const
+    {
+        const auto value = properties().find("fastLightingUpdate");
+        return value != properties().end() && *value == true;
+    }
+
     Device* device_ = nullptr;
     ComputeKernel kernel_;
     std::unique_ptr<TextureView> blueNoiseScalar_;
     float maxFramesAccumulated_ = 10.0f;
     bool compiledShortRangeAO_ = false;
+    bool compiledDynamicReprojection_ = false;
+    bool compiledFastLightingUpdate_ = false;
     // The shared manager invalidates its resources during ordinary editor camera
     // motion. Retain this pass's reprojectable history across that event.
     HistoryResourceManager history_;
@@ -148,6 +162,10 @@ RenderPassReflection LumenTemporalGatherPass::reflect(const RenderGraphCompileCo
     color.colorEncoding = DisplayColorEncoding::SceneLinear;
     reflection.addTextureOutput("historyWeight", "Accumulated history contribution after geometry rejection")
         .storageWrite().transient(RenderGraphInitialization::FullOverwrite).format = Format::R32Sfloat;
+    if (fastLightingUpdateEnabled()) {
+        reflection.addTextureOutput("fastUpdateAmount", "Current diffuse fast-update amount before applying history")
+            .storageWrite().transient(RenderGraphInitialization::FullOverwrite).format = Format::R32Sfloat;
+    }
     return reflection;
 }
 
@@ -161,6 +179,11 @@ Result<> LumenTemporalGatherPass::compile(const RenderGraphCompileContext& conte
     const auto dynamic = properties().find("dynamicReprojection");
     if (dynamic != properties().end() && !dynamic->is_boolean()) {
         log = "Lumen Temporal Gather dynamicReprojection must be a boolean";
+        return makeError(Error::InvalidArgument);
+    }
+    const auto fast = properties().find("fastLightingUpdate");
+    if (fast != properties().end() && (!fast->is_boolean() || (*fast == true && !dynamicReprojection()))) {
+        log = "Lumen Temporal Gather fastLightingUpdate must be a boolean and requires dynamicReprojection when enabled";
         return makeError(Error::InvalidArgument);
     }
     const auto frames = properties().find("maxFramesAccumulated");
@@ -181,6 +204,8 @@ Result<> LumenTemporalGatherPass::compile(const RenderGraphCompileContext& conte
         return makeError(Error::InvalidArgument);
     }
     compiledShortRangeAO_ = shortRangeAOEnabled();
+    compiledDynamicReprojection_ = dynamicReprojection();
+    compiledFastLightingUpdate_ = fastLightingUpdateEnabled();
     device_ = context.device;
     const bool ditherHistory = properties().value("stochasticHistoryQuantization", false);
     if (ditherHistory || compiledShortRangeAO_) {
@@ -194,17 +219,19 @@ Result<> LumenTemporalGatherPass::compile(const RenderGraphCompileContext& conte
     } else {
         blueNoiseScalar_.reset();
     }
-    std::array<SlangMacroDefine, 3> defines{};
+    std::array<SlangMacroDefine, 4> defines{};
     size_t defineCount = 0;
     if (ditherHistory) { defines[defineCount++] = {"METALLIC_LUMEN_DITHER_HISTORY", "1"}; }
-    if (dynamicReprojection()) { defines[defineCount++] = {"METALLIC_LUMEN_DYNAMIC_REPROJECTION", "1"}; }
+    if (compiledDynamicReprojection_) { defines[defineCount++] = {"METALLIC_LUMEN_DYNAMIC_REPROJECTION", "1"}; }
     if (compiledShortRangeAO_) { defines[defineCount++] = {"METALLIC_LUMEN_SHORT_RANGE_AO", "1"}; }
+    if (compiledFastLightingUpdate_) { defines[defineCount++] = {"METALLIC_LUMEN_FAST_LIGHTING_UPDATE", "1"}; }
     lastContent_.reset();
     if (auto result = history_.initialize(*device_); !result) { return result; }
     return ShaderRegistry::instance().getComputeKernel(*device_,
         {.moduleName = "Features/DistanceField/LumenTemporalGather", .entryPointName = "lumenTemporalGatherMain",
             .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = {defines.data(), defineCount}},
-        {.parameters = parameterAbi<LumenTemporalGatherParams>(kLumenTemporalGatherABI),
+        {.parameters = parameterAbi<LumenTemporalGatherParams>(
+            compiledFastLightingUpdate_ ? kLumenTemporalFastUpdateABI : kLumenTemporalGatherABI),
             .debugName = "LumenTemporalGather"}, kernel_, log);
 }
 
@@ -221,7 +248,7 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
     }
     const auto* scene = world ? world->scene() : context.runtimeScene();
     const auto* globalHistory = context.historyResources();
-    const bool dynamic = dynamicReprojection();
+    const bool dynamic = compiledDynamicReprojection_;
     const uint64_t reprojectionRevision = globalHistory
         ? (dynamic ? globalHistory->motionReprojectionInvalidationRevision() :
             globalHistory->sunLightingReprojectionInvalidationRevision())
@@ -317,6 +344,10 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
         params.previousPosition = writer.sampledImageHandle(context.inputTexture("previousPosition").view());
         uses.push_back({"previousPosition", Access::TextureSampleRead});
     }
+    if (compiledFastLightingUpdate_) {
+        params.fastUpdateAmount = writer.storageImageHandle(context.outputTexture("fastUpdateAmount").view());
+        uses.push_back({"fastUpdateAmount", Access::TextureStorageWrite});
+    }
     const auto import = [](std::string_view name, const HistoryTextureRef& texture) {
         return RenderGraphTextureImport{name, texture.texture, texture.view, texture.state, ResourceState::ShaderRead};
     };
@@ -347,7 +378,8 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
     const auto screenNames = publishScreenHistory ? lumenScreenTraceHistoryNames(context.passName()) : std::array<std::string, 2>{};
     auto& screenHistory = context.graphHistoryResources();
     if (publishScreenHistory) {
-        if (auto result = ensureLumenScreenTraceHistory(screenHistory, screenNames, params.width, params.height); !result) {
+        if (auto result = ensureLumenScreenTraceHistory(
+                screenHistory, screenNames, params.width, params.height, compiledFastLightingUpdate_); !result) {
             return result;
         }
         const auto depth = screenHistory.texture(screenNames[0], HistorySlot::Current);
@@ -361,7 +393,7 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
         textures.push_back(import("screenHistoryDepth", depth));
         textures.push_back(import("screenHistoryColor", color));
     }
-    const auto encoded = writer.encode(params, kLumenTemporalGatherABI);
+    const auto encoded = writer.encode(params, compiledFastLightingUpdate_ ? kLumenTemporalFastUpdateABI : kLumenTemporalGatherABI);
     if (!encoded) { return makeError(encoded.error()); }
     const RenderGraphStage stages[] = {
         {"Reproject and accumulate diffuse", uses,

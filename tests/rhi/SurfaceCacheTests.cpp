@@ -18,6 +18,7 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <format>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -2220,6 +2221,10 @@ private:
 
 METALLIC_REGISTER_RHI_TEST(LumenPersistentCardUpdateTest);
 
+constexpr uint64_t kFastLightingPulseFrame = 6;
+constexpr uint64_t kFastLightingDisocclusionFrame = kFastLightingPulseFrame + 3;
+constexpr float kFastLightingPulseAmount = 0.7265625f;
+
 class LumenTemporalInputPass final : public render::UnsafePass {
 public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
@@ -2231,8 +2236,13 @@ public:
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
+        const bool fastLighting = properties().value("fastLightingSequence", false);
+        const auto frame = context.frameIndex();
+        const bool pulse = frame == kFastLightingPulseFrame || frame == kFastLightingDisocclusionFrame;
+        const float red = fastLighting && frame >= kFastLightingPulseFrame ? 0.875f : 0.5f;
+        const float alpha = fastLighting ? (pulse ? 0.078125f : 0.004f) : 1.0f;
         return context.commandBuffer().clearColorTexture(*context.outputTexture("indirectDiffuse").texture(),
-            render::TextureLayout::TransferDestination, {0.5f, 0.25f, 0.125f, 1.0f});
+            render::TextureLayout::TransferDestination, {red, 0.25f, 0.125f, alpha});
     }
 };
 
@@ -2254,17 +2264,27 @@ struct LumenTemporalFrame {
         return readSurfaceValue<float>((dynamic ? temporal : staticTemporal)->artifacts[0].bytes, pixel);
     }
 
+    float fastUpdateAmount(size_t pixel) const
+    {
+        return readSurfaceValue<float>(temporal->artifacts[1].bytes, pixel);
+    }
+
+    float indirectDiffuseRed(size_t pixel) const
+    {
+        return halfToFloat(readSurfaceValue<std::array<uint16_t, 4>>(temporal->artifacts[2].bytes, pixel)[0]);
+    }
+
     float screenHistoryDepth(size_t pixel) const
     {
         return readSurfaceValue<float>(screenTrace->artifacts[0].bytes, pixel);
     }
 };
 
-class LumenDynamicTemporalTest final : public RHITest {
+class LumenDynamicTemporalTest : public RHITest {
 public:
-    LumenDynamicTemporalTest()
+    explicit LumenDynamicTemporalTest(bool fastLighting = false) : fastLighting_(fastLighting)
     {
-        name = "lumen_dynamic_temporal";
+        name = fastLighting ? "lumen_fast_temporal_history" : "lumen_dynamic_temporal";
         type = RHITestType::Rendering;
     }
 
@@ -2296,7 +2316,7 @@ public:
         const auto blocker = movingObject->object;
 
         RenderGraph graph;
-        if (!makeGraph(graph)) { return RHITestResult::fail("Could not build the dynamic Lumen temporal graph"); }
+        if (!makeGraph(graph, fastLighting_)) { return RHITestResult::fail("Could not build the dynamic Lumen temporal graph"); }
         bench::ValidationRecorder validation;
         auto device = render::createDevice({.applicationName = "Lumen dynamic temporal regression",
             .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
@@ -2339,7 +2359,7 @@ public:
         }
         const RenderGraphSubmitDesc submission{.graphicsQueue = gpu.getQueue(QueueType::Graphics),
             .historyResources = &history, .recordingWorkerLimit = 1};
-        const auto renderFrame = [&]() { return captureFrame(inspector, executor, submission, log); };
+        const auto renderFrame = [&]() { return captureFrame(inspector, executor, submission, fastLighting_, log); };
 
         const auto initial = renderFrame();
         if (!initial || !historyEmpty(*initial) || !historyEmpty(*initial, false) || screenHistoryPixels(*initial) != 0u) {
@@ -2349,6 +2369,20 @@ public:
         if (!stationary) { return RHITestResult::fail(log); }
         stationary = renderFrame();
         if (!stationary) { return RHITestResult::fail(log); }
+
+        if (fastLighting_) {
+            for (uint64_t frame = 3; frame < kFastLightingPulseFrame; ++frame) {
+                stationary = renderFrame();
+                if (!stationary) { return RHITestResult::fail(log); }
+            }
+            const auto pulse = renderFrame();
+            const auto retained = renderFrame();
+            const auto quiet = renderFrame();
+            if (!pulse || !retained || !quiet) { return RHITestResult::fail(log); }
+            if (const auto error = compareFastLightingSequence(*stationary, *pulse, *retained, *quiet); !error.empty()) {
+                return RHITestResult::fail(error);
+            }
+        }
 
         auto transform = document.nodes()[2].worldMatrix;
         transform.a[12] += destinationX - startX;
@@ -2365,19 +2399,23 @@ public:
             const auto before = stationary->position(pixel);
             const auto previous = moved->previousPosition(pixel);
             const float weight = moved->historyWeight(pixel);
+            const bool movingLightAccepted = !fastLighting_ ||
+                std::abs(moved->fastUpdateAmount(pixel) - kFastLightingPulseAmount) < 0.0001f;
             if (current[2] > 0.75f && std::abs(current[0] - destinationX) < 0.06f && before[2] < 0.5f) {
                 ++shiftedPixels;
                 if (previous[3] <= 0.0f || std::abs(previous[0] - current[0] + destinationX - startX) > 0.002f ||
                     std::abs(previous[1] - current[1]) > 0.002f || std::abs(previous[2] - current[2]) > 0.002f ||
-                    !(weight > 0.6f)) {
+                    !(weight > 0.6f) || !movingLightAccepted) {
                     return RHITestResult::fail("Translated receiver did not reproject to its previous world-space surface");
                 }
             } else if (before[2] > 0.75f && current[2] < 0.5f && std::abs(current[0] - startX) < 0.06f) {
                 ++revealedPixels;
-                if (weight != 0.0f) { return RHITestResult::fail("Newly revealed receiver retained foreground GI history"); }
+                if (weight != 0.0f || (fastLighting_ && moved->fastUpdateAmount(pixel) != 0.0f)) {
+                    return RHITestResult::fail("Newly revealed receiver retained foreground GI history");
+                }
             } else if (std::abs(current[0]) < 0.08f && before[2] < 0.5f && current[2] < 0.5f) {
                 ++staticPixels;
-                if (previous[3] <= 0.0f || !(weight > 0.6f)) {
+                if (previous[3] <= 0.0f || !(weight > 0.6f) || !movingLightAccepted) {
                     return RHITestResult::fail("Moving one object discarded unrelated static receiver history");
                 }
             }
@@ -2390,6 +2428,13 @@ public:
         auto recovered = renderFrame();
         if (!recovered || !hasRetainedHistory(*recovered)) {
             return RHITestResult::fail(recovered ? "History did not recover after rigid motion" : log);
+        }
+        if (fastLighting_) {
+            if (validation.failed()) {
+                return RHITestResult::fail("Fast temporal Vulkan validation: " + validation.snapshot().dump());
+            }
+            return RHITestResult::pass("Diffuse motion accelerated integration, carried the packed amount for one frame, "
+                "and rejected reprojected history on newly revealed receivers.");
         }
         environment.sun.illuminance = 120.0f;
         if (!world.setWorldEnvironment(environment)) { return RHITestResult::fail("Could not stage a global sun change"); }
@@ -2451,17 +2496,58 @@ public:
     }
 
 private:
-    static bool makeGraph(render::RenderGraph& graph)
+    static std::string compareFastLightingSequence(const LumenTemporalFrame& stationary, const LumenTemporalFrame& pulse,
+        const LumenTemporalFrame& retained, const LumenTemporalFrame& quiet)
+    {
+        // The pulse's alpha 0.078125 yields an amount of 0.7265625. Packing rounds the age
+        // to 4/15 of the ten-frame cap and rounds the fast amount up to 11/15.
+        constexpr std::array<float, 3> ages{2.734375f, 8.0f / 3.0f, 11.0f / 3.0f};
+        constexpr std::array<float, 3> amounts{kFastLightingPulseAmount, 0.0f, 0.0f};
+        const std::array frames{&pulse, &retained, &quiet};
+        size_t checked = 0;
+        for (size_t pixel = 0; pixel < kAtlasPixels; ++pixel) {
+            const auto position = stationary.position(pixel);
+            if (position[3] <= 0.0f || position[2] >= 0.5f ||
+                std::abs(position[0]) >= 0.08f || std::abs(position[1]) >= 0.09f) {
+                continue;
+            }
+            if (stationary.fastUpdateAmount(pixel) != 0.0f || stationary.indirectDiffuseRed(pixel) != 0.5f ||
+                std::abs(stationary.historyWeight(pixel) - stationary.historyWeight(pixel, false)) > 0.0001f) {
+                return std::format("Static-alpha baseline differs before motion at pixel {}", pixel);
+            }
+            float previousRed = stationary.indirectDiffuseRed(pixel);
+            for (size_t phase = 0; phase < frames.size(); ++phase) {
+                const auto& frame = *frames[phase];
+                const float alpha = 1.0f / (1.0f + ages[phase]);
+                const float expectedWeight = 1.0f - alpha;
+                const float expectedRed = std::lerp(previousRed, 0.875f, alpha);
+                const float weight = frame.historyWeight(pixel);
+                const float amount = frame.fastUpdateAmount(pixel);
+                const float red = frame.indirectDiffuseRed(pixel);
+                // The indirect output and the carried red channel both use FP16.
+                if (!(std::abs(amount - amounts[phase]) <= 0.0001f && std::abs(weight - expectedWeight) <= 0.0001f &&
+                    std::abs(red - expectedRed) <= 0.0005f && weight < frame.historyWeight(pixel, false))) {
+                    return std::format("Fast temporal phase {} at pixel {} expected amount {:.6f}, weight {:.6f}, red {:.6f}; "
+                        "got {:.6f}, {:.6f}, {:.6f}", phase, pixel, amounts[phase], expectedWeight, expectedRed, amount, weight, red);
+                }
+                previousRed = red;
+            }
+            ++checked;
+        }
+        return checked >= 80u ? std::string{} : "Insufficient stationary pixels for the fast temporal lighting sequence";
+    }
+
+    static bool makeGraph(render::RenderGraph& graph, bool fastLighting)
     {
         using namespace render;
-        static const bool registered = registerRenderGraphPassType("LumenTemporalInputPass", "Constant diffuse test input",
+        static const bool registered = registerRenderGraphPassType("LumenTemporalInputPass", "Diffuse temporal test input",
             [] { return std::make_unique<LumenTemporalInputPass>(); });
         if (!registered || !graph.addNode("VisibilityBufferPass", "VBuffer", {{"visualization", "none"}, {"enableClusterRtx", false}}) ||
             !graph.addNode("VisibilityBufferDeferredPass", "Deferred", {{"materialBinning", false}, {"outputLinear", true},
                 {"exportLumenReceivers", true}, {"exportLumenPreviousPosition", true}}) ||
-            !graph.addNode("LumenTemporalInputPass", "Fixture") ||
+            !graph.addNode("LumenTemporalInputPass", "Fixture", {{"fastLightingSequence", fastLighting}}) ||
             !graph.addNode("LumenTemporalGatherPass", "Temporal", {{"dynamicReprojection", true},
-                {"publishScreenTraceHistory", true}}) ||
+                {"publishScreenTraceHistory", true}, {"fastLightingUpdate", fastLighting}, {"maxFramesAccumulated", 10u}}) ||
             !graph.addNode("LumenTemporalGatherPass", "StaticTemporal") ||
             !graph.addNode("LumenScreenTraceSetupPass", "ScreenTrace", {{"historySource", "composited"},
                 {"historyProducer", "Temporal"}})) {
@@ -2483,13 +2569,18 @@ private:
     }
 
     static std::optional<LumenTemporalFrame> captureFrame(CardUpdateInspector& inspector, render::RenderGraphExecutor& executor,
-        const render::RenderGraphSubmitDesc& submission, std::string& log)
+        const render::RenderGraphSubmitDesc& submission, bool fastLighting, std::string& log)
     {
         using namespace render;
+        auto temporalResources = debug::DebugValue::array({cardAtlasCapture("Temporal.historyWeight")});
+        if (fastLighting) {
+            temporalResources.push_back(cardAtlasCapture("Temporal.fastUpdateAmount"));
+            temporalResources.push_back(cardAtlasCapture("Temporal.indirectDiffuse"));
+        }
         inspector.request = {{"method", "capture.batch"}, {"params", {{"batches", debug::DebugValue::array({
             {{"pass", "Deferred"}, {"resources", debug::DebugValue::array({cardAtlasCapture("Deferred.lumenPosition"),
                 cardAtlasCapture("Deferred.lumenPreviousPosition")})}},
-            {{"pass", "Temporal"}, {"resources", debug::DebugValue::array({cardAtlasCapture("Temporal.historyWeight")})}},
+            {{"pass", "Temporal"}, {"resources", std::move(temporalResources)}},
             {{"pass", "StaticTemporal"}, {"resources", debug::DebugValue::array({cardAtlasCapture("StaticTemporal.historyWeight")})}},
             {{"pass", "ScreenTrace"}, {"resources", debug::DebugValue::array({cardAtlasCapture("ScreenTrace.previousDepth")})}},
         })}}}};
@@ -2516,10 +2607,14 @@ private:
         const auto singleFloatOutput = [](const CardCapture& capture) {
             return capture->artifacts.size() == 1 && capture->artifacts[0].bytes.size() == kAtlasPixels * sizeof(float);
         };
+        const bool temporalLayout = fastLighting ? temporal->artifacts.size() == 3 &&
+            temporal->artifacts[0].bytes.size() == kAtlasPixels * sizeof(float) &&
+            temporal->artifacts[1].bytes.size() == kAtlasPixels * sizeof(float) &&
+            temporal->artifacts[2].bytes.size() == kAtlasPixels * sizeof(std::array<uint16_t, 4>) : singleFloatOutput(temporal);
         if (deferred->artifacts.size() != 2 ||
             deferred->artifacts[0].bytes.size() != kAtlasPixels * sizeof(std::array<float, 4>) ||
             deferred->artifacts[1].bytes.size() != kAtlasPixels * sizeof(std::array<float, 4>) ||
-            !singleFloatOutput(temporal) || !singleFloatOutput(staticTemporal) || !singleFloatOutput(screenTrace)) {
+            !temporalLayout || !singleFloatOutput(staticTemporal) || !singleFloatOutput(screenTrace)) {
             log = "Unexpected Lumen dynamic temporal readback layout";
             return std::nullopt;
         }
@@ -2557,9 +2652,250 @@ private:
         }
         return validPixels;
     }
+
+    bool fastLighting_;
 };
 
 METALLIC_REGISTER_RHI_TEST(LumenDynamicTemporalTest);
+
+class LumenFastTemporalHistoryTest final : public LumenDynamicTemporalTest {
+public:
+    LumenFastTemporalHistoryTest() : LumenDynamicTemporalTest(true) {}
+};
+
+METALLIC_REGISTER_RHI_TEST(LumenFastTemporalHistoryTest);
+
+class LumenMovingGatherHistoryTest final : public RHITest {
+public:
+    LumenMovingGatherHistoryTest()
+    {
+        name = "lumen_moving_gather_history";
+        type = RHITestType::Rendering;
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        scene::SceneDocument document;
+        RenderGraph graph;
+        std::string log;
+        if (!loadSingleBounceFixture(context, document, graph, log)) { return RHITestResult::fail(log); }
+        const auto blocker = std::ranges::find_if(document.renderNodes(), [&](const auto& node) {
+            return document.renderPrimitives()[node.renderPrimitiveIndex].meshIndex == 2;
+        });
+        if (blocker == document.renderNodes().end() || !prepareGraph(graph)) {
+            return RHITestResult::fail("Could not wire or locate the moving blocker fixture");
+        }
+        const auto blockerObject = blocker->object;
+        auto blockerTransform = document.nodes().at(2).worldMatrix;
+
+        RenderView view;
+        ViewCamera camera;
+        camera.eye = {1.1f, 0.72f, 3.0f};
+        camera.center = {0.1f, 0.66f, 0.48f};
+        camera.fovDegrees = 58.0f;
+        camera.farPlane = 8.0f;
+        if (!view.setCamera(camera) || !view.setRenderResolution(kSingleBounceEdge, kSingleBounceEdge)) {
+            return RHITestResult::fail("Could not initialize the moving blocker camera");
+        }
+        bench::ValidationRecorder validation;
+        CardUpdateInspector inspector;
+        RenderGraphPreviewRenderer preview;
+        preview.bindRuntimeScene(&document);
+        preview.bindRenderView(&view);
+        if (!preview.initialize(context.enableValidation, false, false, context.enableValidation, validation.sink())) {
+            return RHITestResult::fail("Moving Gather preview setup: " + preview.lastLog());
+        }
+        preview.setEnvironment({.enabled = false, .visible = false});
+        if (!preview.setWorldEnvironment(environment::WorldEnvironment{}) || !preview.setLighting(document.lighting())) {
+            return RHITestResult::fail("Could not initialize the emissive moving blocker scene");
+        }
+        preview.setRecordingWorkerLimit(1);
+        preview.setDebugObserver(&inspector);
+        inspector.request = {{"method", "capture.batch"}, {"params", {{"batches", debug::DebugValue::array({
+            {{"pass", "Gather"}, {"resources", debug::DebugValue::array({
+                cardBufferCapture("Gather.probeWorkState", 2u), cardBufferCapture("Gather.probeWorkList", kProbeSlots),
+                cardBufferCapture("Gather.probeTraceMoving", kTraceRays), cardBufferCapture("Gather.probeRadiance", kTraceRays * 4u)})}},
+            {{"pass", "Deferred"}, {"resources", debug::DebugValue::array({
+                cardAtlasCapture("Deferred.lumenPosition"), cardAtlasCapture("Deferred.lumenPreviousPosition")})}},
+            {{"pass", "Temporal"}, {"resources", debug::DebugValue::array({
+                cardAtlasCapture("Temporal.historyWeight"), cardAtlasCapture("Temporal.fastUpdateAmount")})}},
+            {{"pass", "ScreenTrace"}, {"resources", debug::DebugValue::array({
+                cardBufferCapture("ScreenTrace.traceView", kTraceViewWords)})}},
+        })}}}};
+
+        std::array<CardCapture, 4> stationary;
+        uint32_t staticScreenRays = 0, staticScreenMotion = 0, staticDetailMotion = 0;
+        for (uint32_t warmup = 0; warmup < 10u; ++warmup) {
+            if (auto error = captureFrame(graph, preview, inspector, stationary); !error.empty()) { return RHITestResult::fail(error); }
+            if (auto error = addRayCounts(*stationary[0], staticScreenRays, staticScreenMotion, staticDetailMotion); !error.empty()) {
+                return RHITestResult::fail(error);
+            }
+        }
+        const uint32_t staticMode = traceMode(stationary);
+        if (staticMode != 1u || staticScreenRays == 0 || staticScreenMotion != 0 || staticDetailMotion != 0) {
+            return RHITestResult::fail(std::format("Stationary fixture produced {} accepted screen rays in mode {}; "
+                "{} moving screen and {} moving detail rays", staticScreenRays, staticMode, staticScreenMotion, staticDetailMotion));
+        }
+
+        uint32_t screenRays = 0, screenMotion = 0, detailMotion = 0, reactingReceivers = 0, quietReceivers = 0;
+        std::array<uint32_t, 3> movingModes{};
+        for (size_t step = 0; step < movingModes.size(); ++step) {
+            blockerTransform.a[12] += 0.10f;
+            if (!document.setObjectWorldMatrix(blockerObject, blockerTransform)) {
+                return RHITestResult::fail("Could not translate the opaque blocker");
+            }
+            std::array<CardCapture, 4> moved;
+            if (auto error = captureFrame(graph, preview, inspector, moved); !error.empty()) { return RHITestResult::fail(error); }
+            movingModes[step] = traceMode(moved);
+            if (auto error = addRayCounts(*moved[0], screenRays, screenMotion, detailMotion); !error.empty()) {
+                return RHITestResult::fail(error);
+            }
+            using Position = std::array<float, 4>;
+            for (size_t pixel = 0; pixel < kAtlasPixels; ++pixel) {
+                const auto before = readSurfaceValue<Position>(stationary[1]->artifacts[0].bytes, pixel);
+                const auto now = readSurfaceValue<Position>(moved[1]->artifacts[0].bytes, pixel);
+                const auto previous = readSurfaceValue<Position>(moved[1]->artifacts[1].bytes, pixel);
+                if (before[3] <= 0.0f || now[3] <= 0.0f || previous[3] <= 0.0f ||
+                    !std::equal(now.begin(), now.begin() + 3, before.begin(),
+                        [](float a, float b) { return std::abs(a - b) < 0.001f; }) ||
+                    !std::equal(now.begin(), now.begin() + 3, previous.begin(),
+                        [](float a, float b) { return std::abs(a - b) < 0.001f; })) {
+                    continue;
+                }
+                const float previousWeight = readSurfaceValue<float>(stationary[2]->artifacts[0].bytes, pixel);
+                const float weight = readSurfaceValue<float>(moved[2]->artifacts[0].bytes, pixel);
+                const float amount = readSurfaceValue<float>(moved[2]->artifacts[1].bytes, pixel);
+                if (previousWeight <= 0.8f) { continue; }
+                reactingReceivers += amount > 0.0f && weight > 0.0f && weight < previousWeight - 0.001f;
+                quietReceivers += amount == 0.0f && std::abs(weight - previousWeight) < 0.001f;
+            }
+        }
+        if (!std::ranges::all_of(movingModes, [](uint32_t mode) { return mode == 2u; }) ||
+            screenMotion == 0 || detailMotion == 0 || reactingReceivers == 0 || quietReceivers == 0) {
+            return RHITestResult::fail(std::format("Screen history warmup mode {}, movement modes [{}, {}, {}]; {} stationary and "
+                "{} moving-frame accepted Screen rays; {} moving Screen and {} moving Detail rays; "
+                "{} static receivers accelerated and {} retained their steady weight", staticMode, movingModes[0], movingModes[1],
+                movingModes[2], staticScreenRays, screenRays, screenMotion, detailMotion, reactingReceivers, quietReceivers));
+        }
+        if (validation.failed()) {
+            return RHITestResult::fail("Moving Gather Vulkan validation: " + validation.snapshot().dump());
+        }
+        return RHITestResult::pass(std::format("Moving blocker supplied {} accepted moving screen and {} moving detail rays; "
+            "{} static receiver samples accelerated and {} retained steady weight", screenMotion, detailMotion, reactingReceivers, quietReceivers));
+    }
+
+private:
+    static constexpr uint32_t kTilesPerAxis = render::builtin_pass::lumenScreenProbeTiles(kSingleBounceEdge);
+    static constexpr uint32_t kProbeSlots = kTilesPerAxis * kTilesPerAxis * 3u / 2u;
+    static constexpr uint32_t kRaysPerSlot = 64u;
+    static constexpr uint32_t kTraceRays = kProbeSlots * kRaysPerSlot;
+    static constexpr uint32_t kTraceViewState = sizeof(render::ViewConstants) / sizeof(uint32_t);
+    static constexpr uint32_t kTraceViewWords = kTraceViewState + 4u;
+
+    static uint32_t traceMode(const std::array<CardCapture, 4>& frame)
+    {
+        return readSurfaceValue<uint32_t>(frame[3]->artifacts[0].bytes, kTraceViewState);
+    }
+
+    static bool prepareGraph(render::RenderGraph& graph)
+    {
+        using namespace render;
+        const auto* deferred = graph.findNode("Deferred");
+        const auto* gather = graph.findNode("Gather");
+        const auto* fields = graph.findNode("GlobalDistanceFieldPages");
+        if (!deferred || !gather || !fields) { return false; }
+        auto deferredProperties = deferred->properties;
+        deferredProperties["exportLumenPreviousPosition"] = true;
+        auto gatherProperties = gather->properties;
+        gatherProperties.update({{"finalGather", true}, {"irradianceFormat", "SH3"}, {"fastLightingUpdate", true},
+            {"screenTraces", true}, {"activeProbeDispatch", true}, {"splitProbeTracing", true}, {"compactProbeAtlas", true},
+            {"detailTracing", true}, {"detailDistanceFieldPaths", fields->properties.at("distanceFieldPaths")}});
+        if (!graph.setNodeProperties(deferred->id, std::move(deferredProperties)) ||
+            !graph.setNodeProperties(gather->id, std::move(gatherProperties)) ||
+            !graph.addNode("LumenTemporalGatherPass", "Temporal", {{"dynamicReprojection", true}, {"fastLightingUpdate", true},
+                {"maxFramesAccumulated", 6u}, {"publishScreenTraceHistory", true}}) ||
+            !graph.addNode("LumenScreenTraceSetupPass", "ScreenTrace", {{"historySource", "composited"},
+                {"historyProducer", "Temporal"}, {"dynamicReprojection", true}})) {
+            return false;
+        }
+        for (const std::string_view field : {"closestHZB", "previousDepth", "previousColor", "traceView"}) {
+            if (!graph.addEdge(makeRenderGraphFieldName("ScreenTrace", field), makeRenderGraphFieldName("Gather", field))) {
+                return false;
+            }
+        }
+        return graph.addEdge("VBuffer.depth", "ScreenTrace.depth") && graph.addEdge("VBuffer.depth", "Gather.detailDepth") &&
+            graph.addEdge("Deferred.lumenPreviousPosition", "Gather.previousPosition") &&
+            graph.addEdge("Deferred.lumenPreviousPosition", "Temporal.previousPosition") &&
+            graph.addEdge("Deferred.lumenPosition", "Temporal.position") && graph.addEdge("Deferred.lumenNormal", "Temporal.normal") &&
+            graph.addEdge("Deferred.color", "Temporal.directColor") && graph.addEdge("VBuffer.depth", "Temporal.sceneDepth") &&
+            graph.addEdge("Gather.indirectDiffuse", "Temporal.currentIndirectDiffuse") && graph.markOutput("Temporal.color");
+    }
+
+    static std::string captureFrame(render::RenderGraph& graph, render::RenderGraphPreviewRenderer& preview,
+        CardUpdateInspector& inspector, std::array<CardCapture, 4>& frame)
+    {
+        if (!preview.render(graph, kSingleBounceEdge, kSingleBounceEdge, "Temporal.color", false)) {
+            return "Moving Gather render failed: " + preview.lastLog();
+        }
+        inspector.runtime.poll();
+        auto& core = inspector.runtime.core();
+        const auto& response = inspector.response;
+        if (response.value("status", "") != "ok") { return response.dump(); }
+        const auto& jobs = response.at("result").at("jobs");
+        constexpr std::array counts{4u, 2u, 2u, 1u};
+        for (size_t pass = 0; pass < frame.size(); ++pass) {
+            const auto id = jobs.at(pass).at("job").get<std::string>();
+            frame[pass] = core.completedCapture(id);
+            if (!frame[pass]) { return core.dispatch({{"method", "jobs.get"}, {"params", {{"job", id}}}}).dump(); }
+            if (frame[pass]->artifacts.size() != counts[pass] ||
+                frame[pass]->snapshot.evidence.execution != frame[0]->snapshot.evidence.execution ||
+                frame[pass]->snapshot.evidence.generation != frame[0]->snapshot.evidence.generation) {
+                return "Missing same-frame Gather motion evidence";
+            }
+        }
+        for (size_t field = 0; field < 2; ++field) {
+            if (frame[1]->artifacts[field].bytes.size() != kAtlasPixels * sizeof(std::array<float, 4>) ||
+                frame[2]->artifacts[field].bytes.size() != kAtlasPixels * sizeof(float)) {
+                return "Unexpected screen receiver or Temporal motion readback layout";
+            }
+        }
+        if (frame[3]->artifacts[0].bytes.size() != kTraceViewWords * sizeof(uint32_t)) {
+            return "Unexpected Screen trace view readback layout";
+        }
+        return {};
+    }
+
+    static std::string addRayCounts(const debug::DebugCapture& frame, uint32_t& screenRays, uint32_t& screenMotion, uint32_t& detailMotion)
+    {
+        const auto& artifacts = frame.artifacts;
+        if (artifacts[0].bytes.size() != 2u * sizeof(uint32_t) || artifacts[1].bytes.size() != kProbeSlots * sizeof(uint32_t) ||
+            artifacts[2].bytes.size() != kTraceRays * sizeof(uint32_t) ||
+            artifacts[3].bytes.size() != kTraceRays * sizeof(std::array<float, 4>)) {
+            return "Unexpected probe motion readback layout";
+        }
+        const uint32_t active = readSurfaceValue<uint32_t>(artifacts[0].bytes, 0);
+        if (active == 0 || active > kProbeSlots) { return "Invalid active probe count in moving blocker fixture"; }
+        for (uint32_t work = 0; work < active; ++work) {
+            const uint32_t slot = readSurfaceValue<uint32_t>(artifacts[1].bytes, work);
+            if (slot >= kProbeSlots) { return "Invalid probe index in moving blocker fixture"; }
+            for (uint32_t lane = 0; lane < kRaysPerSlot; ++lane) {
+                const uint32_t ray = slot * kRaysPerSlot + lane;
+                const uint32_t moving = readSurfaceValue<uint32_t>(artifacts[2].bytes, ray);
+                const float source = readSurfaceValue<std::array<float, 4>>(artifacts[3].bytes, ray)[3];
+                if (moving > 1u || (moving != 0u && source != 5.0f && source != 9.0f)) {
+                    return "A probe ray reported motion without an accepted Screen or Detail hit";
+                }
+                screenRays += source == 5.0f;
+                screenMotion += moving != 0u && source == 5.0f;
+                detailMotion += moving != 0u && source == 9.0f;
+            }
+        }
+        return {};
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(LumenMovingGatherHistoryTest);
 
 class LumenReflectionTest final : public RHITest {
 public:

@@ -44,15 +44,16 @@
             "properties": {"atlasSize": 512, "tileResolution": 64, "maxTraceDistance": 40,
                 "persistentCards": true, "maxCardsPerFrame": 4}},
         {"id": 7, "name": "ScreenTrace", "type": "LumenScreenTraceSetupPass", "position": {"x": 680, "y": -140},
-            "properties": {"historySource": "composited", "historyProducer": "Temporal"}},
+            "properties": {"historySource": "composited", "historyProducer": "Temporal", "dynamicReprojection": true}},
         {"id": 8, "name": "Gather", "type": "LumenScreenProbeGatherPass", "position": {"x": 990, "y": 140},
             "properties": {
                 "maxTraceDistance": 40, "finalGather": true, "screenTraces": true,
                 "screenTraceRelativeDepthThickness": 0.003, "irradianceFormat": "SH3", "maxRayDirections": 64,
-                "structuredImportanceSampling": true
+                "structuredImportanceSampling": true, "fastLightingUpdate": true
             }},
         {"id": 9, "name": "Temporal", "type": "LumenTemporalGatherPass", "position": {"x": 1310, "y": 140},
-            "properties": {"publishScreenTraceHistory": true, "maxFramesAccumulated": 32, "stochasticHistoryQuantization": true}},
+            "properties": {"publishScreenTraceHistory": true, "dynamicReprojection": true, "fastLightingUpdate": true,
+                "maxFramesAccumulated": 32, "stochasticHistoryQuantization": true}},
         {"id": 10, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 2270, "y": 140}},
         {"id": 11, "name": "PathTrace", "type": "ScenePathTracePass", "position": {"x": 1310, "y": -140},
             "properties": {
@@ -143,7 +144,9 @@
         {"id": 72, "src": "ScreenTrace.previousDepth", "dst": "Reflections.previousDepth"},
         {"id": 73, "src": "ScreenTrace.previousColor", "dst": "Reflections.previousColor"},
         {"id": 74, "src": "ScreenTrace.traceView", "dst": "Reflections.traceView"},
-        {"id": 75, "src": "VBuffer.depth", "dst": "Reflections.detailDepth"}
+        {"id": 75, "src": "VBuffer.depth", "dst": "Reflections.detailDepth"},
+        {"id": 76, "src": "Deferred.lumenPreviousPosition", "dst": "Gather.previousPosition"},
+        {"id": 77, "src": "Deferred.lumenPreviousPosition", "dst": "Temporal.previousPosition"}
     ],
     "outputs": ["FinalBlit.color", "Temporal.indirectDiffuse", "Reflections.reflections", "Reflections.trace"],
     "view": {

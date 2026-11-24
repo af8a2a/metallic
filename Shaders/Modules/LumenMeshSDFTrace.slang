@@ -34,7 +34,22 @@ public struct LumenMeshSDFTraceResult
     public float hitDistance;
     public float3 normal;
     public bool cardCovered;
+    public uint instanceIndex;
 };
+
+public struct LumenMeshSDFInstanceMotion
+{
+    public float4 previousVolumeToWorld0;
+    public float4 previousVolumeToWorld1;
+    public float4 previousVolumeToWorld2;
+};
+
+public float3 lumenMeshSDFPreviousPosition(LumenMeshSDFInstanceMotion motion, float3 volumePosition)
+{
+    float4 position = float4(volumePosition, 1.0f);
+    return float3(dot(motion.previousVolumeToWorld0, position), dot(motion.previousVolumeToWorld1, position),
+        dot(motion.previousVolumeToWorld2, position));
+}
 
 float3 sampleLumenMeshSDFRadiance(LumenSurfaceCache cache, MeshDistanceFieldInstance instance,
     float3 hitPosition, float3 hitNormal, out bool cardCovered)
@@ -124,6 +139,7 @@ public LumenMeshSDFTraceResult traceLumenMeshSDFs(LumenMeshSDFTraceScene scene, 
             result.radiance = sampleLumenMeshSDFRadiance(scene.cache, instance, interpolatePosition, result.normal,
                 result.cardCovered);
             result.transparency = 0.0f;
+            result.instanceIndex = hitObject;
         }
 
         result.hitDistance = hitDistance;

@@ -53,7 +53,11 @@ struct LumenTemporalGatherParams
     ResourceHandle<PackedShortRangeAOTexture> currentShortRangeAO;
     ResourceHandle<Texture2D<float4>> diffuseAlbedo;
     float2 currentJitter;
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+    ResourceHandle<ScalarTexture> fastUpdateAmount;
+#else
     uint shortRangeAOPadding;
+#endif
 };
 
 static const float kLumenHistoryDistanceThreshold = 0.01f;
@@ -255,18 +259,33 @@ float4 decodeHistoryFootprint(float2 historyScreenUV, uint2 viewSize)
     return float4(decodedScreenCoord, bilinearWeights);
 }
 
-// LumenScreenProbeGatherTemporal.usf Pack/UnpackFastUpdateModeAmountAndNumFramesAccumulated,
-// specialized to the static-lighting branch where the high nibble is zero.
-float packNumFramesAccumulated(float numFramesAccumulated, float maxFramesAccumulated)
+// UE 5.7.4 Pack/UnpackFastUpdateModeAmountAndNumFramesAccumulated.
+float packHistoryState(float fastUpdateAmount, float numFramesAccumulated, float maxFramesAccumulated)
 {
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+    // Only a zero amount is encoded as not moving.
+    float encodedFastUpdateAmount = ceil(fastUpdateAmount * 15.0f);
+#endif
     float localMaxFramesAccumulated = min(maxFramesAccumulated, 15.0f);
     float encodedNumFramesAccumulated = round(saturate(numFramesAccumulated / localMaxFramesAccumulated) * 15.0f);
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+    return (encodedFastUpdateAmount * 16.0f + encodedNumFramesAccumulated) / 255.0f;
+#else
     return encodedNumFramesAccumulated / 255.0f;
+#endif
 }
 
-float4 unpackNumFramesAccumulated(float4 packed, float maxFramesAccumulated)
+float4 unpackHistoryState(float4 packed, float maxFramesAccumulated, out float4 fastUpdateAmount)
 {
-    float4 encodedNumFramesAccumulated = round(packed * 255.0f);
+    packed = round(packed * 255.0f);
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+    float4 encodedFastUpdateAmount = floor(packed / 16.0f);
+    float4 encodedNumFramesAccumulated = packed - encodedFastUpdateAmount * 16.0f;
+    fastUpdateAmount = encodedFastUpdateAmount / 15.0f;
+#else
+    float4 encodedNumFramesAccumulated = packed;
+    fastUpdateAmount = 0.0f;
+#endif
     return select(encodedNumFramesAccumulated == 15.0f, maxFramesAccumulated,
         encodedNumFramesAccumulated / 15.0f * min(maxFramesAccumulated, 15.0f));
 }
@@ -279,11 +298,13 @@ void accumulateDiffuse(LumenTemporalGatherParams params, float3 worldPosition, f
 #if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
     inout half4 outShortRangeAO, uint2 shortRangeAOSharedCoord, bool validReconstruction,
 #endif
-    out float3 outDiffuseIndirect, out float newNumFramesAccumulated, out float outHistoryWeight)
+    out float3 outDiffuseIndirect, out float newNumFramesAccumulated, out float outHistoryWeight,
+    out float outFastUpdateAmount)
 {
     outDiffuseIndirect = newDiffuseLighting.rgb;
     newNumFramesAccumulated = 0.0f;
     outHistoryWeight = 0.0f;
+    outFastUpdateAmount = 0.0f;
     ViewCameraConstants previousCamera = params.previousCamera;
     float3 previousForward = cameraForwardFrom(previousCamera.eye, previousCamera.center);
     float reprojectedSceneDepth = dot(previousWorldPosition - previousCamera.eye.xyz, previousForward);
@@ -337,9 +358,26 @@ void accumulateDiffuse(LumenTemporalGatherParams params, float3 worldPosition, f
     float4 history01 = previousDiffuse.Load(int3(p01, 0));
     float4 history11 = previousDiffuse.Load(int3(p11, 0));
     float3 historyDiffuseIndirect = weightedAverage(history00.rgb, history10.rgb, history01.rgb, history11.rgb, finalWeights);
-    float4 historyNumFramesAccumulated = unpackNumFramesAccumulated(float4(history00.w, history10.w, history01.w, history11.w), params.maxFramesAccumulated);
-    float numFramesAccumulated = min(weightedAverage(historyNumFramesAccumulated + 1.0f, finalWeights), params.maxFramesAccumulated);
+    float4 historyFastUpdateAmount;
+    float4 historyNumFramesAccumulated = unpackHistoryState(float4(history00.w, history10.w, history01.w, history11.w),
+        params.maxFramesAccumulated, historyFastUpdateAmount);
+    const float numFramesAccumulated = min(weightedAverage(historyNumFramesAccumulated + 1.0f, finalWeights),
+        params.maxFramesAccumulated);
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+    // UE 5.7.4 defaults for FractionOfLightingMovingForFastUpdateMode and MaxFastUpdateModeAmount.
+    const float invFractionOfLightingMovingForFastUpdateMode = 1.0f / 0.1f;
+    const float maxFastUpdateAmount = 0.9f;
+    const float lightingIsMoving = abs(newDiffuseLighting.w);
+    float fastUpdateAmount = saturate(lightingIsMoving * invFractionOfLightingMovingForFastUpdateMode);
+    fastUpdateAmount = saturate(min((fastUpdateAmount - 0.2f) / 0.8f, maxFastUpdateAmount));
+    outFastUpdateAmount = fastUpdateAmount;
+    float fastUpdateHistory = weightedAverage(historyFastUpdateAmount, finalWeights);
+    fastUpdateHistory = min(fastUpdateHistory, maxFastUpdateAmount);
+    fastUpdateAmount = max(fastUpdateAmount, fastUpdateHistory);
+    newNumFramesAccumulated = min(numFramesAccumulated, (1.0f - fastUpdateAmount) * params.maxFramesAccumulated);
+#else
     newNumFramesAccumulated = numFramesAccumulated;
+#endif
     float alpha = 1.0f / (1.0f + newNumFramesAccumulated);
     bool lightingIsInvalid = newDiffuseLighting.w <= 0.0f;
 #if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
@@ -389,6 +427,7 @@ void lumenTemporalGatherMain(uint3 thread : SV_DispatchThreadID, uint3 group : S
     float3 outDiffuseIndirect = newDiffuseLighting.rgb;
     float newNumFramesAccumulated = 0.0f;
     float outHistoryWeight = 0.0f;
+    float outFastUpdateAmount = 0.0f;
 #if defined(METALLIC_LUMEN_DITHER_HISTORY) || defined(METALLIC_LUMEN_SHORT_RANGE_AO)
     // UE 5.7.4 BlueNoiseScalar(ScreenCoord, ScreenProbeGatherStateFrameIndex).
     uint3 wrapped = uint3(thread.xy, params.frameIndex) & uint3(127u, 127u, 63u);
@@ -423,7 +462,7 @@ void lumenTemporalGatherMain(uint3 thread : SV_DispatchThreadID, uint3 group : S
 #if defined(METALLIC_LUMEN_SHORT_RANGE_AO)
                 outShortRangeAO, shortRangeAOSharedCoord, validReconstruction,
 #endif
-                outDiffuseIndirect, newNumFramesAccumulated, outHistoryWeight);
+                outDiffuseIndirect, newNumFramesAccumulated, outHistoryWeight, outFastUpdateAmount);
         }
     }
 
@@ -462,6 +501,10 @@ void lumenTemporalGatherMain(uint3 thread : SV_DispatchThreadID, uint3 group : S
         resolveUniform(params.screenHistoryColor)[thread.xy] = sceneColor;
     }
     historyWeight[thread.xy] = outHistoryWeight;
-    currentDiffuse[thread.xy] = float4(storedDiffuse, packNumFramesAccumulated(newNumFramesAccumulated, params.maxFramesAccumulated));
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+    resolveUniform(params.fastUpdateAmount)[thread.xy] = outFastUpdateAmount;
+#endif
+    currentDiffuse[thread.xy] = float4(storedDiffuse, packHistoryState(outFastUpdateAmount, newNumFramesAccumulated,
+        params.maxFramesAccumulated));
     currentGeometry[thread.xy] = float4(surfaceNormal, surface.w);
 }

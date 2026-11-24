@@ -14,6 +14,7 @@
 namespace metallic::render {
 
 class ParameterWriter;
+class GPUScene;
 
 struct MeshDistanceFieldGPUBindings {
     GPUResourceHandle<ResourceViewKind::RawBuffer> mips;
@@ -24,12 +25,17 @@ struct MeshDistanceFieldGPUBindings {
 
 class MeshDistanceFieldGPU {
 public:
+    struct MotionOutput {
+        const GPUScene& scene;
+        std::unique_ptr<Buffer>& buffer;
+    };
+
     Result<> initialize(Device& device, Queue& queue, const scene::Scene& scene,
         std::span<const std::filesystem::path> paths, std::string& log);
     Result<std::unique_ptr<Buffer>> uploadInstances(const scene::Scene& scene,
         uint32_t& count, uint32_t& unsupportedTransforms,
         std::unique_ptr<Buffer>* objectGridObjects = nullptr,
-        std::unique_ptr<Buffer>* validationBounds = nullptr) const;
+        std::unique_ptr<Buffer>* validationBounds = nullptr, const MotionOutput* motion = nullptr) const;
     MeshDistanceFieldGPUBindings bind(ParameterWriter& writer) const;
     Texture& atlas() const { return *atlas_; }
     uint32_t bricksPerAxis() const { return atlas_->desc().width / scene::kMeshDistanceFieldBrickSize; }

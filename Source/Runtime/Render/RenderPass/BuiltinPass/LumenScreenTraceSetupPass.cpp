@@ -62,7 +62,7 @@ HZBLayout hzbLayout(Extent fullExtent)
     return {baseExtent, mipCount, texelCount};
 }
 
-using HistoryContent = std::array<uint64_t, 9>;
+using HistoryContent = std::array<uint64_t, 11>;
 
 class LumenScreenTraceSetupPass final : public ComputePass {
 public:
@@ -84,6 +84,7 @@ private:
     std::array<std::string, 2> historyNames_;
     HistoryContent previousContent_{};
     uint64_t previousFrame_ = 0;
+    uint64_t previousGeometryTransformRevision_ = 0;
     float previousSunIrradianceMax_ = 0.0f;
     ComputeKernel snapshot_, reduce_;
 };
@@ -113,6 +114,11 @@ RenderPassReflection LumenScreenTraceSetupPass::reflect(const RenderGraphCompile
 
 Result<> LumenScreenTraceSetupPass::compile(const RenderGraphCompileContext& context, std::string& log)
 {
+    const auto dynamic = properties().find("dynamicReprojection");
+    if (dynamic != properties().end() && !dynamic->is_boolean()) {
+        log = "Lumen screen trace dynamicReprojection must be a boolean";
+        return makeError(Error::InvalidArgument);
+    }
     const auto source = properties().find("historySource");
     if (source != properties().end() && *source != "deferred" && *source != "composited") {
         log = "Lumen screen trace historySource must be deferred or composited";
@@ -158,12 +164,17 @@ Result<> LumenScreenTraceSetupPass::execute(RenderGraphExecutionContext& context
     const auto* world = context.world();
     const auto* scene = world ? world->scene() : context.runtimeScene();
     const auto* globalHistory = context.historyResources();
+    const bool dynamic = properties().value("dynamicReprojection", false);
+    const uint64_t geometryTransformRevision = scene ? scene->geometryTransformRevision() : 0;
     const float sunIrradianceMax = world ? world->sunIrradianceMax() : 0.0f;
     const HistoryContent content{
-        globalHistory ? globalHistory->sunLightingReprojectionInvalidationRevision() : 0,
+        globalHistory ? (dynamic ? globalHistory->motionReprojectionInvalidationRevision() :
+            globalHistory->sunLightingReprojectionInvalidationRevision()) : 0,
         scene ? scene->resourceIdentity() : 0,
+        dynamic && scene ? scene->sceneGraph().lifetimeRevision() : 0,
+        dynamic && scene ? scene->sceneGraph().structuralRevision() : 0,
         scene ? scene->contentRevision() : 0,
-        scene ? scene->geometryTransformRevision() : 0,
+        !dynamic ? geometryTransformRevision : 0,
         scene ? scene->visibilityRevision() : 0,
         world ? world->nonSunLightingRevision() : 0,
         world ? world->environmentRevision() : 0,
@@ -195,7 +206,10 @@ Result<> LumenScreenTraceSetupPass::execute(RenderGraphExecutionContext& context
     ParameterWriter writer(*device_, **registry, RenderFrameContext::from(commands));
     LumenScreenTraceSetupParams params{};
     params.traceView.cameras = *view;
-    params.traceView.state = {historyValid, layout.baseExtent[0], layout.baseExtent[1], layout.mipCount};
+    // History across rigid movement is valid only for tracing that reprojects the hit.
+    const bool requiresHitReprojection = dynamic && previousGeometryTransformRevision_ != geometryTransformRevision;
+    const uint32_t historyMode = historyValid ? (requiresHitReprojection ? 2u : 1u) : 0u;
+    params.traceView.state = {historyMode, layout.baseExtent[0], layout.baseExtent[1], layout.mipCount};
     params.depth = writer.sampledImageHandle(context.inputTexture("depth").view());
     if (historyValid) {
         params.historyDepth = writer.sampledImageHandle(previousDepth.view);
@@ -268,6 +282,7 @@ Result<> LumenScreenTraceSetupPass::execute(RenderGraphExecutionContext& context
     }
     previousContent_ = content;
     previousFrame_ = context.frameIndex();
+    previousGeometryTransformRevision_ = geometryTransformRevision;
     previousSunIrradianceMax_ = sunIrradianceMax;
     return {};
 }

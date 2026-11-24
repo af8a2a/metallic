@@ -198,7 +198,34 @@ struct LumenScreenProbeGatherParams
 #if defined(METALLIC_LUMEN_STRUCTURED_IMPORTANCE_SAMPLING)
     ResourceHandle<StructuredBuffer<uint>> structuredRayInfo;
 #endif
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+    ResourceHandle<Texture2D<float4>> previousPosition;
+    ResourceHandle<RWStructuredBuffer<uint>> probeTraceMoving;
+    ResourceHandle<StructuredBuffer<float>> probeMoving;
+    #if defined(METALLIC_LUMEN_DETAIL_TRACING)
+    ResourceHandle<StructuredBuffer<LumenMeshSDFInstanceMotion>> detailMotion;
+    #else
+    uint unusedDetailMotion;
+    #endif
+#endif
 };
+
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+// UE 5.7.4 IsTraceMoving, with EncodeScreenProbeSpeed/GetScreenProbeSpeed.
+// Quantize the receiver speed in centimeters, the reference world-unit scale.
+bool isLumenProbeTraceMoving(float4 receiver, float4 previousReceiver, float3 hitWorldVelocity)
+{
+    if (previousReceiver.w <= 0.0f) { return false; }
+    const float probeWorldSpeed = f16tof32(f32tof16(length((receiver.xyz - previousReceiver.xyz) * 100.0f)) & 0x7ffeu);
+    return abs(probeWorldSpeed - length(hitWorldVelocity * 100.0f)) / max(receiver.w * 100.0f, 100.0f) > 0.005f;
+}
+
+float weightedLumenProbeMoving(StructuredBuffer<float> moving, uint probe, float weight)
+{
+    if (weight == 0.0f) { return 0.0f; }
+    return moving[probe] * weight;
+}
+#endif
 
 #if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS) && defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
 // The debug ROI keeps tile/slot addresses even when no atlas entry owns that slot.
@@ -374,6 +401,9 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
 #endif
 #endif
     const uint address = lumenProbeTraceAddress(probeIndex, lane.xy);
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE) && !defined(METALLIC_LUMEN_PROBE_TRACE_COMPACTED)
+    resolveUniform(params.probeTraceMoving)[address] = 0u;
+#endif
 #if defined(METALLIC_LUMEN_FINAL_GATHER)
     StructuredBuffer<uint2> probes = resolveUniform(params.probePositions);
     RWStructuredBuffer<float> distances = resolveUniform(params.traceDistance);
@@ -449,10 +479,18 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
         LumenScreenTraceInputs screenInputs = {resolveUniform(params.closestHZB), resolveUniform(params.previousDepth),
             resolveUniform(params.previousColor), resolveUniform(params.traceView)};
         float3 screenRadiance;
+        float4 hitWorldVelocity;
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+        let previousPosition = resolveUniform(params.previousPosition);
+        const bool motionHistory = true;
+#else
+        let previousPosition = position;
+        const bool motionHistory = false;
+#endif
         const bool screenHit = traceLumenScreenRay(screenInputs, probePixel, receiver.xyz, receiverNormal,
             rayDirection, traceDistance, params.maxTraceDistance, params.screenTraceRelativeDepthThickness,
-            traceBufferCoord, screenRadiance,
-            screenDistance, screenContinuationDistance);
+            traceBufferCoord, motionHistory, position, previousPosition, screenRadiance,
+            screenDistance, screenContinuationDistance, hitWorldVelocity);
 #if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
         readback.flags |= kReadbackScreenInvoked;
         readback.screenEnd = screenContinuationDistance;
@@ -460,6 +498,12 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
         if (screenHit) {
             traceOutput[address] = float4(storeTraceLighting(screenRadiance), 5.0f);
             distances[address] = screenDistance;
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+            if (hitWorldVelocity.w > 0.0f) {
+                resolveUniform(params.probeTraceMoving)[address] = uint(isLumenProbeTraceMoving(receiver,
+                    previousPosition.Load(int3(probePixel, 0)), hitWorldVelocity.xyz));
+            }
+#endif
 #if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
             readback.flags |= kReadbackScreenAccepted;
             writeProbeTraceReadback(params.traceReadback, readbackIndex, readback);
@@ -536,6 +580,16 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
             if (transparency < screenTraceNoise(float2(traceBufferCoord) + 0.5f, 0.0f)) {
                 traceOutput[address] = float4(storeTraceLighting(detailHit.radiance * (1.0f - distanceFade)), 9.0f);
                 distances[address] = detailDistance;
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+                const uint hitObject = detailHit.instanceIndex;
+                const float3 hitWorldPosition = samplePosition + rayDirection * detailHit.hitDistance;
+                const float3 hitVolumePosition = meshDistanceFieldWorldToVolume(meshScene.instances[hitObject], hitWorldPosition);
+                const float3 oldHitWorldPosition =
+                    lumenMeshSDFPreviousPosition(resolveUniform(params.detailMotion)[hitObject], hitVolumePosition);
+                const float3 hitWorldVelocity = hitWorldPosition - oldHitWorldPosition;
+                resolveUniform(params.probeTraceMoving)[address] = uint(isLumenProbeTraceMoving(receiver,
+                    resolveUniform(params.previousPosition).Load(int3(probePixel, 0)), hitWorldVelocity));
+#endif
 #if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
                 readback.flags |= kReadbackDetailAccepted;
                 writeProbeTraceReadback(params.traceReadback, readbackIndex, readback);
@@ -729,7 +783,8 @@ float3 interpolateScreenProbeSH(uint4 probeIndices, float4 weights, float3 norma
     [unroll]
     for (uint corner = 0u; corner < numCorners; ++corner) {
 #if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
-        if (weights[corner] <= 0.0f) { continue; }
+        // Skip unwritten slots while preserving signed weights at view edges.
+        if (weights[corner] == 0.0f) { continue; }
         uint2 coord = lumenPackedProbeAtlasCoord(probeIndices[corner], probeWidth);
 #else
         uint2 coord = lumenProbeAtlasCoord(probeIndices[corner], probeWidth);
@@ -777,7 +832,7 @@ float3 interpolateScreenProbeIrradiance(uint4 probeIndices, float4 weights, floa
     [unroll]
     for (uint corner = 0u; corner < numCorners; ++corner) {
 #if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
-        if (weights[corner] <= 0.0f) { continue; }
+        if (weights[corner] == 0.0f) { continue; }
         uint2 coord = lumenPackedProbeAtlasCoord(probeIndices[corner], probeSize.x);
 #else
         uint2 coord = lumenProbeAtlasCoord(probeIndices[corner], probeSize.x);
@@ -913,6 +968,18 @@ void lumenIntegrateScreenProbesMain(uint3 thread : SV_DispatchThreadID)
         }
         probeIndices = uint4(pickedProbe);
         sample.weights = float4(sampleProbes ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+#endif
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+        if (sample.lightingValid) {
+            let moving = resolveUniform(params.probeMoving);
+            float lightingIsMoving = weightedLumenProbeMoving(moving, probeIndices.x, sample.weights.x);
+    #if !defined(METALLIC_LUMEN_STOCHASTIC_INTERPOLATION)
+            lightingIsMoving += weightedLumenProbeMoving(moving, probeIndices.y, sample.weights.y);
+            lightingIsMoving += weightedLumenProbeMoving(moving, probeIndices.z, sample.weights.z);
+            lightingIsMoving += weightedLumenProbeMoving(moving, probeIndices.w, sample.weights.w);
+    #endif
+            encodedAlpha = max(lightingIsMoving, 0.004f);
+        }
 #endif
 #else
         ScreenProbeSample sample = calculateProbeInterpolation(thread.xy, viewSize,

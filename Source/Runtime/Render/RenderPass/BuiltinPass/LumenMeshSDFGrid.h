@@ -5,12 +5,15 @@
 #include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/DistanceField/MeshDistanceFieldGPU.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
+#include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Scene/Scene.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <optional>
 #include <utility>
 #include <vector>
 #include <spdlog/spdlog.h>
@@ -35,7 +38,7 @@ public:
     struct Frame {
         ShaderLumenMeshSDFGridBindings bindings{};
         EncodedParameters culling;
-        std::unique_ptr<Buffer> instances, bounds;
+        std::unique_ptr<Buffer> instances, bounds, motion;
         uint32_t cellGroups = 0, objectGroups = 0, compactGroups = 0;
     };
 
@@ -77,7 +80,7 @@ public:
     }
 
     Result<Frame> prepare(RenderGraphExecutionContext& context, ParameterWriter& writer, const MeshDistanceFieldGPU& meshFields,
-        float meshSDFTraceDistance, float cardTraceEndDistance) const
+        float meshSDFTraceDistance, float cardTraceEndDistance, bool fastLightingUpdate = false) const
     {
         const auto* view = context.viewConstants();
         if (!view || view->current.upProjection[3] > 0.5f) {
@@ -87,8 +90,20 @@ public:
         const float depthRange = cardTraceEndDistance - view->current.clipOrtho[0];
         const uint32_t slices = depthRange > 0.0f ? uint32_t(std::max(0.0f, std::trunc(std::log2(depthRange) * 4.0f))) + 1u : 1u;
         Frame frame;
+        std::optional<MeshDistanceFieldGPU::MotionOutput> motion;
+        if (fastLightingUpdate) {
+            const auto* gpuScene = context.subsystem<GPUSceneSubsystem>();
+            const auto* source = gpuScene ? gpuScene->sourceOverride() : nullptr;
+            if (!source && context.world()) { source = context.world()->scene(); }
+            if (!gpuScene || source != context.runtimeScene()) {
+                spdlog::error("Lumen Detail Tracing motion requires the matching GPU scene source");
+                return makeError(Error::InvalidArgument);
+            }
+            motion.emplace(gpuScene->scene(), frame.motion);
+        }
         uint32_t instanceCount = 0, unsupportedTransforms = 0;
-        auto instances = meshFields.uploadInstances(*context.runtimeScene(), instanceCount, unsupportedTransforms, &frame.bounds);
+        auto instances = meshFields.uploadInstances(*context.runtimeScene(), instanceCount, unsupportedTransforms, &frame.bounds,
+            nullptr, motion ? &*motion : nullptr);
         if (!instances) { return makeError(instances.error()); }
         frame.instances = std::move(*instances);
         const std::array grid{gridTiles(context.width()), gridTiles(context.height()), slices, instanceCount};

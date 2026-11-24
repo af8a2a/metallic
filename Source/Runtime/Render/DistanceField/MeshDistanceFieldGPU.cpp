@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/StaticTextureUpload.h"
+#include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Scene/MeshDistanceField.h"
 #include "Runtime/Scene/scene.h"
 
@@ -30,6 +31,8 @@ struct alignas(16) MeshDistanceFieldGPUInstance {
     std::array<uint32_t, 4> indices;
 };
 
+using MeshDistanceFieldGPUMotion = std::array<std::array<float, 4>, 3>;
+
 struct alignas(16) MeshDistanceFieldGPUObject {
     std::array<float, 3> center;
     uint32_t object;
@@ -39,6 +42,7 @@ struct alignas(16) MeshDistanceFieldGPUObject {
 
 static_assert(sizeof(MeshDistanceFieldGPUMip) == 48);
 static_assert(sizeof(MeshDistanceFieldGPUInstance) == 80);
+static_assert(sizeof(MeshDistanceFieldGPUMotion) == 48);
 static_assert(sizeof(MeshDistanceFieldGPUObject) == 32 && offsetof(MeshDistanceFieldGPUObject, extent) == 16);
 
 Result<std::unique_ptr<Buffer>> makeUploadBuffer(Device& device, std::span<const std::byte> bytes,
@@ -87,6 +91,22 @@ bool makeMeshDistanceFieldInstance(const float4x4& world, float3 localCenter, fl
         std::sqrt(scaleSquared) * volumeToLocal};
     instance.indices = {mipBase, debugId, 0u, 0u};
     return true;
+}
+
+MeshDistanceFieldGPUMotion makeMeshDistanceFieldMotion(const float4x4& previousWorld,
+    const std::array<float, 3>& localCenter, float volumeToLocal)
+{
+    MeshDistanceFieldGPUMotion rows;
+    for (size_t axis = 0; axis < rows.size(); ++axis) {
+        rows[axis] = {
+            previousWorld.a[axis] * volumeToLocal,
+            previousWorld.a[axis + 4] * volumeToLocal,
+            previousWorld.a[axis + 8] * volumeToLocal,
+            previousWorld.a[axis] * localCenter[0] + previousWorld.a[axis + 4] * localCenter[1] +
+                previousWorld.a[axis + 8] * localCenter[2] + previousWorld.a[axis + 12],
+        };
+    }
+    return rows;
 }
 
 MeshDistanceFieldGPUObject makeMeshDistanceFieldGPUObject(const float4x4& world,
@@ -230,14 +250,17 @@ Result<> MeshDistanceFieldGPU::initialize(Device& device, Queue& queue, const sc
 
 Result<std::unique_ptr<Buffer>> MeshDistanceFieldGPU::uploadInstances(const scene::Scene& scene,
     uint32_t& count, uint32_t& unsupportedTransforms, std::unique_ptr<Buffer>* objectGridObjects,
-    std::unique_ptr<Buffer>* validationBounds) const
+    std::unique_ptr<Buffer>* validationBounds, const MotionOutput* motion) const
 {
     std::vector<MeshDistanceFieldGPUInstance> instances;
     std::vector<MeshDistanceFieldGPUObject> gridObjects;
     std::vector<std::array<float, 8>> localBounds;
+    std::vector<MeshDistanceFieldGPUMotion> previousTransforms;
     std::unordered_set<scene::SceneEntity> objects;
     unsupportedTransforms = 0;
-    for (const auto& node : scene.renderNodes()) {
+    const auto& renderNodes = scene.renderNodes();
+    for (uint32_t renderNodeIndex = 0; renderNodeIndex < renderNodes.size(); ++renderNodeIndex) {
+        const auto& node = renderNodes[renderNodeIndex];
         if (!node.visible) { continue; }
         const auto& primitive = scene.renderPrimitives()[node.renderPrimitiveIndex];
         const auto asset = std::ranges::find(assets_, primitive.meshIndex, &Asset::meshIndex);
@@ -258,6 +281,14 @@ Result<std::unique_ptr<Buffer>> MeshDistanceFieldGPU::uploadInstances(const scen
                 asset->mipBase, static_cast<uint32_t>(node.nodeIndex) + 1u, instance)) {
             instance.indices[2] = static_cast<uint32_t>(node.object);
             instances.push_back(instance);
+            if (motion) {
+                const auto* history = motion->scene.instance(motion->scene.instanceForRenderNode(renderNodeIndex));
+                if (!history) {
+                    spdlog::error("Mesh SDF motion requires a GPU scene instance for object {}", static_cast<uint32_t>(node.object));
+                    return makeError(Error::InvalidArgument);
+                }
+                previousTransforms.push_back(makeMeshDistanceFieldMotion(history->previousWorldMatrix, center, asset->volumeToLocal));
+            }
             if (validationBounds) {
                 std::array<float, 8> bounds{};
                 for (size_t axis = 0; axis < 3; ++axis) {
@@ -294,6 +325,13 @@ Result<std::unique_ptr<Buffer>> MeshDistanceFieldGPU::uploadInstances(const scen
     if (instances.empty()) { instances.emplace_back(); }
     auto instanceBuffer = makeUploadBuffer(*device_, std::as_bytes(std::span(instances)),
         BufferUsageBits::Storage, sizeof(instances[0]));
+    if (instanceBuffer && motion) {
+        if (previousTransforms.empty()) { previousTransforms.emplace_back(); }
+        auto motionBuffer = makeUploadBuffer(*device_, std::as_bytes(std::span(previousTransforms)),
+            BufferUsageBits::Storage, sizeof(previousTransforms[0]));
+        if (!motionBuffer) { return makeError(motionBuffer.error()); }
+        motion->buffer = std::move(*motionBuffer);
+    }
     if (instanceBuffer && validationBounds) {
         if (localBounds.empty()) { localBounds.emplace_back(); }
         auto boundsBuffer = makeUploadBuffer(*device_, std::as_bytes(std::span(localBounds)),

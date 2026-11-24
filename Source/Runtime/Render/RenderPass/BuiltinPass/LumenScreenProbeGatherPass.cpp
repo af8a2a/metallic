@@ -38,7 +38,9 @@ constexpr uint64_t kCompactScreenProbeFilterABI = 0x4c554d454e01001full;
 constexpr uint64_t kCompactProbeAtlasPlacementABI = 0x4c554d454e010020ull;
 constexpr uint64_t kScreenProbeImportanceABI = 0x4c554d454e010030ull;
 constexpr uint64_t kStructuredImportanceABIBit = 0x0000000000800000ull;
+constexpr uint64_t kFastLightingUpdateABIBit = 0x0000000000400000ull;
 constexpr const char* kStructuredImportanceDefine = "METALLIC_LUMEN_STRUCTURED_IMPORTANCE_SAMPLING";
+constexpr const char* kFastLightingUpdateDefine = "METALLIC_LUMEN_FAST_LIGHTING_UPDATE";
 constexpr double kAdaptiveProbeAllocationFraction = 0.5;
 constexpr uint32_t kAdaptiveProbesPerTile = kLumenScreenProbeSlotsPerTile - 1;
 constexpr uint32_t kProbeCompactionThreads = 64;
@@ -174,6 +176,23 @@ struct StructuredImportanceParams {
     ShaderBuffer structuredRayInfo;
 };
 
+struct ProbeTraceMotionBindings {
+    ShaderSampledImage previousPosition;
+    ShaderBuffer probeTraceMoving, probeMoving, detailMotion;
+};
+static_assert(sizeof(ProbeTraceMotionBindings) == 16);
+
+struct ProbeFilterMotionBindings {
+    ShaderBuffer probeTraceMoving, compositedProbeMoving, probeMoving;
+};
+static_assert(sizeof(ProbeFilterMotionBindings) == 12);
+
+template <typename Params, typename Motion>
+struct ScreenProbeMotionParams {
+    Params base;
+    Motion motion;
+};
+
 struct LumenScreenProbeImportanceParams {
     ShaderSampledImage position, normal, blueNoiseVec2;
     ShaderBuffer probePositions, probeWorkList, probeWorkState, view, cacheIndirection, cacheClipmaps;
@@ -216,6 +235,7 @@ public:
         const auto compareJitter = properties().value("probeJitterComparison", RenderGraphProperties(false));
         const auto exportIrradiance = properties().value("exportIndirectIrradiance", RenderGraphProperties(false));
         const auto structured = properties().value("structuredImportanceSampling", RenderGraphProperties(false));
+        const auto fastLightingUpdate = properties().value("fastLightingUpdate", RenderGraphProperties(false));
         if (compiledTraceResolution_ && (!requested.is_number_integer() || requested != compiledTraceResolution_ ||
                 !active.is_boolean() || active != compiledActiveProbeDispatch_ ||
                 !split.is_boolean() || split != compiledSplitProbeTracing_ ||
@@ -224,7 +244,8 @@ public:
                 jitterWidth.get<float>() != fullResolutionJitterWidth_ || !compareJitter.is_boolean() ||
                 compareJitter != compiledProbeJitterComparison_ || !exportIrradiance.is_boolean() ||
                 exportIrradiance != compiledExportIndirectIrradiance_ || !structured.is_boolean() ||
-                (structured == true && requested == 8) != compiledStructuredImportance_)) {
+                (structured == true && requested == 8) != compiledStructuredImportance_ ||
+                !fastLightingUpdate.is_boolean() || fastLightingUpdate != compiledFastLightingUpdate_)) {
             return compile(context, log);
         }
         return {};
@@ -283,6 +304,7 @@ private:
     ComputeKernel integrate_;
     ComputeKernel place_;
     ComputeKernel composite_;
+    ComputeKernel reduceProbeMotion_;
     ComputeKernel filter_;
     ComputeKernel convertToIrradiance_;
     ComputeKernel brdfPdf_, lightingPdf_, structuredRays_, saveProbeHistory_;
@@ -300,6 +322,7 @@ private:
     bool compiledProbeJitterComparison_ = false;
     bool compiledExportIndirectIrradiance_ = false;
     bool compiledStructuredImportance_ = false;
+    bool compiledFastLightingUpdate_ = false;
     float fullResolutionJitterWidth_ = 0.0f;
     double compiledAdaptiveProbeAllocationFraction_ = kAdaptiveProbeAllocationFraction;
     uint32_t maxRayDirections_ = 8;
@@ -363,6 +386,16 @@ RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompil
     }
     const uint64_t rayCount = slots * traceResolution() * traceResolution();
     const uint64_t gatherCount = slots * kGatherSamplesPerProbe;
+    if (finalGather && !optionEnabled("fixedProbeDirections") && optionEnabled("fastLightingUpdate")) {
+        reflection.addTextureInput("previousPosition", "Previous world position of each current receiver")
+            .sampledRead().format = Format::RGBA32Sfloat;
+        reflection.addBufferOutput("probeTraceMoving", "Relative hit motion flag in original ray order")
+            .buffer(rayCount * sizeof(uint32_t), sizeof(uint32_t)).storageReadWrite().bufferLayout("u32");
+        reflection.addBufferOutput("compositedProbeMoving", "Quantized relative motion in gather direction order")
+            .buffer(gatherCount * sizeof(float), sizeof(float)).storageReadWrite().bufferLayout("f32");
+        reflection.addBufferOutput("probeMoving", "Fraction of moving directions per screen probe")
+            .buffer(slots * sizeof(float), sizeof(float)).storageReadWrite().bufferLayout("f32");
+    }
     if (finalGather && optionEnabled("structuredImportanceSampling") && traceResolution() == 8u) {
         reflection.addBufferOutput("probeBrdfPdfSH", "Directional BRDF PDF with nine SH3 coefficients per probe")
             .buffer(slots * 9u * sizeof(float), sizeof(float)).storageReadWrite().bufferLayout("f32");
@@ -519,7 +552,7 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     for (std::string_view name : {"finalGather", "screenTraces", "stochasticInterpolation", "radianceCache",
             "detailTracing", "screenGDFContinuation", "gdfPrefixValidation", "gdfPrefixRejectReceding",
             "gdfPrefixMeshValidation", "fixedProbeDirections", "activeProbeDispatch", "splitProbeTracing", "compactProbeAtlas",
-            "probeJitterComparison", "exportIndirectIrradiance"}) {
+            "probeJitterComparison", "exportIndirectIrradiance", "fastLightingUpdate"}) {
         const auto value = properties().find(name);
         if (value != properties().end() && !value->is_boolean()) {
             log += "Lumen Screen Probe Gather requires a boolean " + std::string(name);
@@ -550,6 +583,11 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
         return makeError(Error::InvalidArgument);
     }
     const bool jitterDirections = finalGather && !optionEnabled("fixedProbeDirections");
+    compiledFastLightingUpdate_ = optionEnabled("fastLightingUpdate");
+    if (compiledFastLightingUpdate_ && !jitterDirections) {
+        log = "Lumen fastLightingUpdate requires jittered Final Gather";
+        return makeError(Error::InvalidArgument);
+    }
     const auto structured = properties().value("structuredImportanceSampling", RenderGraphProperties(false));
     if (!structured.is_boolean() || (structured == true && !jitterDirections)) {
         log = "Lumen structuredImportanceSampling requires jittered Final Gather";
@@ -689,6 +727,7 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     }
     if (jitterDirections) { defines.push_back({"METALLIC_LUMEN_JITTER_PROBE_DIRECTIONS", "1"}); }
     if (compiledStructuredImportance_) { defines.push_back({kStructuredImportanceDefine, "1"}); }
+    if (compiledFastLightingUpdate_) { defines.push_back({kFastLightingUpdateDefine, "1"}); }
     if (compiledTraceResolution_ == 16u) { defines.push_back({"METALLIC_LUMEN_TRACE_RESOLUTION_16", "1"}); }
     if (screenTraces) { defines.push_back({"METALLIC_LUMEN_SCREEN_TRACES", "1"}); }
     if (screenGDFContinuation) { defines.push_back({"METALLIC_LUMEN_SCREEN_GDF_CONTINUATION", "1"}); }
@@ -729,9 +768,13 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
         meshSDFTraceDistance_ = std::min(meshSDFTraceDistance_, maxTraceDistance_);
         if (auto result = meshGrid_.compile(*device_, log); !result) { return result; }
     }
-    const auto probeABI = [&]<typename Params>(uint64_t key) {
-        return compiledStructuredImportance_ ? parameterAbi<StructuredImportanceParams<Params>>(key | kStructuredImportanceABIBit) :
-            parameterAbi<Params>(key);
+    const auto probeABI = [&]<typename Params, typename Motion = ProbeTraceMotionBindings>(uint64_t key) {
+        const auto motionABI = [&]<typename Base>(uint64_t baseKey) {
+            return compiledFastLightingUpdate_ ? parameterAbi<ScreenProbeMotionParams<Base, Motion>>(baseKey | kFastLightingUpdateABIBit) :
+                parameterAbi<Base>(baseKey);
+        };
+        return compiledStructuredImportance_ ?
+            motionABI.operator()<StructuredImportanceParams<Params>>(key | kStructuredImportanceABIBit) : motionABI.operator()<Params>(key);
     };
     auto gatherABI = activeProbeDispatch ? probeABI.operator()<ActiveGatherParams>(kActiveScreenProbeGatherABI) :
         probeABI.operator()<LumenScreenProbeGatherParams>(kScreenProbeGatherABI);
@@ -853,6 +896,7 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     }
 
     std::vector<SlangMacroDefine> filterDefines;
+    if (compiledFastLightingUpdate_) { filterDefines.push_back({kFastLightingUpdateDefine, "1"}); }
     if (compiledStructuredImportance_) {
         filterDefines.push_back({kStructuredImportanceDefine, "1"});
         std::vector<SlangMacroDefine> importanceDefines;
@@ -877,9 +921,11 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     if (compiledTraceResolution_ == 16u) { filterDefines.push_back({"METALLIC_LUMEN_TRACE_RESOLUTION_16", "1"}); }
     if (jitterDirections && useSH3()) { filterDefines.push_back({"METALLIC_LUMEN_IRRADIANCE_SH3", "1"}); }
     auto filterABI = activeProbeDispatch ?
-        probeABI.operator()<LumenActiveScreenProbeParams<LumenScreenProbeFilterParams>>(kActiveScreenProbeFilterABI) :
-        probeABI.operator()<LumenScreenProbeFilterParams>(kScreenProbeFilterABI);
-    if (compactAtlas) { filterABI = probeABI.operator()<CompactScreenProbeFilterParams>(kCompactScreenProbeFilterABI); }
+        probeABI.operator()<LumenActiveScreenProbeParams<LumenScreenProbeFilterParams>, ProbeFilterMotionBindings>(kActiveScreenProbeFilterABI) :
+        probeABI.operator()<LumenScreenProbeFilterParams, ProbeFilterMotionBindings>(kScreenProbeFilterABI);
+    if (compactAtlas) {
+        filterABI = probeABI.operator()<CompactScreenProbeFilterParams, ProbeFilterMotionBindings>(kCompactScreenProbeFilterABI);
+    }
     const auto createFilter = [&](const char* entry, const char* name, ComputeKernel& kernel) {
         return ShaderRegistry::instance().getComputeKernel(*device_,
             {.moduleName = "Features/DistanceField/LumenScreenProbeFilter", .entryPointName = entry,
@@ -894,6 +940,12 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     if (jitterDirections) {
         if (auto result = createFilter("lumenCompositeScreenProbesMain", "LumenCompositeScreenProbes", composite_); !result) {
             return result;
+        }
+        if (compiledFastLightingUpdate_) {
+            if (auto result = createFilter("lumenReduceScreenProbeMotionMain", "LumenReduceScreenProbeMotion", reduceProbeMotion_);
+                !result) {
+                return result;
+            }
         }
         if (auto result = createFilter("lumenConvertScreenProbesToIrradianceMain", "LumenConvertScreenProbesToIrradiance",
                 convertToIrradiance_); !result) {
@@ -938,6 +990,7 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
     const bool activeProbeDispatch = compiledActiveProbeDispatch_;
     const bool splitProbeTracing = compiledSplitProbeTracing_;
     const bool compactAtlas = compiledCompactProbeAtlas_;
+    const bool fastLightingUpdate = compiledFastLightingUpdate_;
     const bool jitterDirections = finalGather && !optionEnabled("fixedProbeDirections");
     const bool screenTraces = optionEnabled("screenTraces");
     const bool radianceCache = optionEnabled("radianceCache");
@@ -1005,7 +1058,8 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
             spdlog::error("This Lumen Detail Tracing permutation requires skylight to be disabled");
             return makeError(Error::InvalidArgument);
         }
-        auto grid = meshGrid_.prepare(context, writer, meshFields_, meshSDFTraceDistance_, kLumenCardTraceEndDistance);
+        auto grid = meshGrid_.prepare(context, writer, meshFields_, meshSDFTraceDistance_, kLumenCardTraceEndDistance,
+            fastLightingUpdate);
         if (!grid) { return makeError(grid.error()); }
         meshGridFrame.emplace(std::move(*grid));
         params.detail = meshGridFrame->bindings;
@@ -1067,18 +1121,33 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
         if (!result) { return makeError(result.error()); }
         importanceParams = *result;
     }
-    const auto encodeProbeParams = [&]<typename Params>(const Params& bindings, uint64_t key) {
+    ProbeTraceMotionBindings traceMotion{};
+    ProbeFilterMotionBindings filterMotion{};
+    if (fastLightingUpdate) {
+        const auto bindOutput = [&](const char* name) { return writer.buffer(context.outputBuffer(name).buffer()); };
+        const ShaderBuffer traceMoving = bindOutput("probeTraceMoving");
+        const ShaderBuffer probeMoving = bindOutput("probeMoving");
+        traceMotion = {writer.sampledImageHandle(context.inputTexture("previousPosition").view()),
+            traceMoving, probeMoving, meshGridFrame ? writer.buffer(meshGridFrame->motion.get()) : ShaderBuffer{}};
+        filterMotion = {traceMoving, bindOutput("compositedProbeMoving"), probeMoving};
+    }
+    const auto encodeProbeParams = [&]<typename Params, typename Motion>(const Params& bindings, uint64_t key, const Motion& motion) {
+        const auto encodeMotion = [&]<typename Base>(const Base& base, uint64_t baseKey) {
+            return fastLightingUpdate ? writer.encode(ScreenProbeMotionParams<Base, Motion>{base, motion}, baseKey | kFastLightingUpdateABIBit) :
+                writer.encode(base, baseKey);
+        };
         return compiledStructuredImportance_ ?
-            writer.encode(StructuredImportanceParams<Params>{bindings, structuredRayInfo}, key | kStructuredImportanceABIBit) :
-            writer.encode(bindings, key);
+            encodeMotion(StructuredImportanceParams<Params>{bindings, structuredRayInfo}, key | kStructuredImportanceABIBit) :
+            encodeMotion(bindings, key);
     };
     const ActiveGatherParams activeParams{params, schedule.workList, schedule.workState};
     const auto encodeGather = [&](const ActiveGatherParams& bindings) {
         if (compactAtlas) {
-            return encodeProbeParams(CompactScreenProbeGatherParams<ActiveGatherParams>{bindings, atlas}, kCompactScreenProbeGatherABI);
+            return encodeProbeParams(CompactScreenProbeGatherParams<ActiveGatherParams>{bindings, atlas},
+                kCompactScreenProbeGatherABI, traceMotion);
         }
-        return activeProbeDispatch ? encodeProbeParams(bindings, kActiveScreenProbeGatherABI) :
-            encodeProbeParams(bindings.base, kScreenProbeGatherABI);
+        return activeProbeDispatch ? encodeProbeParams(bindings, kActiveScreenProbeGatherABI, traceMotion) :
+            encodeProbeParams(bindings.base, kScreenProbeGatherABI, traceMotion);
     };
     const auto encoded = encodeGather(activeParams);
     if (!encoded) { return makeError(encoded.error()); }
@@ -1106,7 +1175,8 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
             writer.buffer(context.outputBuffer("probeRayIndirectArgs").buffer())};
         const LumenScreenProbeFallbackParams fallbackBindings{activeParams, raySchedule.rayWorkList, raySchedule.rayWorkCount};
         const auto fallback = compactAtlas ? encodeProbeParams(CompactScreenProbeGatherParams<LumenScreenProbeFallbackParams>{
-            fallbackBindings, atlas}, kCompactScreenProbeFallbackABI) : encodeProbeParams(fallbackBindings, kScreenProbeFallbackABI);
+            fallbackBindings, atlas}, kCompactScreenProbeFallbackABI, traceMotion) :
+            encodeProbeParams(fallbackBindings, kScreenProbeFallbackABI, traceMotion);
         if (!fallback) { return makeError(fallback.error()); }
         fallbackParams = *fallback;
     }
@@ -1157,6 +1227,16 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
             {"probeTileAdaptiveIndices", Access::BufferStorageRead}});
         if (interpolationReadbackPixels_) { integrateUses.push_back({"probeOrigins", Access::BufferStorageRead}); }
     }
+    if (fastLightingUpdate) {
+        const RenderGraphStageUse motionTraceUses[]{{"previousPosition", Access::TextureSampleRead},
+            {"probeTraceMoving", Access::BufferStorageWrite}};
+        auto& initialTraceUses = splitProbeTracing ? screenUses : traceUses;
+        initialTraceUses.insert(initialTraceUses.end(), std::begin(motionTraceUses), std::end(motionTraceUses));
+        if (splitDetailTracing) {
+            detailUses.insert(detailUses.end(), std::begin(motionTraceUses), std::end(motionTraceUses));
+        }
+        integrateUses.push_back({"probeMoving", Access::BufferStorageRead});
+    }
 
     const RenderGraphStageUse placeUses[] = {{"position", Access::TextureSampleRead},
         {"normal", Access::TextureSampleRead}, {"probePositions", Access::BufferStorageWrite}};
@@ -1179,6 +1259,12 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
     std::vector<RenderGraphStageUse> compositeUses = {{probePositionsName, Access::BufferStorageRead},
         {"probeRadiance", Access::BufferStorageRead}, {"probeDistance", Access::BufferStorageRead},
         {"probeFilterScratch", Access::BufferStorageWrite}, {"compositedProbeDistance", Access::BufferStorageWrite}};
+    std::vector<RenderGraphStageUse> reduceMotionUses;
+    if (fastLightingUpdate) {
+        compositeUses.insert(compositeUses.end(), {{"probeTraceMoving", Access::BufferStorageRead},
+            {"compositedProbeMoving", Access::BufferStorageWrite}});
+        reduceMotionUses = {{"compositedProbeMoving", Access::BufferStorageRead}, {"probeMoving", Access::BufferStorageWrite}};
+    }
     std::array<EncodedParameters, kSpatialPassCount> filteredParams;
     std::vector<RenderGraphStage> stages;
     const RenderGraphStageUse workUses[]{{"probeWorkList", Access::BufferStorageRead},
@@ -1220,9 +1306,11 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
         filterParams.rayDirectionFrameIndex = params.rayDirectionFrameIndex;
         const auto encodeFilter = [&] {
             const LumenActiveScreenProbeParams<LumenScreenProbeFilterParams> bindings{filterParams, schedule.workList, schedule.workState};
-            if (compactAtlas) { return encodeProbeParams(CompactScreenProbeFilterParams{bindings, atlas.origins}, kCompactScreenProbeFilterABI); }
-            return activeProbeDispatch ? encodeProbeParams(bindings, kActiveScreenProbeFilterABI) :
-                encodeProbeParams(filterParams, kScreenProbeFilterABI);
+            if (compactAtlas) {
+                return encodeProbeParams(CompactScreenProbeFilterParams{bindings, atlas.origins}, kCompactScreenProbeFilterABI, filterMotion);
+            }
+            return activeProbeDispatch ? encodeProbeParams(bindings, kActiveScreenProbeFilterABI, filterMotion) :
+                encodeProbeParams(filterParams, kScreenProbeFilterABI, filterMotion);
         };
         if (compactAtlas) {
             const auto placement = writer.encode(CompactProbeAtlasPlacementParams{params.position, params.normal, params.probePositions,
@@ -1271,6 +1359,7 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
                 {inputNames[index], Access::BufferStorageRead},
                 {outputNames[index], Access::BufferStorageWrite}};
             useProbeSchedule(filterUses[index]);
+            if (fastLightingUpdate) { filterUses[index].push_back({"probeMoving", Access::BufferStorageRead}); }
             if (compactAtlas && !jitterDirections) { filterUses[index].push_back({"probeOrigins", Access::BufferStorageRead}); }
             filterParams.inputRadiance = inputs[index];
             filterParams.outputRadiance = outputs[index];
@@ -1438,6 +1527,12 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
         stages.push_back({"Composite jittered rays into gather directions", compositeUses, [&](CommandBuffer& cmd) {
             return dispatchProbes(composite_, compositeParams, cmd);
         }});
+        if (fastLightingUpdate) {
+            useProbeSchedule(reduceMotionUses);
+            stages.push_back({"Reduce screen probe motion", reduceMotionUses, [&](CommandBuffer& cmd) {
+                return dispatchProbes(reduceProbeMotion_, compositeParams, cmd);
+            }});
+        }
     }
     for (uint32_t index = 0; finalGather && index < kSpatialPassCount; ++index) {
         stages.push_back({"Spatially filter probe radiance", filterUses[index], [&, index](CommandBuffer& cmd) {

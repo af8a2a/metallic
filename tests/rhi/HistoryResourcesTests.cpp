@@ -556,18 +556,28 @@ public:
         if (!manager.ensureBuffer("visibility", {.size = 64, .usage = BufferUsageBits::Storage})) {
             return RHITestResult::fail("Could not create scoped history validity fixture");
         }
+        const TextureDesc texture{.type = TextureType::Texture2D, .usage = TextureUsageBits::Sampled,
+            .format = Format::R32Sfloat, .width = 4, .height = 4, .depth = 1, .mipCount = 1, .layerCount = 1};
+        if (!manager.ensureTexture("screenDepth", texture, {}, true) || !manager.ensureTexture("staticDepth", texture)) {
+            return RHITestResult::fail("Could not create motion-retained history fixture");
+        }
         uint64_t frameIndex = 0;
         for (const auto reason : {HistoryInvalidationReason::CameraMotion, HistoryInvalidationReason::GeometryMotion,
                 HistoryInvalidationReason::LightingChange, HistoryInvalidationReason::SunLightingChange,
                 HistoryInvalidationReason::Discontinuity}) {
             manager.beginFrame(frameIndex++);
             manager.markWritten("visibility");
+            manager.markWritten("screenDepth");
+            manager.markWritten("staticDepth");
             manager.beginFrame(frameIndex++);
-            if (!manager.hasPrevious("visibility")) { return RHITestResult::fail("Scoped history fixture was not valid"); }
+            if (!manager.hasPrevious("visibility") || !manager.hasPrevious("screenDepth") || !manager.hasPrevious("staticDepth")) {
+                return RHITestResult::fail("Scoped history fixture was not valid");
+            }
             before = revisions();
             manager.invalidateAll(reason);
             const auto after = revisions();
-            if (after[0] == before[0] || manager.hasPrevious("visibility") ||
+            if (after[0] == before[0] || manager.hasPrevious("visibility") || manager.hasPrevious("staticDepth") ||
+                manager.hasPrevious("screenDepth") != (reason == HistoryInvalidationReason::GeometryMotion) ||
                 (after[1] != before[1]) != (reason != HistoryInvalidationReason::CameraMotion) ||
                 (after[2] != before[2]) != (reason == HistoryInvalidationReason::Discontinuity ||
                     reason == HistoryInvalidationReason::GeometryMotion) ||

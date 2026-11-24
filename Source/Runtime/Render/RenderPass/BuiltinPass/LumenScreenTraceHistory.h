@@ -14,7 +14,7 @@ inline std::array<std::string, 2> lumenScreenTraceHistoryNames(std::string_view 
 }
 
 inline Result<> ensureLumenScreenTraceHistory(HistoryResourceManager& history,
-    const std::array<std::string, 2>& names, uint32_t width, uint32_t height)
+    const std::array<std::string, 2>& names, uint32_t width, uint32_t height, bool preserveGeometryMotion = false)
 {
     constexpr std::array formats{Format::R32Sfloat, Format::RGBA32Sfloat};
     for (size_t index = 0; index < names.size(); ++index) {
@@ -25,7 +25,7 @@ inline Result<> ensureLumenScreenTraceHistory(HistoryResourceManager& history,
             .width = width, .height = height, .depth = 1, .mipCount = 1, .layerCount = 1,
             .memoryLocation = MemoryLocation::Device,
         };
-        if (auto result = history.ensureTexture(names[index], desc); !result) { return result; }
+        if (auto result = history.ensureTexture(names[index], desc, {}, preserveGeometryMotion); !result) { return result; }
     }
     return {};
 }

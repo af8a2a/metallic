@@ -280,17 +280,18 @@ float screenTraceDepthThicknessScale(ScreenTraceProjection view)
     return 1.0f;
 }
 
-// UE 5.7.4 LumenScreenProbeTracing.usf, camera reprojection for static opaque surfaces.
+// UE 5.7.4 LumenScreenProbeTracing.usf, opaque history lookup.
 public bool traceLumenScreenRay(LumenScreenTraceInputs inputs, uint2 receiverPixel, float3 receiverPosition,
     float3 receiverNormal, float3 rayDirection, float traceDistance, float maxTraceDistance, float relativeDepthThickness,
-    uint2 noisePixel,
-    out float3 radiance, out float distance, out float continuationDistance)
+    uint2 noisePixel, bool motionHistory, Texture2D<float4> position, Texture2D<float4> previousPosition,
+    out float3 radiance, out float distance, out float continuationDistance, out float4 hitVelocity)
 {
     radiance = 0.0f;
     distance = 0.0f;
     continuationDistance = 0.0f;
+    hitVelocity = 0.0f;
     LumenScreenTraceView traceView = inputs.view[0];
-    if (traceView.state.x == 0u) {
+    if (traceView.state.x == 0u || (!motionHistory && traceView.state.x == 2u)) {
         return false;
     }
 
@@ -326,6 +327,20 @@ public bool traceLumenScreenRay(LumenScreenTraceInputs inputs, uint2 receiverPix
     // ClipToPrevClip excludes both cameras' jitter in the UE history lookup.
     current.jitter = 0.0f;
     float3 reprojectWorldPosition = screenTraceScreenToWorld(current, hitScreenPosition, hitSceneDepth);
+    if (motionHistory) {
+        // Deferred exports the previous world position of the same current raster hit.
+        // Move the HZB hit by that displacement to preserve its depth and jitter convention.
+        uint2 hitPixel = pointClampedPixel(hitUVz.xy, uint2(current.extent));
+        float4 currentHit = position.Load(int3(hitPixel, 0));
+        float4 previousHit = previousPosition.Load(int3(hitPixel, 0));
+        if (currentHit.w > 0.0f && previousHit.w > 0.0f) {
+            float3 worldVelocity = currentHit.xyz - previousHit.xyz;
+            reprojectWorldPosition -= worldVelocity;
+            hitVelocity = float4(worldVelocity, 1.0f);
+        } else if (traceView.state.x == 2u) {
+            return false;
+        }
+    }
     ScreenTraceProjection previous = makeScreenTraceProjection(traceView.cameras.previous, 0.0f);
     float4 historyClip = screenTraceWorldToClip(previous, reprojectWorldPosition);
     if (historyClip.w <= 0.0f) {
@@ -361,7 +376,7 @@ public bool traceLumenReflectionScreenRay(LumenScreenTraceInputs inputs, uint2 r
     radiance = 0.0f;
     traceDistance = 0.0f;
     LumenScreenTraceView traceView = inputs.view[0];
-    if (traceView.state.x == 0u) {
+    if (traceView.state.x != 1u) {
         return false;
     }
 

@@ -123,6 +123,7 @@ struct HistoryResourceManager::Impl {
 
     struct Record {
         ResourceKind kind = ResourceKind::None;
+        bool preserveGeometryMotion = false;
         uint64_t generation = 0;
         uint64_t nextVersion = 1;
         TextureDesc textureDesc;
@@ -408,6 +409,9 @@ void HistoryResourceManager::invalidateAll(HistoryInvalidationReason reason)
 {
     for (auto& [name, record] : impl_->records) {
         (void)name;
+        if (reason == HistoryInvalidationReason::GeometryMotion && record->preserveGeometryMotion) {
+            continue;
+        }
         Impl::invalidateRecord(*record);
     }
     impl_->advanceInvalidationRevision();
@@ -454,7 +458,8 @@ uint64_t HistoryResourceManager::geometryReprojectionInvalidationRevision() cons
 Result<> HistoryResourceManager::ensureTexture(
     std::string_view name,
     const TextureDesc& desc,
-    TextureViewDesc viewDesc)
+    TextureViewDesc viewDesc,
+    bool preserveGeometryMotion)
 {
     if (impl_->device == nullptr || nameIsEmpty(name) || desc.type != TextureType::Texture2D) {
         return makeError(Error::InvalidArgument);
@@ -464,6 +469,7 @@ Result<> HistoryResourceManager::ensureTexture(
     const Impl::Record* existing = impl_->findRecord(name);
     if (existing != nullptr &&
         impl_->textureRecordComplete(*existing) &&
+        existing->preserveGeometryMotion == preserveGeometryMotion &&
         textureDescSatisfies(existing->textureDesc, desc) &&
         textureViewDescEquals(existing->textureViewDesc, normalizedViewDesc)) {
         return {};
@@ -475,6 +481,7 @@ Result<> HistoryResourceManager::ensureTexture(
     if (!result) {
         return result;
     }
+    newRecord.preserveGeometryMotion = preserveGeometryMotion;
 
     impl_->records[std::string(name)] = std::make_shared<Impl::Record>(std::move(newRecord));
     return {};

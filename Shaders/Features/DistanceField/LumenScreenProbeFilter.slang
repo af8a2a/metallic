@@ -51,6 +51,11 @@ struct LumenScreenProbeFilterParams
 #if defined(METALLIC_LUMEN_STRUCTURED_IMPORTANCE_SAMPLING)
     ResourceHandle<StructuredBuffer<uint>> structuredRayInfo;
 #endif
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+    ResourceHandle<StructuredBuffer<uint>> probeTraceMoving;
+    ResourceHandle<RWStructuredBuffer<float>> compositedProbeMoving;
+    ResourceHandle<RWStructuredBuffer<float>> probeMoving;
+#endif
 };
 
 #if defined(METALLIC_LUMEN_ACTIVE_PROBES)
@@ -79,6 +84,15 @@ static const uint kRaysPerProbe = kLumenProbeGatherResolution * kLumenProbeGathe
 static const uint kTraceSamples = kLumenProbeTraceResolution * kLumenProbeTraceResolution;
 groupshared uint sharedLighting[kRaysPerProbe][3];
 groupshared uint sharedMinHitDistance[kRaysPerProbe];
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+groupshared uint sharedMoving[kRaysPerProbe];
+
+float quantizeProbeMoving(float value)
+{
+    // UE uses R8 UNORM for both the scattered texels and the reduced probes.
+    return round(saturate(value) * 255.0f) / 255.0f;
+}
+#endif
 
 // UE 5.7.4 ScreenProbeCompositeTracesWithScatterCS.
 [shader("compute")]
@@ -104,6 +118,9 @@ void lumenCompositeScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Gr
         if (writeGather) {
             radiance[address] = 0.0f;
             distance[address] = -1.0f;
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+            resolveUniform(params.compositedProbeMoving)[address] = 0.0f;
+#endif
         }
         return;
     }
@@ -116,6 +133,9 @@ void lumenCompositeScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Gr
         sharedLighting[gatherThread][1] = 0u;
         sharedLighting[gatherThread][2] = 0u;
         sharedMinHitDistance[gatherThread] = emptyDistance;
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+        sharedMoving[gatherThread] = 0u;
+#endif
     }
     GroupMemoryBarrierWithGroupSync();
 
@@ -146,6 +166,11 @@ void lumenCompositeScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Gr
         InterlockedAdd(sharedLighting[dest][0], lighting.x);
         InterlockedAdd(sharedLighting[dest][1], lighting.y);
         InterlockedAdd(sharedLighting[dest][2], lighting.z);
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+        const float weightQuantizeScale = float(0xffffffffu) / float(kTraceSamples);
+        const uint moving = resolveUniform(params.probeTraceMoving)[traceAddress];
+        InterlockedAdd(sharedMoving[dest], uint(float(moving) * sampleWeight * weightQuantizeScale));
+#endif
         InterlockedMin(sharedMinHitDistance[dest], asuint(hitDistance));
     }
     GroupMemoryBarrierWithGroupSync();
@@ -155,7 +180,50 @@ void lumenCompositeScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Gr
     radiance[address] = float4(lumenDecodeProbeLighting(sum, kTraceSamples), 0.0f);
     uint minDistance = sharedMinHitDistance[gatherThread];
     distance[address] = minDistance == emptyDistance ? -1.0f : asfloat(minDistance);
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+    const float invWeightQuantizeScale = float(kTraceSamples) / float(0xffffffffu);
+    resolveUniform(params.compositedProbeMoving)[address] = quantizeProbeMoving(float(sharedMoving[gatherThread]) * invWeightQuantizeScale);
+#endif
 }
+
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+groupshared float sharedTexelMoving[kRaysPerProbe * 4u];
+
+// UE 5.7.4 ScreenProbeCalculateMovingCS, operating on linear atlas addresses.
+[shader("compute")]
+[numthreads(kLumenProbeGatherResolution, kLumenProbeGatherResolution, 1)]
+void lumenReduceScreenProbeMotionMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID, uint threadIndex : SV_GroupIndex)
+{
+    const LumenScreenProbeFilterParams params = getParameters<LumenScreenProbeFilterParams>();
+#if defined(METALLIC_LUMEN_ACTIVE_PROBES)
+    uint probeIndex;
+    if (!resolveFilterProbeIndex(params, group, probeIndex)) { return; }
+#else
+    const uint probeIndex = lumenProbeIndex(group.xy, group.z, params.probeWidth);
+#endif
+    sharedTexelMoving[threadIndex] = resolveUniform(params.compositedProbeMoving)[lumenProbeGatherAddress(probeIndex, lane.xy)];
+    GroupMemoryBarrierWithGroupSync();
+    uint numValuesToAccumulate = kRaysPerProbe;
+    uint offset = 0u;
+    while (numValuesToAccumulate > 1u) {
+        const uint threadBaseIndex = threadIndex * 4u;
+        if (threadBaseIndex < numValuesToAccumulate) {
+            float value = sharedTexelMoving[threadBaseIndex + offset];
+            if (threadBaseIndex + 1u < numValuesToAccumulate) { value += sharedTexelMoving[threadBaseIndex + 1u + offset]; }
+            if (threadBaseIndex + 2u < numValuesToAccumulate) { value += sharedTexelMoving[threadBaseIndex + 2u + offset]; }
+            if (threadBaseIndex + 3u < numValuesToAccumulate) { value += sharedTexelMoving[threadBaseIndex + 3u + offset]; }
+            sharedTexelMoving[threadIndex + offset + numValuesToAccumulate] = value;
+        }
+        offset += numValuesToAccumulate;
+        numValuesToAccumulate = (numValuesToAccumulate + 3u) / 4u;
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if (threadIndex == 0u) {
+        const float probeMoving = sharedTexelMoving[offset] / float(kRaysPerProbe);
+        resolveUniform(params.probeMoving)[probeIndex] = quantizeProbeMoving(probeMoving);
+    }
+}
+#endif
 #endif
 
 // UE 5.7.4 FastMathThirdParty.ush:108.
@@ -174,9 +242,9 @@ float getFilterPositionWeight(float probeDepth, float sceneDepth)
     return exp2(-kSpatialFilterPositionWeightScale * (relativeDepthDifference * relativeDepthDifference));
 }
 
-// UE 5.7.4 GatherNeighborRadiance, static geometry without adaptive neighbor search or extra AO.
+// UE 5.7.4 GatherNeighborRadiance without adaptive neighbor search or extra AO.
 void gatherNeighborRadiance(int2 neighborTile, uint2 probeSize, uint2 ray, float4 receiver, float3 coneDirection,
-    float hitDistance, StructuredBuffer<uint2> probes, Texture2D<float4> position,
+    float hitDistance, float screenProbeTracesMoving, StructuredBuffer<uint2> probes, Texture2D<float4> position,
     StructuredBuffer<float4> inputRadiance, StructuredBuffer<float> inputDistance,
     inout float3 totalRadiance, inout float totalWeight)
 {
@@ -204,19 +272,21 @@ void gatherNeighborRadiance(int2 neighborTile, uint2 probeSize, uint2 ray, float
     if (neighborRadianceDepth < 0.0f) {
         return;
     }
-    if (hitDistance >= 0.0f) {
-        neighborRadianceDepth = min(neighborRadianceDepth, hitDistance);
+    float angleWeight = 1.0f;
+    if (screenProbeTracesMoving <= 0.01f) {
+        if (hitDistance >= 0.0f) {
+            neighborRadianceDepth = min(neighborRadianceDepth, hitDistance);
+        }
+        float3 neighborHitPosition = neighbor.xyz + coneDirection * neighborRadianceDepth;
+        float3 toNeighborHit = neighborHitPosition - receiver.xyz;
+        // Coincident endpoints have no direction. Constrain the cosine to the domain of sqrt in acosFast.
+        float neighborHitLength = length(toNeighborHit);
+        if (neighborHitLength == 0.0f) {
+            return;
+        }
+        float neighborAngle = probeAcosFast(clamp(dot(toNeighborHit, coneDirection) / neighborHitLength, -1.0f, 1.0f));
+        angleWeight = 1.0f - saturate(neighborAngle / kSpatialFilterMaxRadianceHitAngle);
     }
-
-    float3 neighborHitPosition = neighbor.xyz + coneDirection * neighborRadianceDepth;
-    float3 toNeighborHit = neighborHitPosition - receiver.xyz;
-    // Coincident endpoints have no direction. Constrain the cosine to the domain of sqrt in acosFast.
-    float neighborHitLength = length(toNeighborHit);
-    if (neighborHitLength == 0.0f) {
-        return;
-    }
-    float neighborAngle = probeAcosFast(clamp(dot(toNeighborHit, coneDirection) / neighborHitLength, -1.0f, 1.0f));
-    float angleWeight = 1.0f - saturate(neighborAngle / kSpatialFilterMaxRadianceHitAngle);
     float weight = positionWeight * angleWeight;
     totalRadiance += inputRadiance[neighborAddress].xyz * weight;
     totalWeight += weight;
@@ -267,14 +337,31 @@ void lumenFilterScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
     float4 trace = inputRadiance[address];
     float3 totalRadiance = hitDistance >= 0.0f ? trace.xyz : float3(0.0f);
     float totalWeight = hitDistance >= 0.0f ? 1.0f : 0.0f;
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+    const float screenProbeTracesMoving = resolveUniform(params.probeMoving)[probeIndex];
+#else
+    const float screenProbeTracesMoving = 0.0f;
+#endif
 
     const int2 offsets[4] = {int2(-1, 0), int2(1, 0), int2(0, -1), int2(0, 1)};
     [loop]
     for (uint offsetIndex = 0u; offsetIndex < 4u; ++offsetIndex) {
         gatherNeighborRadiance(int2(screenTileCoord) + offsets[offsetIndex], uint2(params.probeWidth, params.probeHeight),
-            lane.xy, receiver, coneDirection, hitDistance, probes, position, inputRadiance, inputDistance,
+            lane.xy, receiver, coneDirection, hitDistance, screenProbeTracesMoving, probes, position, inputRadiance, inputDistance,
             totalRadiance, totalWeight);
     }
+#if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
+    if (screenProbeTracesMoving > 0.01f) {
+        const int2 movingOffsets[8] = {int2(-2, 0), int2(2, 0), int2(0, -2), int2(0, 2),
+            int2(-1, 1), int2(1, 1), int2(-1, -1), int2(1, -1)};
+        [loop]
+        for (uint offsetIndex = 0u; offsetIndex < 8u; ++offsetIndex) {
+            gatherNeighborRadiance(int2(screenTileCoord) + movingOffsets[offsetIndex], uint2(params.probeWidth, params.probeHeight),
+                lane.xy, receiver, coneDirection, hitDistance, screenProbeTracesMoving, probes, position, inputRadiance, inputDistance,
+                totalRadiance, totalWeight);
+        }
+    }
+#endif
     if (totalWeight > 0.0f) {
         totalRadiance /= totalWeight;
     }
