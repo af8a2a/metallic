@@ -12,6 +12,7 @@
 #include "Runtime/Scene/SceneDocument.h"
 #include "harness/Fixtures.h"
 #include "harness/ValidationRecorder.h"
+#include "../../Shaders/Interop/LumenCardUpdate.h"
 
 #include <algorithm>
 #include <array>
@@ -624,6 +625,43 @@ public:
         debug::DebugValue evidence{{"rays", rays}, {"fullBudget", debug::DebugValue::array()}};
         for (const auto& hit : hits) {
             evidence["fullBudget"].push_back(describeLumenRay(hit));
+        }
+        const auto linearHits = hits;
+        surfaceProperties["objectCardRanges"] = true;
+        if (!graph.setNodeProperties(surfaceId, surfaceProperties) || !captureRays(hits)) {
+            return RHITestResult::fail("Object-scoped Surface Cache tracing: " + log);
+        }
+        if (std::memcmp(linearHits.data(), hits.data(), sizeof(hits)) != 0) {
+            return RHITestResult::fail("Object-scoped Surface Cache tracing changed a fixed-ray result");
+        }
+        constexpr uint32_t rangeWords = kLumenCardSceneRangeBase + 2 * kLumenCardSceneRangeStride;
+        const auto rangeCapture = capturePreview.captureAfterPass(graph, "SurfaceCache", debug::DebugValue::array({
+            {{"id", "SurfaceCache.scene"}, {"layout", "u32"}, {"count", rangeWords}},
+        }), output, log);
+        if (!rangeCapture || rangeCapture->artifacts.size() != 1 ||
+            rangeCapture->artifacts[0].bytes.size() != rangeWords * sizeof(uint32_t)) {
+            return RHITestResult::fail("Object-scoped Surface Cache metadata: " + log);
+        }
+        const auto table = readSurfaceValue<std::array<uint32_t, rangeWords>>(rangeCapture->artifacts[0].bytes, 0);
+        if (table[kLumenCardSceneHeaderWords] != kLumenCardSceneRangeTag || table[kLumenCardSceneRangeCount] != 2) {
+            return RHITestResult::fail("Surface Cache range table must contain both fixture objects");
+        }
+        std::array<bool, kCardCount> visited{};
+        for (uint32_t word = kLumenCardSceneRangeBase; word < rangeWords; word += kLumenCardSceneRangeStride) {
+            const uint32_t object = table[word], first = table[word + 1], end = table[word + 2];
+            if (first >= end || end > kCardCount ||
+                (word > kLumenCardSceneRangeBase && table[word - kLumenCardSceneRangeStride] >= object)) {
+                return RHITestResult::fail("Surface Cache range table has unsorted objects or invalid bounds");
+            }
+            for (uint32_t slot = first; slot < end; ++slot) {
+                if (visited[slot] || readSurfaceValue<CapturedCard>(cards, slot).metadata[0] != object) {
+                    return RHITestResult::fail("Surface Cache range table includes an unrelated or repeated atlas slot");
+                }
+                visited[slot] = true;
+            }
+        }
+        if (!std::ranges::all_of(visited, [](bool value) { return value; })) {
+            return RHITestResult::fail("Surface Cache range table omitted an atlas slot");
         }
         surfaceProperties["meshCardPaths"] = nlohmann::json::array();
         if (!graph.setNodeProperties(surfaceId, surfaceProperties) || !captureRays(hits)) {
@@ -2597,6 +2635,47 @@ public:
             resized->radiosity->artifacts[kRadiosityUpdateStats].bytes, 0);
         if (resizedStats != std::array{remaining, remaining, remaining, kRadiosityCardBudget}) {
             return RHITestResult::fail("Graph resize did not reinitialize the Radiosity atlas");
+        }
+
+        constexpr uint32_t directBudget = 3;
+        const auto* surfaceNode = graph.findNode(kPersistentSurface);
+        auto surfaceProperties = surfaceNode->properties;
+        surfaceProperties["maxDirectLightingCardsPerFrame"] = directBudget;
+        surfaceProperties["objectCardRanges"] = true;
+        if (!graph.setNodeProperties(surfaceNode->id, std::move(surfaceProperties)) ||
+            !executor.compile(gpu, graph, kAtlasEdge, kAtlasEdge, RenderGraphCompileOptions{.enableDebugReadback = true}, log)) {
+            return RHITestResult::fail("Could not compile the budgeted Surface Cache: " + log);
+        }
+        if (!runFrame("Initialize budgeted Surface Cache", {1u, remaining, remaining}, remaining, true)) {
+            return RHITestResult::fail(log);
+        }
+        auto editedLighting = renderWorld.lighting();
+        editedLighting.lights.back().properties.intensity *= 2.0f;
+        if (!renderWorld.setLighting(std::move(editedLighting))) {
+            return RHITestResult::fail("Could not edit the point light for budgeted card updates");
+        }
+        for (uint32_t first = 0; first < remaining; first += directBudget) {
+            const uint32_t end = std::min(first + directBudget, remaining);
+            auto frame = captureFrame(inspector, executor, submission, log);
+            if (!frame) { return RHITestResult::fail(log); }
+            const auto& surface = frame->surface->artifacts;
+            const auto stats = readSurfaceValue<std::array<uint32_t, 3>>(surface[kSurfaceUpdateStats].bytes, 0);
+            if (stats != std::array{0u, 0u, end - first}) {
+                return RHITestResult::fail("The direct lighting pass exceeded its budget or abandoned pending cards");
+            }
+            for (uint32_t slot = 0; slot < kPersistentCardCapacity; ++slot) {
+                const auto flags = readSurfaceValue<uint32_t>(surface[kSurfaceUpdateFlags].bytes, slot);
+                const uint32_t expected = slot >= first && slot < end ? kCardRelit | kCardLightingChanged : 0u;
+                if (flags != expected) { return RHITestResult::fail("Direct relight and indirect reset advanced on different tiles"); }
+            }
+            if (end == remaining) {
+                if (auto message = compareSurfaceUpdate(*frame, stats, remaining); !message.empty()) {
+                    return RHITestResult::fail("The budgeted atlas did not converge to a full update: " + message);
+                }
+            }
+        }
+        if (!runFrame("Idle after draining the direct relight budget", {0u, 0u, 0u}, remaining)) {
+            return RHITestResult::fail(log);
         }
         if (validation.failed()) {
             return RHITestResult::fail("Persistent card Vulkan validation: " + validation.snapshot().dump());

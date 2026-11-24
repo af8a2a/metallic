@@ -37,13 +37,18 @@ constexpr uint64_t kCompactScreenProbeGatherABI = 0x4c554d454e010034ull;
 constexpr uint64_t kCompactScreenProbeFallbackABI = 0x4c554d454e010035ull;
 constexpr uint64_t kCompactScreenProbeFilterABI = 0x4c554d454e010038ull;
 constexpr uint64_t kScreenProbeImportanceABI = 0x4c554d454e010030ull;
+constexpr uint64_t kScreenProbeIntegrationScheduleABI = 0x4c554d454e010039ull;
 constexpr uint64_t kStructuredImportanceABIBit = 0x0000000000800000ull;
 constexpr uint64_t kFastLightingUpdateABIBit = 0x0000000000400000ull;
 constexpr uint64_t kRoughSpecularABIBit = 0x0000000000200000ull;
+constexpr uint64_t kIntegrationTilesABIBit = 0x0000000000100000ull;
 constexpr const char* kStructuredImportanceDefine = "METALLIC_LUMEN_STRUCTURED_IMPORTANCE_SAMPLING";
 constexpr const char* kFastLightingUpdateDefine = "METALLIC_LUMEN_FAST_LIGHTING_UPDATE";
 constexpr uint32_t kProbeCompactionThreads = 64;
 constexpr uint32_t kProbeDispatchArgumentBytes = 3 * sizeof(uint32_t);
+constexpr uint32_t kProbeIntegrationTileSize = 8;
+constexpr uint32_t kProbeIntegrationModeCount = 2;
+constexpr uint32_t kProbeIntegrationMaxDispatchX = 65535;
 constexpr uint32_t kGatherSamplesPerProbe = 8 * 8;
 constexpr uint32_t kTraceStride = 4 * sizeof(float);
 constexpr uint32_t kScreenTraceViewStride = 224;
@@ -203,6 +208,25 @@ struct ScreenProbeRoughSpecularParams {
     ProbeRoughSpecularBindings roughSpecular;
 };
 
+struct ProbeIntegrationTileBindings {
+    ShaderBuffer tiles;
+    uint32_t maxDispatchX;
+};
+static_assert(sizeof(ProbeIntegrationTileBindings) == 8);
+
+template <typename Params>
+struct ScreenProbeIntegrationParams {
+    Params base;
+    ProbeIntegrationTileBindings tiles;
+};
+
+struct ProbeIntegrationScheduleParams {
+    ShaderSampledImage position, specular;
+    ShaderBuffer tiles, indirectArgs;
+    uint32_t width, height, maxDispatchX;
+};
+static_assert(sizeof(ProbeIntegrationScheduleParams) == 28);
+
 struct LumenScreenProbeImportanceParams {
     ShaderSampledImage position, normal, blueNoiseVec2;
     ShaderBuffer probePositions, probeWorkList, probeWorkState, view, cacheIndirection, cacheClipmaps;
@@ -232,6 +256,10 @@ class LumenScreenProbeGatherPass final : public ComputePass {
 public:
     bool supportsFrameOverlap() const override { return true; }
     bool supportsExternalFrameOverlap() const override { return false; }
+    // Realtime Gather stays on graphics. Its independent reflection branch
+    // reads reflected scene outputs and has no access to Gather's private data.
+    bool supportsAsyncQueue() const override { return optionEnabled("asyncOverlap"); }
+    QueueType queueType() const override { return QueueType::Graphics; }
     RenderPassReflection reflect(const RenderGraphCompileContext& context) const override;
     Result<> prepare(const RenderGraphCompileContext& context, std::string& log) override
     {
@@ -248,6 +276,8 @@ public:
         const auto structured = properties().value("structuredImportanceSampling", RenderGraphProperties(false));
         const auto fastLightingUpdate = properties().value("fastLightingUpdate", RenderGraphProperties(false));
         const auto roughSpecular = properties().value("roughSpecular", RenderGraphProperties(false));
+        const auto classifiedIntegration = properties().value("classifiedIntegration", RenderGraphProperties(false));
+        const auto compactFilteredRadiance = properties().value("compactFilteredRadiance", RenderGraphProperties(false));
         if (compiledTraceResolution_ && (!requested.is_number_integer() || requested != compiledTraceResolution_ ||
                 !active.is_boolean() || active != compiledActiveProbeDispatch_ ||
                 !split.is_boolean() || split != compiledSplitProbeTracing_ ||
@@ -259,7 +289,9 @@ public:
                 exportIrradiance != compiledExportIndirectIrradiance_ || !structured.is_boolean() ||
                 (structured == true && requested == 8) != compiledStructuredImportance_ ||
                 !fastLightingUpdate.is_boolean() || fastLightingUpdate != compiledFastLightingUpdate_ ||
-                !roughSpecular.is_boolean() || roughSpecular != compiledRoughSpecular_)) {
+                !roughSpecular.is_boolean() || roughSpecular != compiledRoughSpecular_ || !classifiedIntegration.is_boolean() ||
+                classifiedIntegration != compiledClassifiedIntegration_ || !compactFilteredRadiance.is_boolean() ||
+                compactFilteredRadiance != compiledCompactFilteredRadiance_)) {
             return compile(context, log);
         }
         return {};
@@ -307,6 +339,8 @@ private:
     Device* device_ = nullptr;
     ComputeKernel trace_;
     ComputeKernel integrate_;
+    std::array<ComputeKernel, kProbeIntegrationModeCount> integrateClassified_;
+    ComputeKernel resetIntegrationTiles_, classifyIntegrationTiles_, buildIntegrationDispatch_;
     ComputeKernel place_;
     ComputeKernel composite_;
     ComputeKernel reduceProbeMotion_;
@@ -332,6 +366,8 @@ private:
     bool compiledStructuredImportance_ = false;
     bool compiledFastLightingUpdate_ = false;
     bool compiledRoughSpecular_ = false;
+    bool compiledClassifiedIntegration_ = false;
+    bool compiledCompactFilteredRadiance_ = false;
     float fullResolutionJitterWidth_ = 0.0f;
     double compiledAdaptiveProbeAllocationFraction_ = kLumenAdaptiveProbeAllocationFraction;
     uint32_t maxRayDirections_ = 8;
@@ -409,6 +445,7 @@ RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompil
         cacheRadiance.matchOutputExtent = false;
     }
     const uint64_t rayCount = slots * traceResolution() * traceResolution();
+    const uint32_t filteredRadianceStride = optionEnabled("compactFilteredRadiance") ? kLumenFilteredProbeRGBStride : kTraceStride;
     const uint64_t gatherCount = slots * kGatherSamplesPerProbe;
     if (finalGather && !optionEnabled("fixedProbeDirections") && optionEnabled("fastLightingUpdate")) {
         reflection.addTextureInput("previousPosition", "Previous world position of each current receiver")
@@ -427,14 +464,14 @@ RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompil
             .buffer(rayCount * sizeof(float), sizeof(float)).storageReadWrite().bufferLayout("f32");
         reflection.addBufferOutput("structuredRayInfo", "UE packed octahedral coordinate and mip per trace lane")
             .buffer(rayCount * sizeof(uint32_t), sizeof(uint32_t)).storageReadWrite().bufferLayout("u32");
-        const uint64_t uniformRadianceBytes = uint64_t(probeCount) * kGatherSamplesPerProbe * kTraceStride;
+        const uint64_t uniformRadianceBytes = uint64_t(probeCount) * kGatherSamplesPerProbe * filteredRadianceStride;
         const uint64_t uniformGeometryBytes = uint64_t(probeCount) * kTraceStride;
         reflection.addBufferInput("previousImportanceRadiance", "Previous filtered radiance of the uniform probe grid")
-            .buffer(uniformRadianceBytes, kTraceStride).storageRead().temporalRead("importanceRadiance", -1, true);
+            .buffer(uniformRadianceBytes, filteredRadianceStride).storageRead().temporalRead("importanceRadiance", -1, true);
         reflection.addBufferInput("previousImportanceGeometry", "Previous world position and depth of uniform screen probes")
             .buffer(uniformGeometryBytes, kTraceStride).storageRead().temporalRead("importanceGeometry", -1, true);
         reflection.addBufferOutput("savedImportanceRadiance", "Filtered uniform probe radiance for next frame's sampling")
-            .buffer(uniformRadianceBytes, kTraceStride).storageWrite().temporalWrite("importanceRadiance", true);
+            .buffer(uniformRadianceBytes, filteredRadianceStride).storageWrite().temporalWrite("importanceRadiance", true);
         reflection.addBufferOutput("savedImportanceGeometry", "Uniform probe world position and depth for next frame")
             .buffer(uniformGeometryBytes, kTraceStride).storageWrite().temporalWrite("importanceGeometry", true);
     }
@@ -443,6 +480,16 @@ RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompil
     };
     initializeLegacyAllocation(reflection.addBufferOutput("probeRadiance", "Probe ray RGB and trace classification in atlas order")
         .buffer(rayCount * kTraceStride, kTraceStride).storageReadWrite());
+    if (optionEnabled("classifiedIntegration")) {
+        const auto tilesX = (context.width + kProbeIntegrationTileSize - 1u) / kProbeIntegrationTileSize;
+        const auto tilesY = (context.height + kProbeIntegrationTileSize - 1u) / kProbeIntegrationTileSize;
+        const uint64_t tileWords = kProbeIntegrationModeCount * (uint64_t(tilesX) * tilesY + 1u);
+        reflection.addBufferOutput("integrationTiles", "Per-mode tile counts followed by the screen-probe integration lists")
+            .buffer(tileWords * sizeof(uint32_t), sizeof(uint32_t)).storageReadWrite();
+        reflection.addBufferOutput("integrationIndirectArgs", "Dispatch commands for simple diffuse and rough specular tiles")
+            .buffer(kProbeIntegrationModeCount * kProbeDispatchArgumentBytes, sizeof(uint32_t)).storageWrite()
+            .stageAccess(RenderGraphResourceAccess::BufferIndirectRead).transient(RenderGraphInitialization::FullOverwrite);
+    }
     if (finalGather) {
         if (optionEnabled("activeProbeDispatch")) {
             reflection.addBufferOutput("probeWorkList", "Compacted original indices for active and inactive probe slots")
@@ -524,9 +571,9 @@ RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompil
             }
         }
         initializeLegacyAllocation(reflection.addBufferOutput("filteredProbeRadiance", "Spatially filtered probe ray RGB")
-            .buffer(gatherCount * kTraceStride, kTraceStride).storageReadWrite());
+            .buffer(gatherCount * filteredRadianceStride, filteredRadianceStride).storageReadWrite());
         initializeLegacyAllocation(reflection.addBufferOutput("probeFilterScratch", "Spatial filtering ping-pong buffer")
-            .buffer(gatherCount * kTraceStride, kTraceStride).storageReadWrite());
+            .buffer(gatherCount * filteredRadianceStride, filteredRadianceStride).storageReadWrite());
     }
 
     auto& indirect = reflection.addTextureOutput("indirectDiffuse", "Unexposed indirect diffuse after receiver response")
@@ -562,7 +609,8 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     for (std::string_view name : {"finalGather", "screenTraces", "stochasticInterpolation", "radianceCache",
             "detailTracing", "screenGDFContinuation", "gdfPrefixValidation", "gdfPrefixRejectReceding",
             "gdfPrefixMeshValidation", "fixedProbeDirections", "activeProbeDispatch", "splitProbeTracing", "compactProbeAtlas",
-            "probeJitterComparison", "exportIndirectIrradiance", "fastLightingUpdate", "roughSpecular"}) {
+            "probeJitterComparison", "exportIndirectIrradiance", "fastLightingUpdate", "roughSpecular", "classifiedIntegration",
+            "compactFilteredRadiance"}) {
         const auto value = properties().find(name);
         if (value != properties().end() && !value->is_boolean()) {
             log += "Lumen Screen Probe Gather requires a boolean " + std::string(name);
@@ -603,6 +651,11 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
         log = "Lumen roughSpecular requires jittered Final Gather radiance";
         return makeError(Error::InvalidArgument);
     }
+    compiledClassifiedIntegration_ = optionEnabled("classifiedIntegration");
+    if (compiledClassifiedIntegration_ && !compiledRoughSpecular_) {
+        log = "Lumen classifiedIntegration requires roughSpecular";
+        return makeError(Error::InvalidArgument);
+    }
     const auto structured = properties().value("structuredImportanceSampling", RenderGraphProperties(false));
     if (!structured.is_boolean() || (structured == true && !jitterDirections)) {
         log = "Lumen structuredImportanceSampling requires jittered Final Gather";
@@ -621,6 +674,11 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     const bool compactAtlas = optionEnabled("compactProbeAtlas");
     if (compactAtlas && !activeProbeDispatch) {
         log = "Lumen compactProbeAtlas requires activeProbeDispatch";
+        return makeError(Error::InvalidArgument);
+    }
+    compiledCompactFilteredRadiance_ = optionEnabled("compactFilteredRadiance");
+    if (compiledCompactFilteredRadiance_ && (!jitterDirections || !compactAtlas)) {
+        log = "Lumen compactFilteredRadiance requires jittered Final Gather and compactProbeAtlas";
         return makeError(Error::InvalidArgument);
     }
     const auto fraction = lumenAdaptiveProbeFraction(properties());
@@ -728,6 +786,7 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     }
 
     std::vector<SlangMacroDefine> defines;
+    if (compiledCompactFilteredRadiance_) { defines.push_back({"METALLIC_LUMEN_COMPACT_FILTERED_RADIANCE", "1"}); }
     if (finalGather) { defines.push_back({"METALLIC_LUMEN_FINAL_GATHER", "1"}); }
     if (activeProbeDispatch) { defines.push_back({"METALLIC_LUMEN_ACTIVE_PROBES", "1"}); }
     if (compactAtlas) { defines.push_back({"METALLIC_LUMEN_COMPACT_PROBE_ATLAS", "1"}); }
@@ -790,10 +849,13 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
         meshSDFTraceDistance_ = std::min(meshSDFTraceDistance_, maxTraceDistance_);
         if (auto result = meshGrid_.compile(*device_, log); !result) { return result; }
     }
-    const auto probeABI = [&]<typename Params, typename Motion = ProbeTraceMotionBindings>(uint64_t key, bool rough = false) {
+    const auto probeABI = [&]<typename Params, typename Motion = ProbeTraceMotionBindings>(uint64_t key, bool rough = false,
+        bool classified = false) {
         const auto integrateABI = [&]<typename Base>(uint64_t baseKey) {
-            return rough ? parameterAbi<ScreenProbeRoughSpecularParams<Base>>(baseKey | kRoughSpecularABIBit) :
-                parameterAbi<Base>(baseKey);
+            if (!rough) { return parameterAbi<Base>(baseKey); }
+            using Rough = ScreenProbeRoughSpecularParams<Base>;
+            return classified ? parameterAbi<ScreenProbeIntegrationParams<Rough>>(baseKey | kRoughSpecularABIBit | kIntegrationTilesABIBit) :
+                parameterAbi<Rough>(baseKey | kRoughSpecularABIBit);
         };
         const auto motionABI = [&]<typename Base>(uint64_t baseKey) {
             return compiledFastLightingUpdate_ ?
@@ -803,12 +865,13 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
         return compiledStructuredImportance_ ?
             motionABI.operator()<StructuredImportanceParams<Params>>(key | kStructuredImportanceABIBit) : motionABI.operator()<Params>(key);
     };
-    const auto gatherABIFor = [&](bool rough) {
+    const auto gatherABIFor = [&](bool rough, bool classified = false) {
         if (compactAtlas) {
-            return probeABI.operator()<CompactScreenProbeGatherParams<ActiveGatherParams>>(kCompactScreenProbeGatherABI, rough);
+            return probeABI.operator()<CompactScreenProbeGatherParams<ActiveGatherParams>>(kCompactScreenProbeGatherABI,
+                rough, classified);
         }
-        return activeProbeDispatch ? probeABI.operator()<ActiveGatherParams>(kActiveScreenProbeGatherABI, rough) :
-            probeABI.operator()<LumenScreenProbeGatherParams>(kScreenProbeGatherABI, rough);
+        return activeProbeDispatch ? probeABI.operator()<ActiveGatherParams>(kActiveScreenProbeGatherABI, rough, classified) :
+            probeABI.operator()<LumenScreenProbeGatherParams>(kScreenProbeGatherABI, rough, classified);
     };
     const auto gatherABI = gatherABIFor(false);
     const auto createGather = [&](const char* entry, const char* name, ComputeKernel& kernel, ParameterABI abi) {
@@ -852,10 +915,46 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     }
     if (compiledExportIndirectIrradiance_) { defines.push_back({"METALLIC_LUMEN_EXPORT_INDIRECT_IRRADIANCE", "1"}); }
     if (compiledRoughSpecular_) { defines.push_back({"METALLIC_LUMEN_ROUGH_SPECULAR", "1"}); }
-    const auto integration = createGather("lumenIntegrateScreenProbesMain", "LumenIntegrateScreenProbes", integrate_,
-        gatherABIFor(compiledRoughSpecular_));
+    if (!compiledClassifiedIntegration_ || compiledProbeJitterComparison_) {
+        if (auto result = createGather("lumenIntegrateScreenProbesMain", "LumenIntegrateScreenProbes", integrate_,
+                gatherABIFor(compiledRoughSpecular_)); !result) {
+            return result;
+        }
+    }
+    if (compiledClassifiedIntegration_) {
+        constexpr std::array<const char*, kProbeIntegrationModeCount> names{
+            "LumenIntegrateSimpleDiffuseTiles", "LumenIntegrateRoughSpecularTiles"};
+        constexpr std::array<const char*, kProbeIntegrationModeCount> modes{"0", "1"};
+        defines.push_back({"METALLIC_LUMEN_INTEGRATION_MODE", "0"});
+        for (uint32_t mode = 0; mode < kProbeIntegrationModeCount; ++mode) {
+            defines.back().value = modes[mode];
+            if (auto result = createGather("lumenIntegrateScreenProbesMain", names[mode], integrateClassified_[mode],
+                    gatherABIFor(true, true)); !result) {
+                return result;
+            }
+        }
+        defines.pop_back();
+        std::vector<SlangMacroDefine> scheduleDefines;
+        if (device_->capabilities().computeSubgroupBallotArithmetic) {
+            scheduleDefines.push_back({"METALLIC_LUMEN_INTEGRATION_WAVE_OPS", "1"});
+        }
+        const std::pair<const char*, ComputeKernel*> scheduleKernels[]{
+            {"lumenResetProbeIntegrationTilesMain", &resetIntegrationTiles_},
+            {"lumenClassifyProbeIntegrationTilesMain", &classifyIntegrationTiles_},
+            {"lumenBuildProbeIntegrationIndirectArgsMain", &buildIntegrationDispatch_},
+        };
+        for (const auto& [entry, kernel] : scheduleKernels) {
+            if (auto result = ShaderRegistry::instance().getComputeKernel(*device_,
+                    {.moduleName = "Features/DistanceField/LumenScreenProbeIntegrationSchedule", .entryPointName = entry,
+                        .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = scheduleDefines},
+                    {.parameters = parameterAbi<ProbeIntegrationScheduleParams>(kScreenProbeIntegrationScheduleABI),
+                        .debugName = entry}, *kernel, log); !result) {
+                return result;
+            }
+        }
+    }
     if (compiledRoughSpecular_) { defines.pop_back(); }
-    if (!integration || !finalGather) { return integration; }
+    if (!finalGather) { return {}; }
     if (compactAtlas) {
         if (!radianceCache) {
             if (auto result = placement_.compile(*device_, log); !result) { return result; }
@@ -921,10 +1020,12 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     }
 
     std::vector<SlangMacroDefine> filterDefines;
+    if (compiledCompactFilteredRadiance_) { filterDefines.push_back({"METALLIC_LUMEN_COMPACT_FILTERED_RADIANCE", "1"}); }
     if (compiledFastLightingUpdate_) { filterDefines.push_back({kFastLightingUpdateDefine, "1"}); }
     if (compiledStructuredImportance_) {
         filterDefines.push_back({kStructuredImportanceDefine, "1"});
         std::vector<SlangMacroDefine> importanceDefines;
+        if (compiledCompactFilteredRadiance_) { importanceDefines.push_back({"METALLIC_LUMEN_COMPACT_FILTERED_RADIANCE", "1"}); }
         if (activeProbeDispatch) { importanceDefines.push_back({"METALLIC_LUMEN_ACTIVE_PROBES", "1"}); }
         if (compactAtlas) { importanceDefines.push_back({"METALLIC_LUMEN_COMPACT_PROBE_ATLAS", "1"}); }
         if (radianceCache) { importanceDefines.push_back({"METALLIC_LUMEN_RADIANCE_CACHE", "1"}); }
@@ -1199,10 +1300,14 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
         filterMotion = {traceMoving, bindOutput("compositedProbeMoving"), probeMoving};
     }
     const auto encodeProbeParams = [&]<typename Params, typename Motion>(const Params& bindings, uint64_t key, const Motion& motion,
-        const ProbeRoughSpecularBindings* rough = nullptr) {
+        const ProbeRoughSpecularBindings* rough = nullptr, const ProbeIntegrationTileBindings* tiles = nullptr) {
         const auto encodeIntegration = [&]<typename Base>(const Base& base, uint64_t baseKey) {
-            return rough ? writer.encode(ScreenProbeRoughSpecularParams<Base>{base, *rough}, baseKey | kRoughSpecularABIBit) :
-                writer.encode(base, baseKey);
+            if (!rough) { return writer.encode(base, baseKey); }
+            using Rough = ScreenProbeRoughSpecularParams<Base>;
+            const Rough roughParams{base, *rough};
+            return tiles ? writer.encode(ScreenProbeIntegrationParams<Rough>{roughParams, *tiles},
+                baseKey | kRoughSpecularABIBit | kIntegrationTilesABIBit) :
+                writer.encode(roughParams, baseKey | kRoughSpecularABIBit);
         };
         const auto encodeMotion = [&]<typename Base>(const Base& base, uint64_t baseKey) {
             return fastLightingUpdate ? encodeIntegration(ScreenProbeMotionParams<Base, Motion>{base, motion},
@@ -1213,13 +1318,14 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
             encodeMotion(bindings, key);
     };
     const ActiveGatherParams activeParams{params, schedule.workList, schedule.workState};
-    const auto encodeGather = [&](const ActiveGatherParams& bindings, const ProbeRoughSpecularBindings* rough = nullptr) {
+    const auto encodeGather = [&](const ActiveGatherParams& bindings, const ProbeRoughSpecularBindings* rough = nullptr,
+                                  const ProbeIntegrationTileBindings* tiles = nullptr) {
         if (compactAtlas) {
             return encodeProbeParams(CompactScreenProbeGatherParams<ActiveGatherParams>{bindings, atlas},
-                kCompactScreenProbeGatherABI, traceMotion, rough);
+                kCompactScreenProbeGatherABI, traceMotion, rough, tiles);
         }
-        return activeProbeDispatch ? encodeProbeParams(bindings, kActiveScreenProbeGatherABI, traceMotion, rough) :
-            encodeProbeParams(bindings.base, kScreenProbeGatherABI, traceMotion, rough);
+        return activeProbeDispatch ? encodeProbeParams(bindings, kActiveScreenProbeGatherABI, traceMotion, rough, tiles) :
+            encodeProbeParams(bindings.base, kScreenProbeGatherABI, traceMotion, rough, tiles);
     };
     const auto encoded = encodeGather(activeParams);
     if (!encoded) { return makeError(encoded.error()); }
@@ -1228,7 +1334,18 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
         roughSpecular = {writer.sampledImageHandle(context.inputTexture("specular").view()),
             writer.storageImageHandle(context.outputTexture("roughSpecular").view()), 1u};
     }
-    const auto encodedIntegrate = compiledRoughSpecular_ ? encodeGather(activeParams, &roughSpecular) : encoded;
+    ProbeIntegrationTileBindings integrationTiles{};
+    EncodedParameters integrationScheduleParams;
+    if (compiledClassifiedIntegration_) {
+        integrationTiles = {writer.buffer(context.outputBuffer("integrationTiles").buffer()), kProbeIntegrationMaxDispatchX};
+        const auto scheduleIntegration = writer.encode(ProbeIntegrationScheduleParams{params.position, roughSpecular.material,
+            integrationTiles.tiles, writer.buffer(context.outputBuffer("integrationIndirectArgs").buffer()),
+            params.width, params.height, integrationTiles.maxDispatchX}, kScreenProbeIntegrationScheduleABI);
+        if (!scheduleIntegration) { return makeError(scheduleIntegration.error()); }
+        integrationScheduleParams = *scheduleIntegration;
+    }
+    const auto encodedIntegrate = compiledRoughSpecular_ ? encodeGather(activeParams, &roughSpecular,
+        compiledClassifiedIntegration_ ? &integrationTiles : nullptr) : encoded;
     if (!encodedIntegrate) { return makeError(encodedIntegrate.error()); }
     EncodedParameters comparisonParams;
     if (compiledProbeJitterComparison_) {
@@ -1633,16 +1750,49 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
         }});
     }
     integrateUses.insert(integrateUses.end(), {{"indirectDiffuse", Access::TextureStorageWrite}, {"color", Access::TextureStorageWrite}});
-    if (compiledRoughSpecular_) {
-        integrateUses.insert(integrateUses.end(), {{"specular", Access::TextureSampleRead},
-            {"filteredProbeRadiance", Access::BufferStorageRead}, {"roughSpecular", Access::TextureStorageWrite}});
-    }
+    if (compiledRoughSpecular_) { integrateUses.push_back({"roughSpecular", Access::TextureStorageWrite}); }
     if (compiledExportIndirectIrradiance_) { integrateUses.push_back({"indirectIrradiance", Access::TextureStorageWrite}); }
     if (interpolationReadbackPixels_) { integrateUses.push_back({"probeInterpolationReadback", Access::BufferStorageWrite}); }
-    stages.push_back({compiledRoughSpecular_ ? "Integrate diffuse and rough specular" : "Integrate and composite diffuse",
-        integrateUses, [&](CommandBuffer& cmd) {
-        return integrate_.dispatch(cmd, *encodedIntegrate, (params.width + 7u) / 8u, (params.height + 7u) / 8u, 1);
-    }});
+
+    const auto integrationColumns = (params.width + kProbeIntegrationTileSize - 1u) / kProbeIntegrationTileSize;
+    const auto integrationRows = (params.height + kProbeIntegrationTileSize - 1u) / kProbeIntegrationTileSize;
+    const RenderGraphStageUse resetIntegrationUses[]{{"integrationTiles", Access::BufferStorageWrite}};
+    const RenderGraphStageUse classifyIntegrationUses[]{{"position", Access::TextureSampleRead},
+        {"specular", Access::TextureSampleRead}, {"integrationTiles", Access::BufferStorageReadWrite}};
+    const RenderGraphStageUse buildIntegrationDispatchUses[]{{"integrationTiles", Access::BufferStorageRead},
+        {"integrationIndirectArgs", Access::BufferStorageWrite}};
+    std::vector<RenderGraphStageUse> simpleIntegrationUses;
+    if (compiledClassifiedIntegration_) {
+        stages.push_back({"Reset integration tile lists", resetIntegrationUses, [&](CommandBuffer& cmd) {
+            return resetIntegrationTiles_.dispatch(cmd, integrationScheduleParams, 1, 1, 1);
+        }});
+        stages.push_back({"Classify integration tiles", classifyIntegrationUses, [&](CommandBuffer& cmd) {
+            return classifyIntegrationTiles_.dispatch(cmd, integrationScheduleParams, integrationColumns, integrationRows, 1);
+        }});
+        stages.push_back({"Build integration indirect dispatches", buildIntegrationDispatchUses, [&](CommandBuffer& cmd) {
+            return buildIntegrationDispatch_.dispatch(cmd, integrationScheduleParams, 1, 1, 1);
+        }});
+        integrateUses.insert(integrateUses.end(), {{"integrationTiles", Access::BufferStorageRead},
+            {"integrationIndirectArgs", Access::BufferIndirectRead}});
+        simpleIntegrationUses = integrateUses;
+        stages.push_back({"Integrate simple diffuse tiles", simpleIntegrationUses, [&](CommandBuffer& cmd) {
+            return dispatchIndirect(integrateClassified_[0], *encodedIntegrate, "integrationIndirectArgs", 0, cmd);
+        }});
+    }
+    if (compiledRoughSpecular_) {
+        integrateUses.insert(integrateUses.end(), {{"specular", Access::TextureSampleRead},
+            {"filteredProbeRadiance", Access::BufferStorageRead}});
+    }
+    if (compiledClassifiedIntegration_) {
+        stages.push_back({"Integrate rough specular tiles", integrateUses, [&](CommandBuffer& cmd) {
+            return dispatchIndirect(integrateClassified_[1], *encodedIntegrate, "integrationIndirectArgs", 1, cmd);
+        }});
+    } else {
+        stages.push_back({compiledRoughSpecular_ ? "Integrate diffuse and rough specular" : "Integrate and composite diffuse",
+            integrateUses, [&](CommandBuffer& cmd) {
+            return integrate_.dispatch(cmd, *encodedIntegrate, integrationColumns, integrationRows, 1);
+        }});
+    }
     auto result = context.executeStages(stages);
     if (result && compiledStructuredImportance_) {
         context.setTemporalWritten("savedImportanceRadiance", true);

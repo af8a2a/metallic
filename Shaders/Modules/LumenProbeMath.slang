@@ -7,6 +7,41 @@ namespace Metallic.Lumen
 public static const float kLumenProbePi = 3.14159265358979323846f;
 static const float kMaxScreenProbeRayIntensity = 10.0f;
 
+// Scalar fields keep the storage-buffer element stride at 12 bytes with std430 layout.
+public struct CompactLumenFilteredProbeRadiance
+{
+    public float r, g, b;
+};
+
+public float3 unpackCompactLumenFilteredProbeRadiance(CompactLumenFilteredProbeRadiance value)
+{
+    return float3(value.r, value.g, value.b);
+}
+
+#if defined(METALLIC_LUMEN_COMPACT_FILTERED_RADIANCE)
+public typealias LumenFilteredProbeRadiance = CompactLumenFilteredProbeRadiance;
+#else
+public typealias LumenFilteredProbeRadiance = float4;
+#endif
+
+public LumenFilteredProbeRadiance makeLumenFilteredProbeRadiance(float3 lighting, float classification)
+{
+#if defined(METALLIC_LUMEN_COMPACT_FILTERED_RADIANCE)
+    return {lighting.r, lighting.g, lighting.b};
+#else
+    return float4(lighting, classification);
+#endif
+}
+
+public float3 unpackLumenFilteredProbeRadiance(LumenFilteredProbeRadiance value)
+{
+#if defined(METALLIC_LUMEN_COMPACT_FILTERED_RADIANCE)
+    return unpackCompactLumenFilteredProbeRadiance(value);
+#else
+    return value.xyz;
+#endif
+}
+
 public struct ThreeBandSHVector
 {
     public float4 v0;

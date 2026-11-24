@@ -47,10 +47,10 @@ static_assert(sizeof(MeshDistanceFieldGPUMotion) == 48);
 static_assert(sizeof(MeshDistanceFieldGPUObject) == 32 && offsetof(MeshDistanceFieldGPUObject, extent) == 16);
 
 Result<std::unique_ptr<Buffer>> makeUploadBuffer(Device& device, std::span<const std::byte> bytes,
-    BufferUsageBits usage, uint32_t stride = 0)
+    BufferUsageBits usage, uint32_t stride = 0, QueueAccessBits queueAccess = QueueAccessBits::Graphics)
 {
     auto buffer = device.createBuffer({.size = bytes.size(), .structureStride = stride,
-        .usage = usage, .memoryLocation = MemoryLocation::HostUpload});
+        .usage = usage, .memoryLocation = MemoryLocation::HostUpload, .queueAccess = queueAccess});
     if (!buffer) {
         return makeError(buffer.error());
     }
@@ -180,7 +180,7 @@ MeshDistanceFieldGPU::UpdateInstance makeUpdateInstance(uint32_t renderNode, con
 } // namespace
 
 Result<> MeshDistanceFieldGPU::initialize(Device& device, Queue& queue, const scene::Scene& scene,
-    std::span<const std::filesystem::path> paths, std::string& log)
+    std::span<const std::filesystem::path> paths, std::string& log, Queue* computeConsumer)
 {
     std::vector<Asset> assets;
     std::vector<scene::MeshDistanceField> fields;
@@ -235,9 +235,10 @@ Result<> MeshDistanceFieldGPU::initialize(Device& device, Queue& queue, const sc
     uint32_t bricksPerAxis = 1;
     while (uint64_t(bricksPerAxis) * bricksPerAxis * bricksPerAxis < brickCount) { ++bricksPerAxis; }
     const uint32_t size = bricksPerAxis * kBrickSize;
+    const auto queueAccess = computeConsumer ? QueueAccessBits::Graphics | QueueAccessBits::Compute : QueueAccessBits::Graphics;
     auto atlas = device.createTexture({.type = TextureType::Texture3D,
         .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination | TextureUsageBits::TransferSource,
-        .format = Format::R8Unorm, .width = size, .height = size, .depth = size});
+        .format = Format::R8Unorm, .width = size, .height = size, .depth = size, .queueAccess = queueAccess});
     if (!atlas) { return makeError(atlas.error()); }
     auto view = device.createTextureView(**atlas, {});
     if (!view) { return makeError(view.error()); }
@@ -283,17 +284,18 @@ Result<> MeshDistanceFieldGPU::initialize(Device& device, Queue& queue, const sc
         indirection.push_back(scene::kMeshDistanceFieldInvalidBrick);
     }
     auto mipBuffer = makeUploadBuffer(device, std::as_bytes(std::span(mips)),
-        BufferUsageBits::Storage, sizeof(mips[0]));
+        BufferUsageBits::Storage, sizeof(mips[0]), queueAccess);
     if (!mipBuffer) { return makeError(mipBuffer.error()); }
     auto indirectionBuffer = makeUploadBuffer(device, std::as_bytes(std::span(indirection)),
-        BufferUsageBits::Storage, sizeof(uint32_t));
+        BufferUsageBits::Storage, sizeof(uint32_t), queueAccess);
     if (!indirectionBuffer) { return makeError(indirectionBuffer.error()); }
     auto staging = makeUploadBuffer(device, std::as_bytes(std::span(voxels)), BufferUsageBits::TransferSource);
     if (!staging) { return makeError(staging.error()); }
-    auto result = uploadStaticComputeTexture(device, queue, **atlas, **staging);
+    auto result = uploadStaticComputeTexture(device, queue, **atlas, **staging, computeConsumer);
     if (!result) { return result; }
 
     device_ = &device;
+    queueAccess_ = queueAccess;
     assets_ = std::move(assets);
     atlas_ = std::move(*atlas);
     atlasView_ = std::move(*view);
@@ -383,25 +385,25 @@ Result<std::unique_ptr<Buffer>> MeshDistanceFieldGPU::uploadInstances(const scen
     count = static_cast<uint32_t>(instances.size());
     if (instances.empty()) { instances.emplace_back(); }
     auto instanceBuffer = makeUploadBuffer(*device_, std::as_bytes(std::span(instances)),
-        BufferUsageBits::Storage, sizeof(instances[0]));
+        BufferUsageBits::Storage, sizeof(instances[0]), queueAccess_);
     if (instanceBuffer && motion) {
         if (previousTransforms.empty()) { previousTransforms.emplace_back(); }
         auto motionBuffer = makeUploadBuffer(*device_, std::as_bytes(std::span(previousTransforms)),
-            BufferUsageBits::Storage, sizeof(previousTransforms[0]));
+            BufferUsageBits::Storage, sizeof(previousTransforms[0]), queueAccess_);
         if (!motionBuffer) { return makeError(motionBuffer.error()); }
         motion->buffer = std::move(*motionBuffer);
     }
     if (instanceBuffer && validationBounds) {
         if (localBounds.empty()) { localBounds.emplace_back(); }
         auto boundsBuffer = makeUploadBuffer(*device_, std::as_bytes(std::span(localBounds)),
-            BufferUsageBits::Storage, sizeof(localBounds[0]));
+            BufferUsageBits::Storage, sizeof(localBounds[0]), queueAccess_);
         if (!boundsBuffer) { return makeError(boundsBuffer.error()); }
         *validationBounds = std::move(*boundsBuffer);
     }
     if (!instanceBuffer || !objectGridObjects) { return instanceBuffer; }
     if (gridObjects.empty()) { gridObjects.emplace_back(); }
     auto objectBuffer = makeUploadBuffer(*device_, std::as_bytes(std::span(gridObjects)),
-        BufferUsageBits::Storage, sizeof(gridObjects[0]));
+        BufferUsageBits::Storage, sizeof(gridObjects[0]), queueAccess_);
     if (!objectBuffer) { return makeError(objectBuffer.error()); }
     *objectGridObjects = std::move(*objectBuffer);
     return instanceBuffer;

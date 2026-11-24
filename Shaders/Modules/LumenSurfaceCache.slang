@@ -40,6 +40,7 @@ public struct LumenSurfaceCache
     public Texture2D<float> depth;
     public Texture2D<float4> lighting;
     public SamplerState sampler;
+    public StructuredBuffer<uint> scene;
     public uint cardCount;
     public uint tileResolution;
 };
@@ -145,23 +146,56 @@ void sampleLumenCard(LumenSurfaceCache cache, SurfaceCacheCard card, uint cardIn
     }
 }
 
-// UE 5.7.4 LumenSurfaceCacheSampling.ush:476. Baked cards are cardinal in mesh space, so the signed
-// mesh-axis projection can use the card's world-space Z axis directly, including mirrored instances.
-// The fixed atlas has one tile per card, so virtual atlas mip selection is specialized away.
-public void sampleLumenMeshCards(LumenSurfaceCache cache, uint objectId, float3 worldPosition, float3 worldNormal,
+void sampleLumenCardRange(LumenSurfaceCache cache, uint first, uint end, float3 worldPosition, float3 worldNormal,
     float surfaceCacheBias, inout LumenCardSampleAccumulator accumulator)
 {
-    for (uint cardIndex = 0u; cardIndex < cache.cardCount; ++cardIndex) {
+    for (uint cardIndex = first; cardIndex < end; ++cardIndex) {
         SurfaceCacheCard card = cache.cards[cardIndex];
-        if (card.metadata.x != objectId) {
-            continue;
-        }
-
         float normalProjection = dot(worldNormal, card.axisZ.xyz);
         if (normalProjection > 0.0f) {
             float normalWeight = normalProjection * normalProjection;
             sampleLumenCard(cache, card, cardIndex, worldPosition, normalWeight, surfaceCacheBias, accumulator);
         }
+    }
+}
+
+// UE 5.7.4 LumenSurfaceCacheSampling.ush:476. Baked cards are cardinal in mesh space, so the signed
+// mesh-axis projection uses the card's world-space Z axis, including mirrored instances.
+public void sampleLumenMeshCards(LumenSurfaceCache cache, uint objectId, float3 worldPosition, float3 worldNormal,
+    float surfaceCacheBias, inout LumenCardSampleAccumulator accumulator)
+{
+    uint words, stride;
+    cache.scene.GetDimensions(words, stride);
+    uint rangeCount = 0u;
+    if (words >= kLumenCardSceneRangeBase) {
+        if (cache.scene[kLumenCardSceneHeaderWords] == kLumenCardSceneRangeTag) {
+            rangeCount = cache.scene[kLumenCardSceneRangeCount];
+            if (rangeCount > (words - kLumenCardSceneRangeBase) / kLumenCardSceneRangeStride) { rangeCount = 0u; }
+        }
+    }
+    if (rangeCount == 0u) {
+        // The original four-word metadata is also accepted from custom producers.
+        for (uint slot = 0u; slot < cache.cardCount; ++slot) {
+            if (cache.cards[slot].metadata.x == objectId) {
+                sampleLumenCardRange(cache, slot, slot + 1u, worldPosition, worldNormal, surfaceCacheBias, accumulator);
+            }
+        }
+        return;
+    }
+
+    uint first = 0u;
+    uint end = rangeCount;
+    while (first < end) {
+        const uint middle = first + (end - first) / 2u;
+        const uint word = kLumenCardSceneRangeBase + middle * kLumenCardSceneRangeStride;
+        if (cache.scene[word] < objectId) { first = middle + 1u; }
+        else { end = middle; }
+    }
+    for (; first < rangeCount; ++first) {
+        const uint word = kLumenCardSceneRangeBase + first * kLumenCardSceneRangeStride;
+        if (cache.scene[word] != objectId) { break; }
+        sampleLumenCardRange(cache, cache.scene[word + 1u], cache.scene[word + 2u], worldPosition, worldNormal,
+            surfaceCacheBias, accumulator);
     }
 }
 

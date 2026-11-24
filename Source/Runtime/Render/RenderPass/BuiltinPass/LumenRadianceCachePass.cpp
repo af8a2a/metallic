@@ -200,6 +200,19 @@ RenderPassReflection LumenRadianceCachePass::reflect(const RenderGraphCompileCon
     auto& position = reflection.addTextureInput("position", "Receiver world position and depth").sampledRead();
     position.format = Format::RGBA32Sfloat;
     position.matchOutputExtent = false;
+    if (properties().value("prepareReflectionInputs", RenderGraphProperties(false)) == true) {
+        // Establish the shared sampled layouts at the graphics boundary before
+        // Gather and Reflections branch. The cache shaders do not sample these inputs.
+        const auto sampledInput = [&](const char* name, const char* description, Format format) {
+            auto& field = reflection.addTextureInput(name, description).sampledRead();
+            field.format = format;
+            field.matchOutputExtent = false;
+        };
+        sampledInput("reflectionSpecular", "Shared specular receivers", Format::RGBA16Sfloat);
+        sampledInput("reflectionPreviousPosition", "Shared previous receiver positions", Format::RGBA32Sfloat);
+        sampledInput("reflectionPreviousDepth", "Shared previous screen depth", Format::R32Sfloat);
+        sampledInput("reflectionPreviousColor", "Shared previous screen color", Format::RGBA32Sfloat);
+    }
     const auto compact = properties().find("compactProbeAtlas");
     if (compact != properties().end() && *compact == true) {
         reflection.addBufferInput("probePositions", "Shared compact screen probe positions")

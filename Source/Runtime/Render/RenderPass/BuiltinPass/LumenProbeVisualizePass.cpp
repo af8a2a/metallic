@@ -45,6 +45,7 @@ private:
     Device* device_ = nullptr;
     ComputeKernel kernel_;
     bool compactAtlas_ = false;
+    bool compactFilteredRadiance_ = false;
 };
 
 RenderPassReflection LumenProbeVisualizePass::reflect(const RenderGraphCompileContext& context) const
@@ -52,6 +53,8 @@ RenderPassReflection LumenProbeVisualizePass::reflect(const RenderGraphCompileCo
     RenderPassReflection reflection;
     const uint64_t tileCount = uint64_t(lumenScreenProbeTiles(context.width)) * lumenScreenProbeTiles(context.height);
     const bool compactAtlas = properties().value("compactProbeAtlas", RenderGraphProperties(false)) == true;
+    const auto filteredRadianceStride = properties().value("compactFilteredRadiance", RenderGraphProperties(false)) == true ?
+        kLumenFilteredProbeRGBStride : kRadianceStride;
     const uint64_t probeCount = compactAtlas ? tileCount : tileCount * kLumenScreenProbeSlotsPerTile;
     reflection.addBufferInput("probePositions", "Final Gather probe pixel positions in atlas order")
         .buffer(probeCount * kProbePositionStride, kProbePositionStride).storageRead();
@@ -66,7 +69,8 @@ RenderPassReflection LumenProbeVisualizePass::reflect(const RenderGraphCompileCo
     reflection.addBufferInput("probeRadiance", "Unfiltered probe trace radiance and source classification")
         .buffer(0, kRadianceStride).storageRead();
     reflection.addBufferInput("filteredProbeRadiance", "Filtered screen probe radiance in 8×8 octahedral order")
-        .buffer(probeCount * kProbeGatherResolution * kProbeGatherResolution * kRadianceStride, kRadianceStride).storageRead();
+        .buffer(probeCount * kProbeGatherResolution * kProbeGatherResolution * filteredRadianceStride, filteredRadianceStride)
+        .storageRead();
     reflection.addBufferInput("probeDistance", "Unfiltered probe trace distances in meters")
         .buffer(0, sizeof(float)).storageRead();
     reflection.addTextureInput("sceneColor", "Scene-linear color behind the probe placement markers")
@@ -100,14 +104,21 @@ std::vector<RenderGraphRuntimeSetting> LumenProbeVisualizePass::runtimeSettings(
 Result<> LumenProbeVisualizePass::compile(const RenderGraphCompileContext& context, std::string& log)
 {
     const auto compactAtlas = properties().value("compactProbeAtlas", RenderGraphProperties(false));
-    if (!compactAtlas.is_boolean()) {
-        log = "Lumen probe visualization compactProbeAtlas must be a boolean";
+    const auto compactFilteredRadiance = properties().value("compactFilteredRadiance", RenderGraphProperties(false));
+    if (!compactAtlas.is_boolean() || !compactFilteredRadiance.is_boolean()) {
+        log = "Lumen probe visualization compactProbeAtlas and compactFilteredRadiance must be booleans";
+        return makeError(Error::InvalidArgument);
+    }
+    if (compactFilteredRadiance == true && compactAtlas != true) {
+        log = "Lumen probe visualization compactFilteredRadiance requires compactProbeAtlas";
         return makeError(Error::InvalidArgument);
     }
     device_ = context.device;
     compactAtlas_ = compactAtlas.get<bool>();
+    compactFilteredRadiance_ = compactFilteredRadiance.get<bool>();
     std::vector<SlangMacroDefine> defines;
     if (compactAtlas_) { defines.push_back({"METALLIC_LUMEN_COMPACT_PROBE_ATLAS", "1"}); }
+    if (compactFilteredRadiance_) { defines.push_back({"METALLIC_LUMEN_COMPACT_FILTERED_RADIANCE", "1"}); }
     const auto abi = compactAtlas_ ? parameterAbi<CompactProbeVisualizeParams>(kCompactProbeVisualizeABI)
         : parameterAbi<LumenProbeVisualizeParams>(kProbeVisualizeABI);
     return ShaderRegistry::instance().getComputeKernel(*device_,
@@ -119,7 +130,9 @@ Result<> LumenProbeVisualizePass::compile(const RenderGraphCompileContext& conte
 Result<> LumenProbeVisualizePass::prepare(const RenderGraphCompileContext& context, std::string& log)
 {
     const auto compactAtlas = properties().value("compactProbeAtlas", RenderGraphProperties(false));
-    if (device_ && (!compactAtlas.is_boolean() || compactAtlas != compactAtlas_)) {
+    const auto compactFilteredRadiance = properties().value("compactFilteredRadiance", RenderGraphProperties(false));
+    if (device_ && (!compactAtlas.is_boolean() || compactAtlas != compactAtlas_ || !compactFilteredRadiance.is_boolean() ||
+            compactFilteredRadiance != compactFilteredRadiance_)) {
         return compile(context, log);
     }
     return {};
@@ -194,9 +207,11 @@ Result<> LumenProbeVisualizePass::execute(RenderGraphExecutionContext& context)
         const auto matches = [](const BufferDesc& desc, uint64_t elements, uint32_t stride) {
             return desc.size == elements * stride && desc.structureStride == stride;
         };
+        const uint32_t filteredRadianceStride = compactFilteredRadiance_ ? kLumenFilteredProbeRGBStride : kRadianceStride;
         if (probeCount < tileCount || probeCount > tileCount * kLumenScreenProbeSlotsPerTile ||
             !matches(probePositions.desc(), probeCount, kProbePositionStride) ||
-            !matches(filteredProbeRadiance.desc(), probeCount * kProbeGatherResolution * kProbeGatherResolution, kRadianceStride) ||
+            !matches(filteredProbeRadiance.desc(), probeCount * kProbeGatherResolution * kProbeGatherResolution,
+                filteredRadianceStride) ||
             !matches(origins.desc(), probeCount, sizeof(uint32_t)) ||
             !matches(counts.desc(), tileCount, sizeof(uint32_t)) ||
             !matches(indices.desc(), tileCount * (kLumenScreenProbeSlotsPerTile - 1u), sizeof(uint32_t))) {

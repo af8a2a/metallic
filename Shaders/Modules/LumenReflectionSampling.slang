@@ -4,6 +4,18 @@ import LumenProbeMath;
 
 namespace Metallic.Lumen
 {
+// UE 5.7.4 LumenReflectionCommon.ush, 2x2 four-rooks pattern.
+public uint2 lumenReflectionScreenTileJitter(uint2 downsampledScreenCoord, uint reflectionsStateFrameIndex)
+{
+    uint2 cellIndex = downsampledScreenCoord % 2u;
+    uint linearIndex = cellIndex.x + cellIndex.y * 2u;
+    linearIndex = (linearIndex + reflectionsStateFrameIndex) % 4u;
+    uint2 jitter;
+    jitter.x = (linearIndex & 0x02u) != 0u ? 1u : 0u;
+    jitter.y = (linearIndex & 0x01u) != 0u ? 0u : 1u;
+    return jitter;
+}
+
 // UE 5.7.4 MonteCarlo.ush, isotropic material tangent basis.
 public float3x3 getReflectionTangentBasis(float3 tangentZ)
 {

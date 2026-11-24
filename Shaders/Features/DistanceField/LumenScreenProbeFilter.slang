@@ -28,9 +28,9 @@ struct LumenScreenProbeFilterParams
     ResourceHandle<Texture2D<float4>> normal;
     ResourceHandle<RWStructuredBuffer<uint2>> probeOutput;
     ResourceHandle<StructuredBuffer<uint2>> probeInput;
-    ResourceHandle<StructuredBuffer<float4>> inputRadiance;
+    ResourceHandle<StructuredBuffer<LumenFilteredProbeRadiance>> inputRadiance;
     ResourceHandle<StructuredBuffer<float>> inputDistance;
-    ResourceHandle<RWStructuredBuffer<float4>> outputRadiance;
+    ResourceHandle<RWStructuredBuffer<LumenFilteredProbeRadiance>> outputRadiance;
     uint width;
     uint height;
     uint probeWidth;
@@ -112,13 +112,13 @@ void lumenCompositeScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Gr
     bool writeGather = all(lane.xy < kLumenProbeGatherResolution);
     uint gatherThread = lane.y * kLumenProbeGatherResolution + lane.x;
     uint address = lumenProbeGatherAddress(probeIndex, lane.xy);
-    RWStructuredBuffer<float4> radiance = resolveUniform(params.outputRadiance);
+    RWStructuredBuffer<LumenFilteredProbeRadiance> radiance = resolveUniform(params.outputRadiance);
     RWStructuredBuffer<float> distance = resolveUniform(params.outputDistance);
     uint2 probePixel = resolveUniform(params.probeInput)[probeIndex];
 #if !defined(METALLIC_LUMEN_ACTIVE_PROBES)
     if (probePixel.x == kLumenInvalidProbe) {
         if (writeGather) {
-            radiance[address] = 0.0f;
+            radiance[address] = makeLumenFilteredProbeRadiance(0.0f, 0.0f);
             distance[address] = -1.0f;
 #if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
             resolveUniform(params.compositedProbeMoving)[address] = 0.0f;
@@ -165,7 +165,9 @@ void lumenCompositeScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Gr
         uint2 gatherCoord = wrapOctahedralBorder(uint2(quantizedCoord + 1), kLumenProbeGatherResolution + 2u, 1u);
         uint dest = gatherCoord.y * kLumenProbeGatherResolution + gatherCoord.x;
         float sampleWeight = float(kLumenProbeGatherResolution) / mipSize * kLumenProbeGatherResolution / mipSize;
-        float3 lighting = resolveUniform(params.inputRadiance)[traceAddress].xyz * preExposure;
+        // Scattering reads the raw trace payload. Its alpha is consumed by trace scheduling.
+        let traceRadiance = resolveUniform(ResourceHandle<StructuredBuffer<float4>>(params.inputRadiance.index));
+        float3 lighting = traceRadiance[traceAddress].xyz * preExposure;
         uint3 quantizedLighting = lumenQuantizeProbeLighting(lighting * sampleWeight, kTraceSamples);
         InterlockedAdd(sharedLighting[dest][0], quantizedLighting.x);
         InterlockedAdd(sharedLighting[dest][1], quantizedLighting.y);
@@ -181,7 +183,7 @@ void lumenCompositeScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Gr
 
     if (!writeGather) { return; }
     uint3 sum = uint3(sharedLighting[gatherThread][0], sharedLighting[gatherThread][1], sharedLighting[gatherThread][2]);
-    radiance[address] = float4(lumenDecodeProbeLighting(sum, kTraceSamples) / preExposure, 0.0f);
+    radiance[address] = makeLumenFilteredProbeRadiance(lumenDecodeProbeLighting(sum, kTraceSamples) / preExposure, 0.0f);
     uint minDistance = sharedMinHitDistance[gatherThread];
     distance[address] = minDistance == emptyDistance ? -1.0f : asfloat(minDistance);
 #if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
@@ -249,7 +251,7 @@ float getFilterPositionWeight(float probeDepth, float sceneDepth)
 // UE 5.7.4 GatherNeighborRadiance without adaptive neighbor search or extra AO.
 void gatherNeighborRadiance(int2 neighborTile, uint2 probeSize, uint2 ray, float4 receiver, float3 coneDirection,
     float hitDistance, float screenProbeTracesMoving, StructuredBuffer<uint2> probes, Texture2D<float4> position,
-    StructuredBuffer<float4> inputRadiance, StructuredBuffer<float> inputDistance,
+    StructuredBuffer<LumenFilteredProbeRadiance> inputRadiance, StructuredBuffer<float> inputDistance,
     inout float3 totalRadiance, inout float totalWeight)
 {
     if (any(neighborTile < 0) || any(neighborTile >= int2(probeSize))) {
@@ -292,7 +294,7 @@ void gatherNeighborRadiance(int2 neighborTile, uint2 probeSize, uint2 ray, float
         angleWeight = 1.0f - saturate(neighborAngle / kSpatialFilterMaxRadianceHitAngle);
     }
     float weight = positionWeight * angleWeight;
-    totalRadiance += inputRadiance[neighborAddress].xyz * weight;
+    totalRadiance += unpackLumenFilteredProbeRadiance(inputRadiance[neighborAddress]) * weight;
     totalWeight += weight;
 }
 
@@ -302,7 +304,7 @@ void lumenFilterScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
 {
     LumenScreenProbeFilterParams params = getParameters<LumenScreenProbeFilterParams>();
     StructuredBuffer<uint2> probes = resolveUniform(params.probeInput);
-    RWStructuredBuffer<float4> outputRadiance = resolveUniform(params.outputRadiance);
+    RWStructuredBuffer<LumenFilteredProbeRadiance> outputRadiance = resolveUniform(params.outputRadiance);
 #if defined(METALLIC_LUMEN_ACTIVE_PROBES)
     uint probeIndex;
     if (!resolveFilterProbeIndex(params, group, probeIndex)) { return; }
@@ -313,13 +315,13 @@ void lumenFilterScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
     uint2 probePixel = probes[probeIndex];
 #if !defined(METALLIC_LUMEN_ACTIVE_PROBES)
     if (probePixel.x == kLumenInvalidProbe) {
-        outputRadiance[address] = 0.0f;
+        outputRadiance[address] = makeLumenFilteredProbeRadiance(0.0f, 0.0f);
         return;
     }
 #endif
 
     Texture2D<float4> position = resolveUniform(params.position);
-    StructuredBuffer<float4> inputRadiance = resolveUniform(params.inputRadiance);
+    StructuredBuffer<LumenFilteredProbeRadiance> inputRadiance = resolveUniform(params.inputRadiance);
     StructuredBuffer<float> inputDistance = resolveUniform(params.inputDistance);
     float4 receiver = position.Load(int3(probePixel, 0));
 #if defined(METALLIC_LUMEN_JITTER_PROBE_DIRECTIONS)
@@ -338,8 +340,8 @@ void lumenFilterScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
 #endif
     float3 coneDirection = lumenEquiAreaSphericalMapping((float2(lane.xy) + probeTexelCenter) / float(kLumenProbeGatherResolution));
     float hitDistance = inputDistance[address];
-    float4 trace = inputRadiance[address];
-    float3 totalRadiance = hitDistance >= 0.0f ? trace.xyz : float3(0.0f);
+    LumenFilteredProbeRadiance trace = inputRadiance[address];
+    float3 totalRadiance = hitDistance >= 0.0f ? unpackLumenFilteredProbeRadiance(trace) : float3(0.0f);
     float totalWeight = hitDistance >= 0.0f ? 1.0f : 0.0f;
 #if defined(METALLIC_LUMEN_FAST_LIGHTING_UPDATE)
     const float screenProbeTracesMoving = resolveUniform(params.probeMoving)[probeIndex];
@@ -371,7 +373,11 @@ void lumenFilterScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
     }
 
     // Float32 storage preserves the radiance without the UE low-precision atlas's blue-noise rounding.
-    outputRadiance[address] = float4(totalRadiance, trace.w);
+#if defined(METALLIC_LUMEN_COMPACT_FILTERED_RADIANCE)
+    outputRadiance[address] = makeLumenFilteredProbeRadiance(totalRadiance, 0.0f);
+#else
+    outputRadiance[address] = makeLumenFilteredProbeRadiance(totalRadiance, trace.w);
+#endif
 }
 
 #if defined(METALLIC_LUMEN_JITTER_PROBE_DIRECTIONS)
@@ -430,7 +436,7 @@ void lumenConvertScreenProbesToIrradianceMain(uint3 group : SV_GroupID, uint3 la
     }
     sharedSHBasisFunctions[threadIndex][8] = basis.v2;
     uint address = lumenProbeGatherAddress(probeIndex, lane.xy);
-    sharedLightingRadiance[threadIndex] = float4(resolveUniform(params.inputRadiance)[address].xyz, 1.0f);
+    sharedLightingRadiance[threadIndex] = float4(unpackLumenFilteredProbeRadiance(resolveUniform(params.inputRadiance)[address]), 1.0f);
     GroupMemoryBarrierWithGroupSync();
 
     if (threadIndex < kNumLightingSHCoefficients * 4u) {

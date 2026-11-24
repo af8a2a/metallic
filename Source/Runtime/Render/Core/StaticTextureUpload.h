@@ -4,8 +4,36 @@
 
 namespace metallic::render {
 
+// Publish an immutable upload to both queues before discarding its staging resources.
+inline Result<> submitStaticComputeUpload(Device& device, Queue& queue, CommandBuffer& commands,
+    Queue* computeConsumer = nullptr)
+{
+    auto fence = device.createFence(false);
+    if (!fence) { return makeError(fence.error()); }
+    CommandBuffer* command = &commands;
+    if (!computeConsumer || computeConsumer->sameQueue(queue)) {
+        auto result = queue.submit({.commandBuffers = {&command, 1}, .signalFence = fence->get()});
+        return result ? (*fence)->wait() : result;
+    }
+
+    auto ready = device.createSemaphore();
+    if (!ready) { return makeError(ready.error()); }
+    auto consumerFence = device.createFence(false);
+    if (!consumerFence) { return makeError(consumerFence.error()); }
+    const SemaphoreSubmitDesc publication{.semaphore = ready->get(), .value = 1};
+    auto result = queue.submit({.commandBuffers = {&command, 1}, .signalSemaphores = {&publication, 1},
+        .signalFence = fence->get()});
+    if (!result) { return result; }
+    auto visibility = computeConsumer->submit({.waitSemaphores = {&publication, 1}, .signalFence = consumerFence->get()});
+    auto uploaded = (*fence)->wait();
+    if (!visibility) { return visibility; }
+    auto published = (*consumerFence)->wait();
+    return uploaded ? published : uploaded;
+}
+
 // Initialize a single-mip, tightly packed lookup texture before its first compute dispatch.
-inline Result<> uploadStaticComputeTexture(Device& device, Queue& queue, Texture& texture, Buffer& staging)
+inline Result<> uploadStaticComputeTexture(Device& device, Queue& queue, Texture& texture, Buffer& staging,
+    Queue* computeConsumer = nullptr)
 {
     auto source = staging.slice();
     if (!source) { return makeError(source.error()); }
@@ -13,8 +41,6 @@ inline Result<> uploadStaticComputeTexture(Device& device, Queue& queue, Texture
     if (!pool) { return makeError(pool.error()); }
     auto commands = (*pool)->createCommandBuffer();
     if (!commands) { return makeError(commands.error()); }
-    auto fence = device.createFence(false);
-    if (!fence) { return makeError(fence.error()); }
     auto result = (*commands)->begin();
     if (!result) { return result; }
 
@@ -35,9 +61,7 @@ inline Result<> uploadStaticComputeTexture(Device& device, Queue& queue, Texture
     if (!result) { return result; }
     result = (*commands)->end();
     if (!result) { return result; }
-    CommandBuffer* command = commands->get();
-    result = queue.submit({.commandBuffers = {&command, 1}, .signalFence = fence->get()});
-    return result ? (*fence)->wait() : result;
+    return submitStaticComputeUpload(device, queue, **commands, computeConsumer);
 }
 
 } // namespace metallic::render

@@ -3,6 +3,7 @@ implementing LumenReflection;
 import ShaderCore;
 import ParameterRoot;
 import LumenScreenTrace;
+import LumenReflectionSampling;
 
 using Metallic;
 using Metallic.Lumen;
@@ -54,7 +55,11 @@ float3 reflectionYCoCgToRGB(float3 ycocg)
 
 float getReflectionMaxFramesAccumulated(float roughness)
 {
+#if defined(METALLIC_LUMEN_REFLECTION_DOWNSAMPLE_2X)
+    return kReflectionTemporalMaxFrames;
+#else
     return lerp(2.0f, kReflectionTemporalMaxFrames, saturate(roughness / 0.05f));
+#endif
 }
 
 struct ReflectionNeighborhood
@@ -263,6 +268,12 @@ void lumenReflectionTemporalMain(uint3 thread : SV_DispatchThreadID, uint3 local
             if (history.valid) {
                 float3 historyLighting = reflectionRGBToYCoCg(history.specular);
                 ReflectionNeighborhood neighborhood = getReflectionNeighborhood(local.xy, specularLighting);
+#if defined(METALLIC_LUMEN_REFLECTION_DOWNSAMPLE_2X)
+                // UE 5.7.4 LumenReflectionDenoiserTemporal.usf reconstructed sample clamp.
+                if (any(pixel % 2u != lumenReflectionScreenTileJitter(pixel / 2u, params.frameIndex))) {
+                    neighborhood.extent *= 2.0f;
+                }
+#endif
                 float3 clampedHistory = clamp(historyLighting, neighborhood.center - neighborhood.extent,
                     neighborhood.center + neighborhood.extent);
                 float normalizedDistance = length(abs(clampedHistory - historyLighting) / max(neighborhood.extent, 0.1f));

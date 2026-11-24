@@ -66,7 +66,7 @@ public LumenGlobalTraceScene resolveLumenGlobalTraceScene(LumenGlobalTraceBindin
         resolveUniform(bindings.coarseMip), resolveUniform(bindings.sampler), scene.domains[0], 0u};
     scene.objectGrid = resolveUniform(bindings.objectGrid);
     scene.cache = {resolveUniform(bindings.cards), resolveUniform(bindings.cardDepth),
-        resolveUniform(bindings.cardLighting), scene.field.sampler, cardScene[0], cardScene[1]};
+        resolveUniform(bindings.cardLighting), scene.field.sampler, cardScene, cardScene[0], cardScene[1]};
     scene.clipmapCount = clipmapCount;
     return scene;
 }

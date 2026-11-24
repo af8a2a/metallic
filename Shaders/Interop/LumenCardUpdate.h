@@ -15,6 +15,14 @@ METALLIC_CARD_UPDATE_FLAG kLumenCardCaptured = 1u;
 METALLIC_CARD_UPDATE_FLAG kLumenCardRelit = 2u;
 METALLIC_CARD_UPDATE_FLAG kLumenCardResetLighting = 4u;
 
+// Surface Cache scene buffer: the original four header words, range tag and count,
+// then sorted (scene object, first slot, exclusive end slot) records.
+METALLIC_CARD_UPDATE_FLAG kLumenCardSceneHeaderWords = 4u;
+METALLIC_CARD_UPDATE_FLAG kLumenCardSceneRangeTag = 0x53435231u;
+METALLIC_CARD_UPDATE_FLAG kLumenCardSceneRangeCount = 5u;
+METALLIC_CARD_UPDATE_FLAG kLumenCardSceneRangeBase = 6u;
+METALLIC_CARD_UPDATE_FLAG kLumenCardSceneRangeStride = 3u;
+
 #undef METALLIC_CARD_UPDATE_FLAG
 }
 #endif

@@ -14,8 +14,8 @@ using RealtimeGIProperties = std::unordered_map<uint32_t, RenderGraphProperties>
 inline constexpr std::array<std::string_view, 7> kRealtimeGIPasses{"GlobalDistanceFieldPages", "SurfaceCache",
     "Radiosity", "ScreenTrace", "Gather", "Temporal", "Reflections"};
 // Graphs saved before these passes were enabled can still select scene realtime GI.
-inline constexpr std::array<std::string_view, 3> kOptionalRealtimeGIPasses{
-    "ScreenProbePlacement", "RadianceCache", "ShortRangeAO"};
+inline constexpr std::array<std::string_view, 4> kOptionalRealtimeGIPasses{
+    "ScreenProbePlacement", "RadianceCache", "ShortRangeAO", "ReflectionComposite"};
 
 inline bool isRealtimeGIOutput(std::string_view output)
 {
@@ -95,8 +95,9 @@ inline bool resolveSceneRealtimeGI(RenderGraph& graph, const scene::Scene* scene
         }
     } else {
         std::vector<std::string> consumers;
+        const std::string_view composedPass = graph.findNode("ReflectionComposite") ? "ReflectionComposite" : "Reflections";
         for (const auto& edge : graph.edges()) {
-            if (edge.srcPass == "Reflections" && edge.srcField == "color") {
+            if (edge.srcPass == composedPass && edge.srcField == "color") {
                 consumers.push_back(makeRenderGraphFieldName(edge.dstPass, edge.dstField));
             }
         }

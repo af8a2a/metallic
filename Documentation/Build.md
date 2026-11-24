@@ -875,6 +875,12 @@ The realtime GI route shares compact screen-probe placement between Gather and t
 
 Screen-probe trace quantization applies the brightness limit of 10 in the exposed domain and decodes the result back to scene-linear radiance. Manual exposure uses the effective EV100 and compensation. With automatic exposure enabled, `AutoExposure.publishProbeExposure` publishes the metered multiplier for `Gather.probeExposureHistory` on the next frame. Gather uses a multiplier of one until the first valid meter result.
 
+The realtime graphs run `Reflections` as a trace and reconstruction pass. `ReflectionComposite` joins its filtered radiance with the current diffuse color and rough specular. Both graphs use `Reflections.downsampleFactor: 2` to trace one receiver per 2 × 2 quad. Resolve, history and final composition retain the full resolution. Set `downsampleFactor` to `1` for full-resolution tracing. Enable `Reflections.asyncCompute` to schedule the producer on the dedicated Compute queue when available. `Gather.asyncOverlap` and `Temporal.asyncOverlap` keep the diffuse branch independent on Graphics. `RadianceCache.prepareReflectionInputs` establishes the shared sampled texture layouts before the branches.
+
+Enable `Gather.classifiedIntegration` to dispatch diffuse-only and rough-specular tiles separately. `Gather.compactFilteredRadiance` stores filtered and importance-history radiance in twelve-byte RGB32 records. Raw trace records retain their fourth component for trace classification. Set the same compact-radiance property on a connected probe visualizer.
+
+The realtime graphs enable `SurfaceCache.objectCardRanges` to index contiguous atlas ranges by object. `SurfaceCache.maxDirectLightingCardsPerFrame` caps deferred relighting of resident cards per submitted frame when `persistentCards` is enabled. The realtime graphs set the budget to four cards. New and recaptured cards receive their first direct-light result immediately. Omit the budget or use `0` to relight all dirty cards together.
+
 ### Cornell Box GI Playground
 
 In the **Render Graph Editor**, open **Built-in Sample** and select a Cornell Box variant.

@@ -135,22 +135,25 @@
         {"id": 9, "name": "GlobalDistanceFieldPages", "type": "GlobalDistanceFieldPagesPass", "position": {"x": 480, "y": 560},
             "properties": {"resolution": 252, "maxPhysicalPages": 12288, "quantized": true, "buildObjectGrid": true, "persistentPages": true}},
         {"id": 10, "name": "SurfaceCache", "type": "LumenSurfaceCachePass", "position": {"x": 800, "y": 560},
-            "properties": {"atlasSize": 512, "tileResolution": 64, "shadowedLighting": true, "exportDirectIrradiance": true, "persistentCards": true}},
+            "properties": {"atlasSize": 512, "tileResolution": 64, "shadowedLighting": true, "exportDirectIrradiance": true, "persistentCards": true,
+                "objectCardRanges": true, "maxDirectLightingCardsPerFrame": 4}},
         {"id": 11, "name": "Radiosity", "type": "LumenRadiosityPass", "position": {"x": 1120, "y": 560},
             "properties": {"atlasSize": 512, "tileResolution": 64, "maxTraceDistance": 40, "persistentCards": true, "maxCardsPerFrame": 4}},
         {"id": 12, "name": "ScreenTrace", "type": "LumenScreenTraceSetupPass", "position": {"x": 1440, "y": 560},
             "properties": {"historySource": "composited", "historyProducer": "Temporal", "dynamicReprojection": true}},
         {"id": 13, "name": "Gather", "type": "LumenScreenProbeGatherPass", "position": {"x": 480, "y": 810},
             "properties": {"maxTraceDistance": 40, "finalGather": true, "screenTraces": true, "activeProbeDispatch": true, "splitProbeTracing": true, "compactProbeAtlas": true, "screenGDFContinuation": true, "screenTraceRelativeDepthThickness": 0.003, "irradianceFormat": "OCT", "maxRayDirections": 8, "structuredImportanceSampling": true, "fastLightingUpdate": true, "roughSpecular": true,
-                "radianceCache": true, "stochasticInterpolation": true, "fullResolutionJitterWidth": 1, "exportIndirectIrradiance": true, "probeExposureHistory": true}},
+                "radianceCache": true, "stochasticInterpolation": true, "fullResolutionJitterWidth": 1, "exportIndirectIrradiance": true, "asyncOverlap": true, "probeExposureHistory": true}},
         {"id": 14, "name": "Temporal", "type": "LumenTemporalGatherPass", "position": {"x": 800, "y": 810},
-            "properties": {"publishScreenTraceHistory": true, "dynamicReprojection": true, "fastLightingUpdate": true, "maxFramesAccumulated": 10, "stochasticHistoryQuantization": true, "roughSpecular": true, "shortRangeAO": true}},
+            "properties": {"publishScreenTraceHistory": true, "dynamicReprojection": true, "fastLightingUpdate": true, "maxFramesAccumulated": 10, "stochasticHistoryQuantization": true, "roughSpecular": true, "shortRangeAO": true, "asyncOverlap": true}},
         {"id": 15, "name": "Reflections", "type": "LumenReflectionPass", "position": {"x": 1120, "y": 810},
-            "properties": {"maxTraceDistance": 40, "dynamicReprojection": true, "screenTraces": true, "detailTracing": true, "classifiedTracing": true, "roughSpecular": true}},
+            "properties": {"maxTraceDistance": 40, "dynamicReprojection": true, "screenTraces": true, "detailTracing": true, "classifiedTracing": true, "traceOnly": true, "downsampleFactor": 2}},
         {"id": 16, "name": "ScreenProbePlacement", "type": "LumenScreenProbePlacementPass", "position": {"x": 1760, "y": 560}},
         {"id": 17, "name": "RadianceCache", "type": "LumenRadianceCachePass", "position": {"x": 2080, "y": 560},
-            "properties": {"atlasProbesPerAxis": 32, "maxTraceDistance": 40, "compactProbeAtlas": true}},
-        {"id": 18, "name": "ShortRangeAO", "type": "LumenShortRangeAOPass", "position": {"x": 1440, "y": 810}}
+            "properties": {"atlasProbesPerAxis": 32, "maxTraceDistance": 40, "compactProbeAtlas": true, "prepareReflectionInputs": true}},
+        {"id": 18, "name": "ShortRangeAO", "type": "LumenShortRangeAOPass", "position": {"x": 1440, "y": 810}},
+        {"id": 19, "name": "ReflectionComposite", "type": "LumenReflectionCompositePass", "position": {"x": 1760, "y": 810},
+            "properties": {"roughSpecular": true}}
     ],
     "edges": [
         {
@@ -170,7 +173,7 @@
         },
         {
             "id": 4,
-            "src": "Reflections.color",
+            "src": "ReflectionComposite.color",
             "dst": "DLSSSR.inputColor"
         },
         {
@@ -285,7 +288,7 @@
         {"id": 59, "src": "SurfaceCache.albedo", "dst": "Radiosity.cardAlbedo"},
         {"id": 60, "src": "SurfaceCache.emissive", "dst": "Radiosity.cardEmissive"},
         {"id": 61, "src": "SurfaceCache.directIrradiance", "dst": "Radiosity.cardDirectLighting"},
-        {"id": 62, "src": "Temporal.color", "dst": "Reflections.sceneColor"},
+        {"id": 62, "src": "Temporal.color", "dst": "ReflectionComposite.sceneColor"},
         {"id": 63, "src": "Deferred.lumenPosition", "dst": "Reflections.position"},
         {"id": 64, "src": "Deferred.lumenNormal", "dst": "Reflections.normal"},
         {"id": 65, "src": "Deferred.lumenSpecular", "dst": "Reflections.specular"},
@@ -310,7 +313,7 @@
         {"id": 84, "src": "Deferred.lumenPreviousPosition", "dst": "Temporal.previousPosition"},
         {"id": 85, "src": "Deferred.lumenSpecular", "dst": "Gather.specular"},
         {"id": 86, "src": "Gather.roughSpecular", "dst": "Temporal.currentRoughSpecular"},
-        {"id": 87, "src": "Temporal.roughSpecular", "dst": "Reflections.roughSpecular"},
+        {"id": 87, "src": "Temporal.roughSpecular", "dst": "ReflectionComposite.roughSpecular"},
         {"id": 88, "src": "Deferred.lumenPosition", "dst": "RadianceCache.position"},
         {"id": 89, "src": "Deferred.lumenNormal", "dst": "ScreenProbePlacement.normal"},
         {"id": 90, "src": "GlobalDistanceFieldPages.pageTable", "dst": "RadianceCache.pageTable"},
@@ -338,7 +341,14 @@
         {"id": 112, "src": "VBuffer.depth", "dst": "ShortRangeAO.depth"},
         {"id": 113, "src": "Deferred.lumenNormal", "dst": "ShortRangeAO.normal"},
         {"id": 114, "src": "ShortRangeAO.shortRangeAORaw", "dst": "Temporal.shortRangeAORaw"},
-        {"id": 115, "src": "Deferred.lumenDiffuseAlbedo", "dst": "Temporal.diffuseAlbedo"}
+        {"id": 115, "src": "Deferred.lumenDiffuseAlbedo", "dst": "Temporal.diffuseAlbedo"},
+        {"id": 116, "src": "Reflections.bilateralReflections", "dst": "ReflectionComposite.bilateralReflections"},
+        {"id": 117, "src": "Deferred.lumenPosition", "dst": "ReflectionComposite.position"},
+        {"id": 118, "src": "Deferred.lumenSpecular", "dst": "ReflectionComposite.specular"},
+        {"id": 119, "src": "Deferred.lumenSpecular", "dst": "RadianceCache.reflectionSpecular"},
+        {"id": 120, "src": "Deferred.lumenPreviousPosition", "dst": "RadianceCache.reflectionPreviousPosition"},
+        {"id": 121, "src": "ScreenTrace.previousDepth", "dst": "RadianceCache.reflectionPreviousDepth"},
+        {"id": 122, "src": "ScreenTrace.previousColor", "dst": "RadianceCache.reflectionPreviousColor"}
     ],
     "outputs": [],
     "view": {

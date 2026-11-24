@@ -38,7 +38,7 @@ public:
     };
 
     Result<> initialize(Device& device, Queue& queue, const scene::Scene& scene,
-        std::span<const std::filesystem::path> paths, std::string& log);
+        std::span<const std::filesystem::path> paths, std::string& log, Queue* computeConsumer = nullptr);
     Result<std::unique_ptr<Buffer>> uploadInstances(const scene::Scene& scene,
         uint32_t& count, uint32_t& unsupportedTransforms,
         std::unique_ptr<Buffer>* objectGridObjects = nullptr,
@@ -61,6 +61,7 @@ private:
     };
 
     Device* device_ = nullptr;
+    QueueAccessBits queueAccess_ = QueueAccessBits::Graphics;
     std::vector<Asset> assets_;
     std::unique_ptr<Texture> atlas_;
     std::unique_ptr<TextureView> atlasView_;

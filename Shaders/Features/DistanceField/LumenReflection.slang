@@ -63,8 +63,9 @@ struct LumenReflectionParams
     ResourceHandle<Texture2D<float4>> bilateralReflections;
     LumenReflectionScreenBindings screen;
     LumenReflectionMeshSDFBindings detail;
+    ResourceHandle<RWTexture2D<float>> outputTraceDepth;
+    ResourceHandle<Texture2D<float>> traceDepth;
 #if defined(METALLIC_LUMEN_REFLECTION_TILED_TRACING)
-    uint2 basePadding;
     ResourceHandle<StructuredBuffer<uint>> activeTiles, clearTiles, workCounts, rayList;
     uint maxDispatchX;
 #endif
@@ -79,6 +80,18 @@ static const uint kReflectionScreenHit = 5u;
 static const uint kReflectionMeshSDFHit = 9u;
 static const float4 kEmptyReflectionTrace = float4(-1.0f, float(kGlobalDistanceFieldEmpty), -1.0f, 0.0f);
 static const float3 kInvalidReflectionLighting = float3(65024.0f, 65024.0f, 64512.0f);
+
+#if defined(METALLIC_LUMEN_REFLECTION_DOWNSAMPLE_2X)
+static const uint kReflectionDownsampleFactor = 2u;
+uint2 reflectionRayReceiverPixel(LumenReflectionParams params, uint2 pixel)
+{
+    return min(pixel * 2u + lumenReflectionScreenTileJitter(pixel, params.frameIndex),
+        uint2(params.width, params.height) - 1u);
+}
+#else
+static const uint kReflectionDownsampleFactor = 1u;
+uint2 reflectionRayReceiverPixel(LumenReflectionParams params, uint2 pixel) { return pixel; }
+#endif
 
 // UE 5.7.4 LumenReflections.usf, full-resolution, opaque non-Substrate,
 // isotropic single-lobe ray generation. Distance quantization is in centimeters.
@@ -279,7 +292,8 @@ void lumenReflectionTraceMain(uint3 thread : SV_DispatchThreadID)
 }
 
 #if defined(METALLIC_LUMEN_REFLECTION_TILED_TRACING)
-bool getReflectionTilePixel(LumenReflectionParams params, uint2 group, uint2 lane, bool clear, out uint2 pixel)
+bool getReflectionTilePixel(LumenReflectionParams params, uint2 group, uint2 lane, bool clear, uint downsampleFactor,
+    out uint2 pixel)
 {
     const uint tileCount = resolveUniform(params.workCounts)[clear ? 1u : 0u];
     const uint tileIndex = group.y * min(tileCount, params.maxDispatchX) + group.x;
@@ -287,7 +301,7 @@ bool getReflectionTilePixel(LumenReflectionParams params, uint2 group, uint2 lan
     if (tileIndex >= tileCount) { return false; }
     const uint tile = clear ? resolveUniform(params.clearTiles)[tileIndex] : resolveUniform(params.activeTiles)[tileIndex];
     pixel = uint2(tile & 0xfffu, tile >> 12u) * 8u + lane;
-    return all(pixel < uint2(params.width, params.height));
+    return all(pixel < (uint2(params.width, params.height) + downsampleFactor - 1u) / downsampleFactor);
 }
 
 bool getReflectionCompactedPixel(LumenReflectionParams params, uint2 group, uint lane, uint countIndex, out uint2 pixel)
@@ -312,7 +326,7 @@ void initializeTiledReflectionTrace(LumenReflectionParams params, uint2 pixel, f
 
 void writeTiledReflectionTrace(LumenReflectionParams params, uint2 pixel, float3 lighting, float4 debugTrace)
 {
-    const float roughness = resolveUniform(params.specular).Load(int3(pixel, 0)).w;
+    const float roughness = resolveUniform(params.specular).Load(int3(reflectionRayReceiverPixel(params, pixel), 0)).w;
     resolveUniform(params.outputReflections)[pixel] = clampReflectionLighting(lighting, reflectionRoughnessFade(params.maxRoughness, roughness));
     resolveUniform(params.trace)[pixel] = debugTrace;
 }
@@ -324,19 +338,23 @@ void lumenReflectionGenerateTiledRaysMain(uint3 group : SV_GroupID, uint3 lane :
 {
     const LumenReflectionParams params = getParameters<LumenReflectionParams>();
     uint2 pixel;
-    if (!getReflectionTilePixel(params, group.xy, lane.xy, false, pixel)) { return; }
+    if (!getReflectionTilePixel(params, group.xy, lane.xy, false, kReflectionDownsampleFactor, pixel)) { return; }
 
-    const float4 position = resolveUniform(params.position).Load(int3(pixel, 0));
-    const float4 specular = resolveUniform(params.specular).Load(int3(pixel, 0));
+    const uint2 receiverPixel = reflectionRayReceiverPixel(params, pixel);
+    const float4 position = resolveUniform(params.position).Load(int3(receiverPixel, 0));
+    const float4 specular = resolveUniform(params.specular).Load(int3(receiverPixel, 0));
     float fadeAlpha = reflectionRoughnessFade(params.maxRoughness, specular.w);
     float4 rayData = 0.0f;
     if (position.w > 0.0f && any(specular.xyz > 0.0f) && fadeAlpha > 0.0f) {
-        const float3 normal = normalize(resolveUniform(params.normal).Load(int3(pixel, 0)).xyz);
-        rayData = generateReflectionRay(params, pixel, position.xyz, normal, specular.w);
+        const float3 normal = normalize(resolveUniform(params.normal).Load(int3(receiverPixel, 0)).xyz);
+        rayData = generateReflectionRay(params, receiverPixel, position.xyz, normal, specular.w);
     } else {
         fadeAlpha = 0.0f;
     }
     initializeTiledReflectionTrace(params, pixel, rayData, fadeAlpha);
+#if defined(METALLIC_LUMEN_REFLECTION_DOWNSAMPLE_2X)
+    resolveUniform(params.outputTraceDepth)[pixel] = rayData.w > 0.0f ? position.w : -position.w;
+#endif
 }
 
 [shader("compute")]
@@ -345,12 +363,29 @@ void lumenReflectionClearTilesMain(uint3 group : SV_GroupID, uint3 lane : SV_Gro
 {
     const LumenReflectionParams params = getParameters<LumenReflectionParams>();
     uint2 pixel;
-    if (!getReflectionTilePixel(params, group.xy, lane.xy, true, pixel)) { return; }
+    if (!getReflectionTilePixel(params, group.xy, lane.xy, true, kReflectionDownsampleFactor, pixel)) { return; }
 
     initializeTiledReflectionTrace(params, pixel, 0.0f, 0.0f);
+#if defined(METALLIC_LUMEN_REFLECTION_DOWNSAMPLE_2X)
+    resolveUniform(params.outputTraceDepth)[pixel] = -1.0f;
+#else
+    resolveUniform(params.outputResolvedReflections)[pixel] = float4(kInvalidReflectionLighting, 0.0f);
+    resolveUniform(params.outputResolvedHitDistance)[pixel] = asfloat(0x7f7fffffu);
+#endif
+}
+
+#if defined(METALLIC_LUMEN_REFLECTION_DOWNSAMPLE_2X)
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void lumenReflectionClearResolveTilesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID)
+{
+    const LumenReflectionParams params = getParameters<LumenReflectionParams>();
+    uint2 pixel;
+    if (!getReflectionTilePixel(params, group.xy, lane.xy, true, 1u, pixel)) { return; }
     resolveUniform(params.outputResolvedReflections)[pixel] = float4(kInvalidReflectionLighting, 0.0f);
     resolveUniform(params.outputResolvedHitDistance)[pixel] = asfloat(0x7f7fffffu);
 }
+#endif
 
 #if defined(METALLIC_LUMEN_REFLECTION_SCREEN_TRACES)
 // UE 5.7.4 ReflectionTraceScreenTexturesCS, preserving the miss endpoint in centimeters.
@@ -360,16 +395,17 @@ void lumenReflectionTraceScreenTiledMain(uint3 group : SV_GroupID, uint3 lane : 
 {
     const LumenReflectionParams params = getParameters<LumenReflectionParams>();
     uint2 pixel;
-    if (!getReflectionTilePixel(params, group.xy, lane.xy, false, pixel)) { return; }
+    if (!getReflectionTilePixel(params, group.xy, lane.xy, false, kReflectionDownsampleFactor, pixel)) { return; }
     const float4 rayData = resolveUniform(params.rayData).Load(int3(pixel, 0));
     if (rayData.w <= 0.0f) { return; }
 
-    const float3 position = resolveUniform(params.position).Load(int3(pixel, 0)).xyz;
-    const float3 normal = normalize(resolveUniform(params.normal).Load(int3(pixel, 0)).xyz);
+    const uint2 receiverPixel = reflectionRayReceiverPixel(params, pixel);
+    const float3 position = resolveUniform(params.position).Load(int3(receiverPixel, 0)).xyz;
+    const float3 normal = normalize(resolveUniform(params.normal).Load(int3(receiverPixel, 0)).xyz);
     const float maxTraceDistance = reflectionQuantizedMaxDistance(reflectionTraceDistanceCm(params));
     float3 lighting;
     float hitDistance;
-    const bool hit = traceReflectionScreen(params, pixel, position, normal, rayData.xyz, maxTraceDistance, lighting, hitDistance);
+    const bool hit = traceReflectionScreen(params, receiverPixel, position, normal, rayData.xyz, maxTraceDistance, lighting, hitDistance);
     if (hit) {
         writeTiledReflectionTrace(params, pixel, lighting, float4(hitDistance, float(kReflectionScreenHit), -1.0f, 0.0f));
     }
@@ -391,7 +427,8 @@ void lumenReflectionTraceDetailTiledMain(uint3 group : SV_GroupID, uint lane : S
     const LumenGlobalTraceScene scene = resolveLumenGlobalTraceScene(params.scene, params.clipmapCount);
     if (!scene.identityMatches || params.detail.grid.w == 0u) { return; }
 
-    const float4 position = resolveUniform(params.position).Load(int3(pixel, 0));
+    const uint2 receiverPixel = reflectionRayReceiverPixel(params, pixel);
+    const float4 position = resolveUniform(params.position).Load(int3(receiverPixel, 0));
     const float3 direction = resolveUniform(params.rayData).Load(int3(pixel, 0)).xyz;
     const float3 samplePosition = position.xyz + kSurfaceBias * direction;
     const float maxTraceDistance = reflectionQuantizedMaxDistance(reflectionTraceDistanceCm(params));
@@ -399,7 +436,7 @@ void lumenReflectionTraceDetailTiledMain(uint3 group : SV_GroupID, uint lane : S
     float3 lighting;
     float hitDistance;
     uint cardState;
-    const bool hit = traceReflectionDetail(params, scene, pixel, position, samplePosition, direction, maxTraceDistance,
+    const bool hit = traceReflectionDetail(params, scene, receiverPixel, position, samplePosition, direction, maxTraceDistance,
         rayHitDistance[pixel] * 0.01f, lighting, hitDistance, cardState);
     if (hit) {
         writeTiledReflectionTrace(params, pixel, lighting, float4(hitDistance, float(kReflectionMeshSDFHit), -1.0f, float(cardState)));
@@ -417,7 +454,8 @@ void lumenReflectionTraceGDFTiledMain(uint3 group : SV_GroupID, uint lane : SV_G
     const LumenReflectionParams params = getParameters<LumenReflectionParams>();
     uint2 pixel;
     if (!getReflectionCompactedPixel(params, group.xy, lane, 3u, pixel)) { return; }
-    const float3 position = resolveUniform(params.position).Load(int3(pixel, 0)).xyz;
+    const uint2 receiverPixel = reflectionRayReceiverPixel(params, pixel);
+    const float3 position = resolveUniform(params.position).Load(int3(receiverPixel, 0)).xyz;
     const float4 rayData = resolveUniform(params.rayData).Load(int3(pixel, 0));
     const float3 samplePosition = position + kSurfaceBias * rayData.xyz;
     const LumenGlobalTraceScene scene = resolveLumenGlobalTraceScene(params.scene, params.clipmapCount);
@@ -426,7 +464,7 @@ void lumenReflectionTraceGDFTiledMain(uint3 group : SV_GroupID, uint lane : SV_G
     let rayHitDistance = resolveUniform(params.outputRayHitDistance);
     float4 debugTrace;
     float hitDistanceCm;
-    const float3 lighting = traceReflectionVoxels(params, scene, pixel, position, samplePosition, rayData,
+    const float3 lighting = traceReflectionVoxels(params, scene, receiverPixel, position, samplePosition, rayData,
         rayHitDistance[pixel] * 0.01f, maxTraceDistance, maxTraceDistanceCm, debugTrace, hitDistanceCm);
     writeTiledReflectionTrace(params, pixel, lighting, debugTrace);
     rayHitDistance[pixel] = hitDistanceCm;
@@ -473,31 +511,107 @@ float3 reflectionDenoiserSpaceToRGB(float3 lighting)
     return lighting * invWeight;
 }
 
-// UE 5.7.4 LumenReflectionResolve.usf, 1x1, opaque single-lobe spatial reconstruction.
+#if defined(METALLIC_LUMEN_REFLECTION_DOWNSAMPLE_2X)
+// UE 5.7.4 LumenReflectionResolve.usf, 2x2 non-stochastic upsample for one opaque lobe.
+void upsampleReflection2x2(LumenReflectionParams params, uint2 screenCoord, out float3 lighting,
+    out float weightSum, out float minRayHitT, out float4 centerRay)
+{
+    const int2 downsampleFactor = int2(2, 2);
+    const int2 sampleOffsets[4] = {int2(0, 0), int2(1, 0), int2(0, 1), int2(1, 1)};
+    const uint2 downsampledScreenCoord00 = (max(screenCoord, 1u) - 1u) / uint2(downsampleFactor);
+    const int2 screenCoordOffset = int2(max(screenCoord, 1u) - downsampledScreenCoord00 * uint2(downsampleFactor));
+    const int2 toSample00 = int2(lumenReflectionScreenTileJitter(downsampledScreenCoord00, params.frameIndex)) - screenCoordOffset;
+    const int2 toSample10 = int2(lumenReflectionScreenTileJitter(downsampledScreenCoord00 + uint2(1, 0), params.frameIndex)) +
+        sampleOffsets[1] * downsampleFactor - screenCoordOffset;
+    const int2 toSample01 = int2(lumenReflectionScreenTileJitter(downsampledScreenCoord00 + uint2(0, 1), params.frameIndex)) +
+        sampleOffsets[2] * downsampleFactor - screenCoordOffset;
+    const int2 toSample11 = int2(lumenReflectionScreenTileJitter(downsampledScreenCoord00 + uint2(1, 1), params.frameIndex)) +
+        sampleOffsets[3] * downsampleFactor - screenCoordOffset;
+
+    float4 upsampleWeights;
+    upsampleWeights.x = (2.0f - abs(toSample00.x)) * (2.0f - abs(toSample00.y));
+    upsampleWeights.y = (2.0f - abs(toSample10.x)) * (2.0f - abs(toSample10.y));
+    upsampleWeights.z = (2.0f - abs(toSample01.x)) * (2.0f - abs(toSample01.y));
+    upsampleWeights.w = (2.0f - abs(toSample11.x)) * (2.0f - abs(toSample11.y));
+
+    // A texel load replaces each UE GatherRed component to avoid a sampler binding
+    // and skips invalid coordinates before they reach a Vulkan load.
+    const uint2 traceExtent = (uint2(params.width, params.height) + 1u) / 2u;
+    let depths = resolveUniform(params.traceDepth);
+    [unroll]
+    for (uint sampleIndex = 0u; sampleIndex < 4u; ++sampleIndex) {
+        const uint2 coord = downsampledScreenCoord00 + uint2(sampleOffsets[sampleIndex]);
+        if (any(coord >= traceExtent)) { upsampleWeights[sampleIndex] = 0.0f; }
+        else if (depths.Load(int3(coord, 0)) <= 0.0f) { upsampleWeights[sampleIndex] = 0.0f; }
+    }
+
+    lighting = 0.0f;
+    weightSum = 0.0f;
+    minRayHitT = asfloat(0x7f7fffffu);
+    centerRay = 0.0f;
+    if (any(upsampleWeights > 0.01f)) {
+        const float epsilon = 0.001f;
+        upsampleWeights /= max(dot(upsampleWeights, 1.0f), epsilon);
+        let radiance = resolveUniform(params.reflections);
+        float3 sampleRadiance[4];
+        [unroll]
+        for (uint sampleIndex = 0u; sampleIndex < 4u; ++sampleIndex) {
+            const uint2 coord = downsampledScreenCoord00 + uint2(sampleOffsets[sampleIndex]);
+            sampleRadiance[sampleIndex] = reflectionRGBToDenoiserSpace(upsampleWeights[sampleIndex] > 0.0f
+                ? radiance.Load(int3(coord, 0)).rgb : 0.0f);
+        }
+        lighting = sampleRadiance[0] * upsampleWeights.x + sampleRadiance[1] * upsampleWeights.y +
+            sampleRadiance[2] * upsampleWeights.z + sampleRadiance[3] * upsampleWeights.w;
+
+        const float maxUpsampleWeight = max(max(max(upsampleWeights.x, upsampleWeights.y), upsampleWeights.z), upsampleWeights.w);
+        uint2 reflectionTraceCoord = downsampledScreenCoord00;
+        if (maxUpsampleWeight == upsampleWeights.x) { reflectionTraceCoord += uint2(sampleOffsets[0]); }
+        else if (maxUpsampleWeight == upsampleWeights.y) { reflectionTraceCoord += uint2(sampleOffsets[1]); }
+        else if (maxUpsampleWeight == upsampleWeights.z) { reflectionTraceCoord += uint2(sampleOffsets[2]); }
+        else { reflectionTraceCoord += uint2(sampleOffsets[3]); }
+        minRayHitT = abs(resolveUniform(params.rayHitDistance).Load(int3(reflectionTraceCoord, 0)));
+        centerRay = resolveUniform(params.rayData).Load(int3(reflectionTraceCoord, 0));
+        weightSum = 1.0f;
+    }
+}
+#endif
+
+// UE 5.7.4 LumenReflectionResolve.usf, opaque single-lobe spatial reconstruction.
 void resolveReflectionPixel(LumenReflectionParams params, uint2 pixel)
 {
     uint2 extent = uint2(params.width, params.height);
 
     let reflections = resolveUniform(params.reflections);
     let rayData = resolveUniform(params.rayData);
-    float4 centerRay = rayData.Load(int3(pixel, 0));
-    float4 centerReflection = reflections.Load(int3(pixel, 0));
     float3 centerLighting = kInvalidReflectionLighting;
     float minRayHitT = asfloat(0x7f7fffffu);
+    float4 specular = resolveUniform(params.specular).Load(int3(pixel, 0));
+#if defined(METALLIC_LUMEN_REFLECTION_DOWNSAMPLE_2X)
+    float4 centerRay;
+    const float fadeAlpha = reflectionRoughnessFade(params.maxRoughness, specular.w);
+    if (resolveUniform(params.position).Load(int3(pixel, 0)).w > 0.0f && any(specular.xyz > 0.0f) && fadeAlpha > 0.0f) {
+        float centerWeightSum;
+        upsampleReflection2x2(params, pixel, centerLighting, centerWeightSum, minRayHitT, centerRay);
+        let rayHitDistance = resolveUniform(params.rayHitDistance);
+#else
+    float4 centerRay = rayData.Load(int3(pixel, 0));
+    float4 centerReflection = reflections.Load(int3(pixel, 0));
+    const float fadeAlpha = centerReflection.a;
     // Trace writes a positive cone for every emitted ray, including valid black misses.
     if (centerRay.w > 0.0f) {
         let rayHitDistance = resolveUniform(params.rayHitDistance);
         centerLighting = reflectionRGBToDenoiserSpace(centerReflection.rgb);
         float centerWeightSum = 1.0f;
         minRayHitT = abs(rayHitDistance.Load(int3(pixel, 0)));
+#endif
 
-        float roughness = resolveUniform(params.specular).Load(int3(pixel, 0)).w;
+        float roughness = specular.w;
         float kernelRadiusInPixels = 0.0f;
         if (roughness > 0.05f) {
-            kernelRadiusInPixels = kSpatialReconstructionKernelRadius * saturate(roughness * 8.0f);
+            kernelRadiusInPixels = float(kReflectionDownsampleFactor) * kSpatialReconstructionKernelRadius * saturate(roughness * 8.0f);
         }
 
-        if (kernelRadiusInPixels > 1.0f) {
+        if (kernelRadiusInPixels > float(kReflectionDownsampleFactor)) {
             uint2 randomSeed = lumenRand3DPCG16(int3(pixel, params.frameIndex % 8u)).xy;
             let position = resolveUniform(params.position);
             float3 translatedWorldPosition = position.Load(int3(pixel, 0)).xyz - params.camera.eye.xyz;
@@ -511,8 +625,8 @@ void resolveReflectionPixel(LumenReflectionParams params, uint2 pixel)
             float2 kernelMinorAxis = float2(0.0f, kernelRadiusInPixels);
 
             float centerRayHitT = minRayHitT;
-            float centerSampleWeight = getReflectionSampleWeight(centerRay.xyz, 1.0f / abs(centerRay.w),
-                tangentBasis, v, a2);
+            float centerSampleWeight = centerRay.w != 0.0f
+                ? getReflectionSampleWeight(centerRay.xyz, 1.0f / abs(centerRay.w), tangentBasis, v, a2) : 0.0f;
             centerSampleWeight = max(centerSampleWeight, 0.001f);
             centerLighting *= centerSampleWeight;
             centerWeightSum = centerSampleWeight;
@@ -524,11 +638,18 @@ void resolveReflectionPixel(LumenReflectionParams params, uint2 pixel)
                 float2 neighborOffset = uniformSampleDiskConcentric(neighborOffsetInRect);
                 neighborOffset = neighborOffset.x * kernelMajorAxis + neighborOffset.y * kernelMinorAxis;
                 int2 neighborPixel = int2(float2(pixel) + neighborOffset + 0.5f);
-                if (all(neighborPixel >= 0) && all(neighborPixel < int2(extent))) {
-                    float4 neighborRay = rayData.Load(int3(neighborPixel, 0));
+                int2 neighborTracingCoord = neighborPixel / int(kReflectionDownsampleFactor);
+                const uint2 tracingExtent = (extent + kReflectionDownsampleFactor - 1u) / kReflectionDownsampleFactor;
+                if (all(neighborTracingCoord >= 0) && all(neighborTracingCoord < int2(tracingExtent))) {
+                    const float4 neighborRay = rayData.Load(int3(neighborTracingCoord, 0));
+#if defined(METALLIC_LUMEN_REFLECTION_DOWNSAMPLE_2X)
+                    if (resolveUniform(params.traceDepth).Load(int3(neighborTracingCoord, 0)) > 0.0f) {
+#else
                     if (neighborRay.w > 0.0f) {
-                        float3 neighborTranslatedWorldPosition = position.Load(int3(neighborPixel, 0)).xyz - params.camera.eye.xyz;
-                        float traceHitDistance = abs(rayHitDistance.Load(int3(neighborPixel, 0)));
+#endif
+                        const uint2 receiverPixel = reflectionRayReceiverPixel(params, uint2(neighborTracingCoord));
+                        float3 neighborTranslatedWorldPosition = position.Load(int3(receiverPixel, 0)).xyz - params.camera.eye.xyz;
+                        float traceHitDistance = abs(rayHitDistance.Load(int3(neighborTracingCoord, 0)));
                         traceHitDistance = min(traceHitDistance, centerRayHitT);
 
                         float3 neighborHitPosition = neighborTranslatedWorldPosition + neighborRay.xyz * (traceHitDistance * 0.01f);
@@ -541,7 +662,7 @@ void resolveReflectionPixel(LumenReflectionParams params, uint2 pixel)
                         float sampleWeight = getReflectionSampleWeight(directionToNeighborHit, 1.0f / abs(neighborRay.w),
                             tangentBasis, v, a2);
                         if (sampleWeight > 1e-6f) {
-                            float3 sampleRadiance = reflectionRGBToDenoiserSpace(reflections.Load(int3(neighborPixel, 0)).rgb);
+                            float3 sampleRadiance = reflectionRGBToDenoiserSpace(reflections.Load(int3(neighborTracingCoord, 0)).rgb);
                             neighborLighting += sampleRadiance * sampleWeight;
                             neighborWeightSum += sampleWeight;
                             minRayHitT = min(minRayHitT, traceHitDistance);
@@ -561,7 +682,7 @@ void resolveReflectionPixel(LumenReflectionParams params, uint2 pixel)
         centerLighting = reflectionDenoiserSpaceToRGB(centerLighting);
     }
 
-    resolveUniform(params.outputResolvedReflections)[pixel] = float4(centerLighting, centerReflection.a);
+    resolveUniform(params.outputResolvedReflections)[pixel] = float4(centerLighting, fadeAlpha);
     resolveUniform(params.outputResolvedHitDistance)[pixel] = minRayHitT;
 }
 
@@ -581,7 +702,7 @@ void lumenReflectionResolveTiledMain(uint3 group : SV_GroupID, uint3 lane : SV_G
 {
     const LumenReflectionParams params = getParameters<LumenReflectionParams>();
     uint2 pixel;
-    if (!getReflectionTilePixel(params, group.xy, lane.xy, false, pixel)) { return; }
+    if (!getReflectionTilePixel(params, group.xy, lane.xy, false, 1u, pixel)) { return; }
     resolveReflectionPixel(params, pixel);
 }
 #endif

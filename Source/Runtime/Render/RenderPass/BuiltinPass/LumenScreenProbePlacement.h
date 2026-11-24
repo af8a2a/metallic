@@ -9,6 +9,7 @@ namespace metallic::render::builtin_pass {
 inline constexpr uint64_t kScreenProbeFilterABI = 0x4c554d454e010036ull;
 inline constexpr uint32_t kLumenScreenProbeSlotsPerTile = 9;
 inline constexpr uint32_t kLumenScreenProbeDownsampleFactor = 16;
+inline constexpr uint32_t kLumenFilteredProbeRGBStride = 3 * sizeof(float);
 inline constexpr double kLumenAdaptiveProbeAllocationFraction = 0.5;
 
 inline constexpr uint32_t lumenScreenProbeTiles(uint32_t pixels)

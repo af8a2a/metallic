@@ -23,6 +23,8 @@ class LumenShortRangeAOPass final : public ComputePass {
 public:
     bool supportsFrameOverlap() const override { return true; }
     bool supportsExternalFrameOverlap() const override { return false; }
+    bool supportsAsyncQueue() const override { return true; }
+    QueueType queueType() const override { return QueueType::Graphics; }
 
     RenderPassReflection reflect(const RenderGraphCompileContext& context) const override
     {

@@ -13,6 +13,7 @@ struct LumenReflectionScheduleParams
     ResourceHandle<RWStructuredBuffer<uint>> tileMask, activeTiles, clearTiles, workCounts, rayList, indirectArgs;
     uint width, height, maxDispatchX;
     float maxRoughness, meshSDFTraceDistance, cardTraceEndDistance, maxTraceDistance;
+    ResourceHandle<Texture2D<float>> traceDepth;
 };
 
 static const uint kReflectionTileSize = 8u;
@@ -27,6 +28,12 @@ static const uint kClearTileArgs = 1u;
 static const uint kCompactRayArgs = 2u;
 static const uint kDetailRayArgs = 3u;
 static const uint kGDFRayArgs = 4u;
+
+#if defined(METALLIC_LUMEN_REFLECTION_DOWNSAMPLE_2X)
+static const uint kReflectionDownsampleFactor = 2u;
+#else
+static const uint kReflectionDownsampleFactor = 1u;
+#endif
 
 // UE r.Lumen.Reflections.TraceCompaction.GroupSizeInTraceTiles, with the fallback forced to one tile.
 #if defined(METALLIC_LUMEN_REFLECTION_WAVE_OPS)
@@ -138,6 +145,29 @@ groupshared uint sharedGlobalClearTileOffset;
 #endif
 
 // UE ReflectionTileClassificationBuildListsCS, full resolution and no overflow closures.
+bool reflectionTileUsed(RWStructuredBuffer<uint> tileMask, uint2 tile, uint2 resolveTileDimensions)
+{
+#if defined(METALLIC_LUMEN_REFLECTION_TRACE_TILE_LIST)
+    // UE ReflectionTileClassificationBuildListsCS, SUPPORT_DOWNSAMPLE_FACTOR.
+    uint tileUsed = 0u;
+    [unroll]
+    for (uint y = 0u; y < 2u; ++y) {
+        [unroll]
+        for (uint x = 0u; x < 2u; ++x) {
+            const uint2 resolveTile = tile * 2u + uint2(x, y);
+            if (all(resolveTile < resolveTileDimensions)) {
+                if ((tileMask[resolveTile.y * resolveTileDimensions.x + resolveTile.x] & kReflectionTileBit) != 0u) {
+                    tileUsed = 1u;
+                }
+            }
+        }
+    }
+    return tileUsed != 0u;
+#else
+    return (tileMask[tile.y * resolveTileDimensions.x + tile.x] & kReflectionTileBit) != 0u;
+#endif
+}
+
 [shader("compute")]
 [numthreads(kReflectionTileSize, kReflectionTileSize, 1)]
 void lumenReflectionBuildTileListsMain(uint3 group : SV_GroupID, uint index : SV_GroupIndex)
@@ -147,11 +177,16 @@ void lumenReflectionBuildTileListsMain(uint3 group : SV_GroupID, uint index : SV
     let workCounts = resolveUniform(params.workCounts);
     let activeTiles = resolveUniform(params.activeTiles);
     let clearTiles = resolveUniform(params.clearTiles);
-    const uint2 tileDimensions = (uint2(params.width, params.height) + kReflectionTileSize - 1u) / kReflectionTileSize;
+    const uint2 resolveTileDimensions = (uint2(params.width, params.height) + kReflectionTileSize - 1u) / kReflectionTileSize;
+#if defined(METALLIC_LUMEN_REFLECTION_TRACE_TILE_LIST)
+    const uint2 tileDimensions = (resolveTileDimensions + 1u) / 2u;
+#else
+    const uint2 tileDimensions = resolveTileDimensions;
+#endif
 #if defined(METALLIC_LUMEN_REFLECTION_WAVE_OPS)
     const uint2 tile = group.xy * kReflectionTileSize + reflectionScheduleZOrder2D(index);
     if (all(tile < tileDimensions)) {
-        const bool tileUsed = (tileMask[tile.y * tileDimensions.x + tile.x] & kReflectionTileBit) != 0u;
+        const bool tileUsed = reflectionTileUsed(tileMask, tile, resolveTileDimensions);
         const uint activeInWave = WaveActiveCountBits(tileUsed);
         uint globalTileOffset = 0u;
         if (WaveIsFirstLane() && activeInWave > 0u) {
@@ -179,7 +214,7 @@ void lumenReflectionBuildTileListsMain(uint3 group : SV_GroupID, uint index : SV
         for (uint x = 0u; x < kReflectionTilePixels; ++x) {
             const uint2 tile = group.xy * kReflectionTileSize + reflectionScheduleZOrder2D(x);
             if (all(tile < tileDimensions)) {
-                const bool tileUsed = (tileMask[tile.y * tileDimensions.x + tile.x] & kReflectionTileBit) != 0u;
+                const bool tileUsed = reflectionTileUsed(tileMask, tile, resolveTileDimensions);
                 if (tileUsed) {
                     sharedTileData[sharedNumTiles] = packReflectionTile(tile);
                     sharedNumTiles += 1u;
@@ -257,8 +292,12 @@ void lumenReflectionCompactRaysMain(uint3 group : SV_GroupID, uint index : SV_Gr
     if (tileIndex < active) {
         const uint2 tile = unpackReflectionTile(resolveUniform(params.activeTiles)[tileIndex]);
         const uint2 pixel = tile * kReflectionTileSize + reflectionScheduleZOrder2D(index % kReflectionTilePixels);
-        if (all(pixel < uint2(params.width, params.height))) {
+        if (all(pixel < (uint2(params.width, params.height) + kReflectionDownsampleFactor - 1u) / kReflectionDownsampleFactor)) {
+#if defined(METALLIC_LUMEN_REFLECTION_DOWNSAMPLE_2X)
+            const float sceneDepth = resolveUniform(params.traceDepth).Load(int3(pixel, 0));
+#else
             const float sceneDepth = resolveUniform(params.position).Load(int3(pixel, 0)).w;
+#endif
             const float rayCone = resolveUniform(params.rayData).Load(int3(pixel, 0)).w;
             const float traceClass = resolveUniform(params.trace).Load(int3(pixel, 0)).y;
             const float traceHitDistanceCm = resolveUniform(params.rayHitDistance).Load(int3(pixel, 0));

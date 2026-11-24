@@ -11,7 +11,7 @@ namespace metallic::render::builtin_pass {
 enum class LumenBlueNoise { Vec2, Scalar };
 
 inline Result<std::unique_ptr<TextureView>> loadLumenBlueNoise(
-    Device& device, Queue& queue, LumenBlueNoise kind, std::string& log)
+    Device& device, Queue& queue, LumenBlueNoise kind, std::string& log, Queue* computeConsumer = nullptr)
 {
     constexpr uint32_t width = 128, height = 128 * 64;
     const bool scalar = kind == LumenBlueNoise::Scalar;
@@ -38,9 +38,10 @@ inline Result<std::unique_ptr<TextureView>> loadLumenBlueNoise(
     (*staging)->flush();
     (*staging)->unmap();
     auto texture = device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
-        .format = scalar ? Format::R8Unorm : Format::RG8Unorm, .width = width, .height = height});
+        .format = scalar ? Format::R8Unorm : Format::RG8Unorm, .width = width, .height = height,
+        .queueAccess = computeConsumer ? QueueAccessBits::Graphics | QueueAccessBits::Compute : QueueAccessBits::Graphics});
     if (!texture) { return makeError(texture.error()); }
-    auto upload = uploadStaticComputeTexture(device, queue, **texture, **staging);
+    auto upload = uploadStaticComputeTexture(device, queue, **texture, **staging, computeConsumer);
     if (!upload) { return makeError(upload.error()); }
     return device.createTextureView(**texture, {});
 }

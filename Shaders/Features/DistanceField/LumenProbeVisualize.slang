@@ -1,5 +1,7 @@
 module LumenProbeVisualize;
 
+import LumenProbeMath;
+
 import ShaderCore;
 import ParameterRoot;
 import GlobalDistanceField;
@@ -16,7 +18,7 @@ struct LumenProbeVisualizeParams
 {
     ResourceHandle<StructuredBuffer<uint2>> probePositions;
     ResourceHandle<StructuredBuffer<float4>> probeRadiance;
-    ResourceHandle<StructuredBuffer<float4>> filteredProbeRadiance;
+    ResourceHandle<StructuredBuffer<LumenFilteredProbeRadiance>> filteredProbeRadiance;
     ResourceHandle<StructuredBuffer<float>> probeDistance;
     ResourceHandle<Texture2D<float4>> sceneColor;
     ResourceHandle<Texture2D<float>> historyWeight;
@@ -168,7 +170,7 @@ void lumenProbeVisualizeMain(uint3 id : SV_DispatchThreadID)
         const float4 trace = resolveUniform(params.probeRadiance)[traceAddress];
         const float distance = resolveUniform(params.probeDistance)[traceAddress];
         const uint2 gatherLane = local * kLumenProbeGatherResolution / kLumenProbeDownsampleFactor;
-        filtered = resolveUniform(params.filteredProbeRadiance)[lumenProbeGatherAddress(probe, gatherLane)].rgb;
+        filtered = unpackLumenFilteredProbeRadiance(resolveUniform(params.filteredProbeRadiance)[lumenProbeGatherAddress(probe, gatherLane)]);
         raw = trace.rgb;
         sourceColor = probeTraceSourceColor(uint(trace.a));
         distanceColor = distance < 0.0f ? sourceColor : saturate(distance / params.distanceRange).xxx;

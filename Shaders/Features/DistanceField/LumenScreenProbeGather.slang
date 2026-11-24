@@ -4,6 +4,7 @@ import ShaderCore;
 import ParameterRoot;
 import LumenGlobalRay;
 import LumenProbeMath;
+import LumenProbeIntegration;
 import GlobalDistanceField;
 import LumenAdaptiveProbes;
 #if defined(METALLIC_LUMEN_ROUGH_SPECULAR)
@@ -130,7 +131,7 @@ struct LumenScreenProbeGatherParams
     ResourceHandle<Texture2D<float4>> diffuse;
     ResourceHandle<Texture2D<float4>> directColor;
     ResourceHandle<RWStructuredBuffer<float4>> traceOutput;
-    ResourceHandle<StructuredBuffer<float4>> traceInput;
+    ResourceHandle<StructuredBuffer<LumenFilteredProbeRadiance>> traceInput;
     ResourceHandle<LumenSceneColorTexture> indirectDiffuse;
     ResourceHandle<LumenCompositeTexture> color;
     uint width;
@@ -219,6 +220,10 @@ struct LumenScreenProbeGatherParams
     ResourceHandle<Texture2D<float4>> roughSpecularMaterial;
     ResourceHandle<LumenSceneColorTexture> roughSpecular;
     uint writeRoughSpecular;
+#endif
+#if defined(METALLIC_LUMEN_INTEGRATION_MODE)
+    ResourceHandle<StructuredBuffer<uint>> integrationTiles;
+    uint integrationMaxDispatchX;
 #endif
 };
 
@@ -891,22 +896,24 @@ float3 integrateProbeDiffuse(uint4 probeIndices, float4 weights, float3 normal,
 }
 #endif
 
-#if defined(METALLIC_LUMEN_ROUGH_SPECULAR)
-float3 sampleRoughSpecularProbe(StructuredBuffer<float4> radiance, uint probeIndex, float weight,
+#if defined(METALLIC_LUMEN_ROUGH_SPECULAR) && (!defined(METALLIC_LUMEN_INTEGRATION_MODE) || METALLIC_LUMEN_INTEGRATION_MODE != 0)
+float3 sampleRoughSpecularProbe(StructuredBuffer<LumenFilteredProbeRadiance> radiance, uint probeIndex, float weight,
     uint4 texelOffsets, float2 texelFraction)
 {
     // Compact placement initializes radiance only for active probes.
     if (weight == 0.0f) { return 0.0f; }
 
     const uint4 addresses = lumenProbeGatherAddress(probeIndex, 0u) + texelOffsets;
-    const float3 row0 = lerp(radiance[addresses.x].xyz, radiance[addresses.y].xyz, texelFraction.x);
-    const float3 row1 = lerp(radiance[addresses.z].xyz, radiance[addresses.w].xyz, texelFraction.x);
+    const float3 row0 = lerp(unpackLumenFilteredProbeRadiance(radiance[addresses.x]),
+        unpackLumenFilteredProbeRadiance(radiance[addresses.y]), texelFraction.x);
+    const float3 row1 = lerp(unpackLumenFilteredProbeRadiance(radiance[addresses.z]),
+        unpackLumenFilteredProbeRadiance(radiance[addresses.w]), texelFraction.x);
     return lerp(row0, row1, texelFraction.y) * weight;
 }
 
 // UE 5.7.4 InterpolateFromScreenProbes and ScreenProbeFixupBordersCS, default single radiance mip.
 // Address the one-texel border directly in Metallic's linear filtered radiance buffer.
-float3 interpolateRoughSpecularRadiance(StructuredBuffer<float4> radiance, uint4 probeIndices, float4 weights,
+float3 interpolateRoughSpecularRadiance(StructuredBuffer<LumenFilteredProbeRadiance> radiance, uint4 probeIndices, float4 weights,
     float3 coneDirection)
 {
     const uint borderedResolution = kLumenProbeGatherResolution + 2u;
@@ -932,10 +939,8 @@ float3 evaluateRoughSpecular(LumenScreenProbeGatherParams params, uint2 pixel, f
     uint4 probeIndices, float4 weights, float3 irradianceOverPi)
 {
     const float roughness = resolveUniform(params.roughSpecularMaterial).Load(int3(pixel, 0)).w;
-    const float fadeLength = 0.2f;
-    const float maxRoughnessToEvaluateRoughSpecular = 0.8f;
     // Keep Gather independent of the dedicated reflection pass's configurable tracing threshold.
-    const float diffuseLerp = saturate((roughness - maxRoughnessToEvaluateRoughSpecular + fadeLength) / fadeLength);
+    const float diffuseLerp = lumenProbeRoughSpecularDiffuseLerp(roughness);
     float3 specularLighting = irradianceOverPi;
     if (diffuseLerp < 1.0f) {
         const ViewConstants view = resolveUniform(params.jitterView)[0];
@@ -948,7 +953,7 @@ float3 evaluateRoughSpecular(LumenScreenProbeGatherParams params, uint2 pixel, f
         const float2 alpha = (sampleRoughness * sampleRoughness).xx;
         const uint2 seed = lumenRand3DPCG16(int3(pixel, view.frame.x % 8u)).xy;
         const uint numSpecularSamples = 4u;
-        const StructuredBuffer<float4> radiance = resolveUniform(params.traceInput);
+        const StructuredBuffer<LumenFilteredProbeRadiance> radiance = resolveUniform(params.traceInput);
         float3 roughSpecularLighting = 0.0f;
         for (uint sampleIndex = 0u; sampleIndex < numSpecularSamples; ++sampleIndex) {
             float2 e = lumenHammersley16(sampleIndex, numSpecularSamples, seed);
@@ -970,11 +975,25 @@ float3 evaluateRoughSpecular(LumenScreenProbeGatherParams params, uint2 pixel, f
 #endif
 
 [shader("compute")]
-[numthreads(8, 8, 1)]
-void lumenIntegrateScreenProbesMain(uint3 thread : SV_DispatchThreadID)
+[numthreads(kProbeIntegrationTileSize, kProbeIntegrationTileSize, 1)]
+void lumenIntegrateScreenProbesMain(uint3 dispatchThread : SV_DispatchThreadID,
+    uint3 group : SV_GroupID, uint3 localThread : SV_GroupThreadID)
 {
     LumenScreenProbeGatherParams params = getParameters<LumenScreenProbeGatherParams>();
     uint2 viewSize = uint2(params.width, params.height);
+#if defined(METALLIC_LUMEN_INTEGRATION_MODE)
+    let tiles = resolveUniform(params.integrationTiles);
+    const uint tileIndex = group.y * params.integrationMaxDispatchX + group.x;
+    const uint mode = METALLIC_LUMEN_INTEGRATION_MODE;
+    if (tileIndex >= tiles[mode]) { return; }
+    const uint2 tileDimensions = lumenProbeIntegrationTileDimensions(viewSize);
+    const uint tileCapacity = tileDimensions.x * tileDimensions.y;
+    const uint tile = tiles[kProbeIntegrationModeCount + mode * tileCapacity + tileIndex];
+    const uint3 thread = uint3(uint2(tile % tileDimensions.x, tile / tileDimensions.x) *
+        kProbeIntegrationTileSize + localThread.xy, 0u);
+#else
+    const uint3 thread = dispatchThread;
+#endif
     if (any(thread.xy >= viewSize)) {
         return;
     }
@@ -1116,8 +1135,12 @@ void lumenIntegrateScreenProbesMain(uint3 thread : SV_DispatchThreadID)
             indirect = irradianceOverPi * diffuse.Load(int3(thread.xy, 0)).rgb;
 #if defined(METALLIC_LUMEN_ROUGH_SPECULAR)
             if (params.writeRoughSpecular != 0u) {
+#if defined(METALLIC_LUMEN_INTEGRATION_MODE) && METALLIC_LUMEN_INTEGRATION_MODE == 0
+                indirectRoughSpecular = irradianceOverPi;
+#else
                 indirectRoughSpecular = evaluateRoughSpecular(params, thread.xy, receiver.xyz, normal,
                     probeIndices, sample.weights, irradianceOverPi);
+#endif
             }
 #endif
         }

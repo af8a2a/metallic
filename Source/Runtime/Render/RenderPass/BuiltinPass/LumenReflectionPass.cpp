@@ -21,14 +21,15 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
-constexpr uint64_t kLumenReflectionABI = 0x4c554d454e050003ull;
-constexpr uint64_t kLumenReflectionTiledABI = 0x4c554d454e050004ull;
-constexpr uint64_t kLumenReflectionScheduleABI = 0x4c554d454e050005ull;
+constexpr uint64_t kLumenReflectionABI = 0x4c554d454e050006ull;
+constexpr uint64_t kLumenReflectionTiledABI = 0x4c554d454e050007ull;
+constexpr uint64_t kLumenReflectionScheduleABI = 0x4c554d454e050008ull;
 constexpr uint64_t kLumenReflectionTemporalABI = 0x4c554d454e060001ull;
 constexpr uint64_t kLumenReflectionBilateralABI = 0x4c554d454e070002ull;
 constexpr uint64_t kLumenReflectionCompositeABI = 0x4c554d454e080001ull;
 constexpr char kShaderModule[] = "Features/DistanceField/LumenReflection";
 constexpr char kScheduleModule[] = "Features/DistanceField/LumenReflectionSchedule";
+constexpr SlangMacroDefine kDownsample2X{"METALLIC_LUMEN_REFLECTION_DOWNSAMPLE_2X", "1"};
 constexpr std::array kHistoryNames{"lighting", "depth", "age"};
 constexpr std::array kHistoryFormats{Format::RGBA16Sfloat, Format::R32Sfloat, Format::R8Unorm};
 constexpr uint32_t kScreenTraceViewStride = sizeof(ViewConstants) + 4 * sizeof(uint32_t);
@@ -36,6 +37,7 @@ constexpr uint32_t kReflectionTileSize = 8;
 constexpr uint32_t kReflectionMaxDispatchX = 65535;
 constexpr uint32_t kReflectionMaxExtent = 1u << 14u;
 constexpr uint32_t kReflectionDispatchBytes = 3 * sizeof(uint32_t);
+constexpr float kDefaultMaxRoughness = 0.4f;
 
 enum class ReflectionDispatch : uint32_t { ActiveTiles, ClearTiles, CompactRays, DetailRays, GDFRays, Count };
 
@@ -62,11 +64,14 @@ struct LumenReflectionParams {
     ShaderSampledImage rayData, rayHitDistance, bilateralReflections;
     LumenReflectionScreenBindings screen;
     ShaderLumenMeshSDFGridBindings detail;
+    ShaderStorageImage outputTraceDepth;
+    ShaderSampledImage traceDepth;
 };
 static_assert(offsetof(LumenReflectionParams, camera) == 80 && offsetof(LumenReflectionParams, width) == 160 &&
     offsetof(LumenReflectionParams, maxTraceDistance) == 176 &&
     offsetof(LumenReflectionParams, outputRayData) == 184 && offsetof(LumenReflectionParams, rayData) == 200 &&
     offsetof(LumenReflectionParams, screen) == 212 && offsetof(LumenReflectionParams, detail) == 228 &&
+    offsetof(LumenReflectionParams, outputTraceDepth) == 296 &&
     sizeof(LumenReflectionParams) == 304);
 
 struct LumenReflectionTiledParams {
@@ -82,8 +87,9 @@ struct LumenReflectionScheduleParams {
     ShaderBuffer tileMask, activeTiles, clearTiles, workCounts, rayList, indirectArgs;
     uint32_t width, height, maxDispatchX;
     float maxRoughness, meshSDFTraceDistance, cardTraceEndDistance, maxTraceDistance;
+    ShaderSampledImage traceDepth;
 };
-static_assert(offsetof(LumenReflectionScheduleParams, width) == 44 && sizeof(LumenReflectionScheduleParams) == 72);
+static_assert(offsetof(LumenReflectionScheduleParams, width) == 44 && sizeof(LumenReflectionScheduleParams) == 76);
 
 struct LumenReflectionTemporalParams {
     ShaderSampledImage position, normal, specular, previousPosition;
@@ -118,6 +124,119 @@ struct LumenReflectionCompositeParams {
 };
 static_assert(offsetof(LumenReflectionCompositeParams, width) == 24 && sizeof(LumenReflectionCompositeParams) == 36);
 
+bool reflectionOptionEnabled(const RenderGraphProperties& properties, std::string_view name)
+{
+    const auto value = properties.find(name);
+    return value != properties.end() && *value == true;
+}
+
+void reflectComposite(RenderPassReflection& reflection, bool roughSpecular)
+{
+    reflection.addTextureInput("sceneColor", "Scene-linear color before specular reflections")
+        .sampledRead().format = Format::RGBA32Sfloat;
+    if (roughSpecular) {
+        reflection.addTextureInput("roughSpecular", "Accumulated probe rough-specular radiance before material response")
+            .sampledRead().format = Format::RGBA16Sfloat;
+    }
+    auto& color = reflection.addTextureOutput("color", "Scene-linear color with the reflection response applied")
+        .storageWrite();
+    color.format = Format::RGBA32Sfloat;
+    color.colorEncoding = DisplayColorEncoding::SceneLinear;
+}
+
+Result<> compileComposite(Device& device, bool roughSpecular, ComputeKernel& kernel, std::string& log)
+{
+    std::vector<SlangMacroDefine> defines;
+    if (roughSpecular) { defines.push_back({"METALLIC_LUMEN_REFLECTION_ROUGH_SPECULAR", "1"}); }
+    return ShaderRegistry::instance().getComputeKernel(device,
+        {.moduleName = kShaderModule, .entryPointName = "lumenReflectionCompositeMain",
+            .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = defines},
+        {.parameters = parameterAbi<LumenReflectionCompositeParams>(kLumenReflectionCompositeABI), .debugName = "LumenReflectionComposite"},
+        kernel, log);
+}
+
+Result<EncodedParameters> encodeComposite(RenderGraphExecutionContext& context, ParameterWriter& writer,
+    ShaderSampledImage bilateralReflections, bool roughSpecular, float maxRoughness)
+{
+    const auto sampled = [&](const char* name) { return writer.sampledImageHandle(context.inputTexture(name).view()); };
+    const auto& output = context.outputTexture("color");
+    return writer.encode(LumenReflectionCompositeParams{
+        .sceneColor = sampled("sceneColor"),
+        .specular = sampled("specular"),
+        .bilateralReflections = bilateralReflections,
+        .position = roughSpecular ? sampled("position") : ShaderSampledImage{},
+        .roughSpecular = roughSpecular ? sampled("roughSpecular") : ShaderSampledImage{},
+        .color = writer.storageImageHandle(output.view()),
+        .width = output.desc().width,
+        .height = output.desc().height,
+        .maxRoughness = maxRoughness,
+    }, kLumenReflectionCompositeABI);
+}
+
+class LumenReflectionCompositePass final : public ComputePass {
+public:
+    bool supportsFrameOverlap() const override { return true; }
+    bool supportsAsyncQueue() const override { return true; }
+    QueueType queueType() const override { return QueueType::Graphics; }
+
+    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    {
+        RenderPassReflection reflection;
+        const bool roughSpecular = reflectionOptionEnabled(properties(), "roughSpecular");
+        reflectComposite(reflection, roughSpecular);
+        reflection.addTextureInput("bilateralReflections", "Bilateral-filtered reflection radiance and roughness fade")
+            .sampledRead().format = Format::RGBA16Sfloat;
+        reflection.addTextureInput("specular", "Integrated receiver specular response and perceptual roughness")
+            .sampledRead().format = Format::RGBA16Sfloat;
+        if (roughSpecular) {
+            reflection.addTextureInput("position", "World receiver position and positive linear depth")
+                .sampledRead().format = Format::RGBA32Sfloat;
+        }
+        return reflection;
+    }
+
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
+    {
+        const auto rough = properties().find("roughSpecular");
+        if (rough != properties().end() && !rough->is_boolean()) {
+            log = "Lumen Reflection Composite roughSpecular must be a boolean";
+            return makeError(Error::InvalidArgument);
+        }
+        const auto max = properties().find("maxRoughness");
+        if (max != properties().end()) {
+            if (!max->is_number() || !(*max >= 0 && *max <= 1)) {
+                log = "Lumen Reflection Composite maxRoughness must be a number in [0, 1]";
+                return makeError(Error::InvalidArgument);
+            }
+            maxRoughness_ = max->get<float>();
+        } else {
+            maxRoughness_ = kDefaultMaxRoughness;
+        }
+        roughSpecular_ = reflectionOptionEnabled(properties(), "roughSpecular");
+        device_ = context.device;
+        return compileComposite(*device_, roughSpecular_, kernel_, log);
+    }
+
+    Result<> execute(RenderGraphExecutionContext& context) override
+    {
+        auto registry = ResourceRegistry::forDevice(*device_);
+        if (!registry) { return makeError(registry.error()); }
+        auto& commands = context.commandBuffer();
+        ParameterWriter writer(*device_, **registry, RenderFrameContext::from(commands));
+        const auto bilateral = writer.sampledImageHandle(context.inputTexture("bilateralReflections").view());
+        const auto encoded = encodeComposite(context, writer, bilateral, roughSpecular_, maxRoughness_);
+        if (!encoded) { return makeError(encoded.error()); }
+        const auto& output = context.outputTexture("color").desc();
+        return kernel_.dispatch(commands, *encoded, reflectionTileCount(output.width), reflectionTileCount(output.height));
+    }
+
+private:
+    Device* device_ = nullptr;
+    ComputeKernel kernel_;
+    float maxRoughness_ = kDefaultMaxRoughness;
+    bool roughSpecular_ = false;
+};
+
 struct HistoryContent {
     uint64_t reprojectionRevision;
     uint64_t sceneIdentity;
@@ -141,12 +260,21 @@ public:
     Result<> execute(RenderGraphExecutionContext& context) override;
     bool supportsFrameOverlap() const override { return true; }
     bool supportsExternalFrameOverlap() const override { return false; }
+    bool supportsAsyncQueue() const override { return optionEnabled("traceOnly"); }
+    QueueType queueType() const override
+    {
+        return optionEnabled("asyncCompute") ? QueueType::Compute : QueueType::Graphics;
+    }
 
 private:
     bool optionEnabled(std::string_view name) const
     {
-        const auto value = properties().find(name);
-        return value != properties().end() && *value == true;
+        return reflectionOptionEnabled(properties(), name);
+    }
+    bool halfResolution() const
+    {
+        const auto factor = properties().find("downsampleFactor");
+        return factor != properties().end() && *factor == 2;
     }
     Result<> compileClassifiedTracing(const std::vector<SlangMacroDefine>& traceDefines, std::string& log);
 
@@ -154,6 +282,7 @@ private:
     std::unique_ptr<TextureView> blueNoise_;
     ComputeKernel trace_;
     ComputeKernel initWork_, markTiles_, buildTileLists_, setupTileArgs_;
+    ComputeKernel buildTraceTileLists_, clearResolveTiles_;
     ComputeKernel generateTiledRays_, clearTiles_, traceScreenTiles_;
     ComputeKernel compactDetailRays_, setupDetailArgs_, traceDetailRays_;
     ComputeKernel compactGDFRays_, setupGDFArgs_, traceGDFRays_;
@@ -164,7 +293,7 @@ private:
     MeshDistanceFieldGPU meshFields_;
     LumenMeshSDFGrid meshGrid_;
     float maxTraceDistance_ = 200.0f;
-    float maxRoughness_ = 0.4f;
+    float maxRoughness_ = kDefaultMaxRoughness;
     float meshSDFTraceDistance_ = kLumenDefaultMeshSDFTraceDistance;
     // Preserve reprojectable history across ordinary camera motion, as diffuse gather does.
     HistoryResourceManager history_;
@@ -178,6 +307,12 @@ RenderPassReflection LumenReflectionPass::reflect(const RenderGraphCompileContex
     using Access = RenderGraphResourceAccess;
     using Initialization = RenderGraphInitialization;
     RenderPassReflection reflection;
+    const bool half = halfResolution();
+    const uint32_t tracingWidth = half ? (context.width + 1u) / 2u : context.width;
+    const uint32_t tracingHeight = half ? (context.height + 1u) / 2u : context.height;
+    const auto setTraceExtent = [&](RenderGraphField& field) {
+        if (half) { field.texture2D(tracingWidth, tracingHeight).matchOutputExtent = false; }
+    };
     reflectLumenGlobalTraceInputs(reflection);
     reflection.addTextureInput("position", "World receiver position and positive linear depth")
         .sampledRead().format = Format::RGBA32Sfloat;
@@ -188,12 +323,6 @@ RenderPassReflection LumenReflectionPass::reflect(const RenderGraphCompileContex
     if (optionEnabled("dynamicReprojection")) {
         reflection.addTextureInput("previousPosition", "Previous world position of the current receiver and validity")
             .sampledRead().format = Format::RGBA32Sfloat;
-    }
-    reflection.addTextureInput("sceneColor", "Scene-linear color before specular reflections")
-        .sampledRead().format = Format::RGBA32Sfloat;
-    if (optionEnabled("roughSpecular")) {
-        reflection.addTextureInput("roughSpecular", "Accumulated probe rough-specular radiance before material response")
-            .sampledRead().format = Format::RGBA16Sfloat;
     }
     if (optionEnabled("screenTraces")) {
         reflection.addBufferInput("closestHZB", "Current closest reversed-Z depth hierarchy")
@@ -208,7 +337,7 @@ RenderPassReflection LumenReflectionPass::reflect(const RenderGraphCompileContex
     const bool classifiedTracing = optionEnabled("classifiedTracing");
     if (classifiedTracing) {
         const uint64_t tileCount = uint64_t(reflectionTileCount(context.width)) * reflectionTileCount(context.height);
-        const uint64_t pixelCount = uint64_t(context.width) * context.height;
+        const uint64_t pixelCount = uint64_t(tracingWidth) * tracingHeight;
         const auto addWorkBuffer = [&](const char* name, const char* description, uint64_t words) -> auto& {
             return reflection.addBufferOutput(name, description).buffer(words * sizeof(uint32_t), sizeof(uint32_t))
                 .storageReadWrite().bufferLayout("u32");
@@ -220,27 +349,48 @@ RenderPassReflection LumenReflectionPass::reflect(const RenderGraphCompileContex
         addWorkBuffer("reflectionWorkCounts", "Active tiles, clear tiles, Mesh SDF rays and GDF rays", 4)
             .transient(Initialization::FullOverwrite);
         addWorkBuffer("reflectionRayList", "Packed pixel coordinates from the latest unfinished-ray compaction", pixelCount);
-        reflection.addBufferOutput("reflectionDispatchArgs", "Active tiles, clear tiles, compaction, Mesh SDF and GDF dispatches")
-            .buffer(uint32_t(ReflectionDispatch::Count) * kReflectionDispatchBytes, sizeof(uint32_t)).storageWrite()
-            .stageAccess(Access::BufferIndirectRead).transient(Initialization::FullOverwrite);
+        const auto addDispatchArgs = [&](const char* name, const char* description) {
+            reflection.addBufferOutput(name, description)
+                .buffer(uint32_t(ReflectionDispatch::Count) * kReflectionDispatchBytes, sizeof(uint32_t)).storageWrite()
+                .stageAccess(Access::BufferIndirectRead).transient(Initialization::FullOverwrite);
+        };
+        addDispatchArgs("reflectionDispatchArgs", "Active tiles, clear tiles, compaction, Mesh SDF and GDF dispatches");
+        if (half) {
+            const uint64_t traceTiles = uint64_t(reflectionTileCount(tracingWidth)) * reflectionTileCount(tracingHeight);
+            addWorkBuffer("reflectionTraceActiveTiles", "Packed half-resolution tracing tiles", traceTiles);
+            addWorkBuffer("reflectionTraceClearTiles", "Half-resolution tiles without reflection rays", traceTiles);
+            addWorkBuffer("reflectionTraceWorkCounts", "Active and clear tracing tiles, Mesh SDF rays and GDF rays", 4)
+                .transient(Initialization::FullOverwrite);
+            addDispatchArgs("reflectionTraceDispatchArgs", "Half-resolution tracing, compaction and traversal dispatches");
+        }
     }
 
     auto& reflections = reflection.addTextureOutput("reflections", "Raw scene-linear reflection radiance and roughness fade")
         .storageWrite().stageAccess(Access::TextureSampleRead);
     reflections.format = Format::RGBA16Sfloat;
     reflections.colorEncoding = DisplayColorEncoding::SceneLinear;
+    setTraceExtent(reflections);
     auto& trace = reflection.addTextureOutput("trace",
         "Hit distance in meters, trace classification (5 Screen, 9 Mesh SDF), GDF clipmap and card cache classification")
         .storageWrite();
     trace.format = Format::RGBA32Sfloat;
     if (classifiedTracing) { trace.stageAccess(Access::TextureSampleRead); }
-    reflection.addTextureOutput("rayData", "Reflection ray direction and reciprocal PDF")
-        .storageWrite().stageAccess(Access::TextureSampleRead).transient(Initialization::FullOverwrite)
-        .format = Format::RGBA16Sfloat;
+    setTraceExtent(trace);
+    auto& rayData = reflection.addTextureOutput("rayData", "Reflection ray direction and reciprocal PDF")
+        .storageWrite().stageAccess(Access::TextureSampleRead).transient(Initialization::FullOverwrite);
+    rayData.format = Format::RGBA16Sfloat;
+    setTraceExtent(rayData);
     auto& rayHitDistance = reflection.addTextureOutput("rayHitDistance", "Encoded reflection ray distance in centimeters")
         .storageWrite().stageAccess(Access::TextureSampleRead).transient(Initialization::FullOverwrite);
     rayHitDistance.format = Format::R16Sfloat;
     if (classifiedTracing) { rayHitDistance.stageAccess(Access::TextureStorageReadWrite); }
+    setTraceExtent(rayHitDistance);
+    if (half) {
+        auto& traceDepth = reflection.addTextureOutput("traceDepth", "Jittered receiver depth, negative when tracing is skipped")
+            .storageWrite().stageAccess(Access::TextureSampleRead).transient(Initialization::FullOverwrite);
+        traceDepth.format = Format::R32Sfloat;
+        setTraceExtent(traceDepth);
+    }
     auto& resolvedReflections = reflection.addTextureOutput("resolvedReflections",
         "Resolved scene-linear reflection radiance and roughness fade");
     resolvedReflections.storageWrite().stageAccess(Access::TextureSampleRead).transient(Initialization::FullOverwrite);
@@ -260,10 +410,7 @@ RenderPassReflection LumenReflectionPass::reflect(const RenderGraphCompileContex
         .storageWrite().stageAccess(Access::TextureSampleRead).transient(Initialization::FullOverwrite);
     bilateralReflections.format = Format::RGBA16Sfloat;
     bilateralReflections.colorEncoding = DisplayColorEncoding::SceneLinear;
-    auto& color = reflection.addTextureOutput("color", "Scene-linear color with the reflection response applied")
-        .storageWrite();
-    color.format = Format::RGBA32Sfloat;
-    color.colorEncoding = DisplayColorEncoding::SceneLinear;
+    if (!optionEnabled("traceOnly")) { reflectComposite(reflection, optionEnabled("roughSpecular")); }
     return reflection;
 }
 
@@ -273,12 +420,26 @@ Result<> LumenReflectionPass::compile(const RenderGraphCompileContext& context, 
         log = "Lumen Reflection requires a rendering device and a graphics queue";
         return makeError(Error::InvalidArgument);
     }
-    for (std::string_view option : {"dynamicReprojection", "screenTraces", "detailTracing", "classifiedTracing", "roughSpecular"}) {
+    for (std::string_view option : {"dynamicReprojection", "screenTraces", "detailTracing", "classifiedTracing", "roughSpecular",
+            "traceOnly", "asyncCompute"}) {
         const auto value = properties().find(option);
         if (value != properties().end() && !value->is_boolean()) {
             log = "Lumen Reflection " + std::string(option) + " must be a boolean";
             return makeError(Error::InvalidArgument);
         }
+    }
+    if (optionEnabled("asyncCompute") && !optionEnabled("traceOnly")) {
+        log = "Lumen Reflection asyncCompute requires traceOnly";
+        return makeError(Error::InvalidArgument);
+    }
+    const auto factor = properties().find("downsampleFactor");
+    if (factor != properties().end() && (!factor->is_number_integer() || (*factor != 1 && *factor != 2))) {
+        log = "Lumen Reflection downsampleFactor must be 1 or 2";
+        return makeError(Error::InvalidArgument);
+    }
+    if (halfResolution() && (!optionEnabled("traceOnly") || !optionEnabled("classifiedTracing"))) {
+        log = "Lumen Reflection downsampleFactor 2 requires traceOnly and classifiedTracing";
+        return makeError(Error::InvalidArgument);
     }
     if (optionEnabled("classifiedTracing") && (context.width > kReflectionMaxExtent || context.height > kReflectionMaxExtent)) {
         log = "Lumen classified reflection coordinates require a render extent of at most 16384 pixels per axis";
@@ -287,7 +448,7 @@ Result<> LumenReflectionPass::compile(const RenderGraphCompileContext& context, 
     try {
         // UE 5.7.4 FPostProcessSettings defaults to 20000 cm and roughness 0.4.
         maxTraceDistance_ = properties().value("maxTraceDistance", 200.0f);
-        maxRoughness_ = properties().value("maxRoughness", 0.4f);
+        maxRoughness_ = properties().value("maxRoughness", kDefaultMaxRoughness);
         meshSDFTraceDistance_ = properties().value("meshSDFTraceDistance", kLumenDefaultMeshSDFTraceDistance);
     } catch (const RenderGraphProperties::exception& error) {
         log = "Invalid Lumen Reflection properties: " + std::string(error.what());
@@ -300,7 +461,9 @@ Result<> LumenReflectionPass::compile(const RenderGraphCompileContext& context, 
     }
 
     device_ = context.device;
+    Queue* computeConsumer = optionEnabled("asyncCompute") ? device_->getQueue(QueueType::Compute) : nullptr;
     std::vector<SlangMacroDefine> traceDefines;
+    if (halfResolution()) { traceDefines.push_back(kDownsample2X); }
     if (optionEnabled("screenTraces")) { traceDefines.push_back({"METALLIC_LUMEN_REFLECTION_SCREEN_TRACES", "1"}); }
     if (optionEnabled("detailTracing")) {
         const auto paths = properties().find("detailDistanceFieldPaths");
@@ -321,7 +484,8 @@ Result<> LumenReflectionPass::compile(const RenderGraphCompileContext& context, 
             }
             fields.push_back(std::filesystem::path(PROJECT_SOURCE_DIR) / path.get_ref<const std::string&>());
         }
-        if (auto result = meshFields_.initialize(*device_, *context.graphicsQueue, *context.runtimeScene, fields, log); !result) {
+        if (auto result = meshFields_.initialize(*device_, *context.graphicsQueue, *context.runtimeScene, fields, log,
+                computeConsumer); !result) {
             return result;
         }
         if (auto result = meshGrid_.compile(*device_, log); !result) { return result; }
@@ -329,7 +493,7 @@ Result<> LumenReflectionPass::compile(const RenderGraphCompileContext& context, 
     }
     lastContent_.reset();
     if (auto result = history_.initialize(*device_); !result) { return result; }
-    auto blueNoise = loadLumenBlueNoise(*device_, *context.graphicsQueue, LumenBlueNoise::Vec2, log);
+    auto blueNoise = loadLumenBlueNoise(*device_, *context.graphicsQueue, LumenBlueNoise::Vec2, log, computeConsumer);
     if (!blueNoise) { return makeError(blueNoise.error()); }
     blueNoise_ = std::move(*blueNoise);
     auto& registry = ShaderRegistry::instance();
@@ -351,9 +515,10 @@ Result<> LumenReflectionPass::compile(const RenderGraphCompileContext& context, 
             return result;
         }
     }
+    const auto temporalDefines = halfResolution() ? std::span(&kDownsample2X, 1u) : std::span<const SlangMacroDefine>{};
     auto result = registry.getComputeKernel(*device_,
         {.moduleName = kShaderModule, .entryPointName = "lumenReflectionTemporalMain",
-            .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+            .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = temporalDefines},
         {.parameters = parameterAbi<LumenReflectionTemporalParams>(kLumenReflectionTemporalABI),
             .debugName = "LumenReflectionTemporal"}, temporal_, log);
     if (!result) { return result; }
@@ -362,14 +527,8 @@ Result<> LumenReflectionPass::compile(const RenderGraphCompileContext& context, 
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
         {.parameters = parameterAbi<LumenReflectionBilateralParams>(kLumenReflectionBilateralABI),
             .debugName = "LumenReflectionBilateral"}, bilateral_, log);
-    if (!result) { return result; }
-    std::vector<SlangMacroDefine> compositeDefines;
-    if (optionEnabled("roughSpecular")) { compositeDefines.push_back({"METALLIC_LUMEN_REFLECTION_ROUGH_SPECULAR", "1"}); }
-    return registry.getComputeKernel(*device_,
-        {.moduleName = kShaderModule, .entryPointName = "lumenReflectionCompositeMain",
-            .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = compositeDefines},
-        {.parameters = parameterAbi<LumenReflectionCompositeParams>(kLumenReflectionCompositeABI), .debugName = "LumenReflectionComposite"},
-        composite_, log);
+    if (!result || optionEnabled("traceOnly")) { return result; }
+    return compileComposite(*device_, optionEnabled("roughSpecular"), composite_, log);
 }
 
 Result<> LumenReflectionPass::compileClassifiedTracing(const std::vector<SlangMacroDefine>& traceDefines, std::string& log)
@@ -377,6 +536,7 @@ Result<> LumenReflectionPass::compileClassifiedTracing(const std::vector<SlangMa
     auto& registry = ShaderRegistry::instance();
     const auto caps = device_->capabilities();
     std::vector<SlangMacroDefine> scheduleDefines;
+    if (halfResolution()) { scheduleDefines.push_back(kDownsample2X); }
     // UE's wave permutation assigns 16 tiles to one 1024-lane group.
     if (caps.subgroupSize == 32u && caps.minSubgroupSize == 32u && caps.maxComputeWorkgroupSubgroups >= 32u &&
         caps.computeSubgroupBallotArithmetic && caps.computeSubgroupShuffle) {
@@ -400,6 +560,12 @@ Result<> LumenReflectionPass::compileClassifiedTracing(const std::vector<SlangMa
     };
     for (const auto& [entry, label, kernel] : scheduleEntries) {
         if (auto result = schedule(entry, label, kernel); !result) { return result; }
+    }
+    if (halfResolution()) {
+        scheduleDefines.push_back({"METALLIC_LUMEN_REFLECTION_TRACE_TILE_LIST", "1"});
+        const auto result = schedule("lumenReflectionBuildTileListsMain", "LumenReflectionBuildTraceTileLists", buildTraceTileLists_);
+        scheduleDefines.pop_back();
+        if (!result) { return result; }
     }
     if (optionEnabled("detailTracing")) {
         if (auto result = schedule("lumenReflectionSetupDetailArgsMain", "LumenReflectionSetupDetailArgs", setupDetailArgs_); !result) {
@@ -427,6 +593,11 @@ Result<> LumenReflectionPass::compileClassifiedTracing(const std::vector<SlangMa
     for (const auto& [entry, label, kernel] : tiledEntries) {
         if (auto result = tiled(entry, label, kernel); !result) { return result; }
     }
+    if (halfResolution()) {
+        if (auto result = tiled("lumenReflectionClearResolveTilesMain", "LumenReflectionClearResolveTiles", clearResolveTiles_); !result) {
+            return result;
+        }
+    }
     if (optionEnabled("screenTraces")) {
         if (auto result = tiled("lumenReflectionTraceScreenTiledMain", "LumenReflectionTraceScreenTiles", traceScreenTiles_); !result) {
             return result;
@@ -453,11 +624,12 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
     }
     const auto clipmapCount = lumenGlobalTraceClipmapCount(context);
     if (!clipmapCount) { return makeError(Error::InvalidArgument); }
-    const auto& output = context.outputTexture("color").desc();
+    const auto& output = context.outputTexture("bilateralReflections").desc();
     const auto* scene = world ? world->scene() : context.runtimeScene();
     const auto* globalHistory = context.historyResources();
     const bool dynamic = optionEnabled("dynamicReprojection");
     const bool screenTraces = optionEnabled("screenTraces");
+    const bool half = halfResolution();
     const uint64_t reprojectionRevision = globalHistory
         ? (dynamic ? globalHistory->motionReprojectionInvalidationRevision() :
             globalHistory->sunLightingReprojectionInvalidationRevision())
@@ -494,6 +666,7 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
             .mipCount = 1,
             .layerCount = 1,
             .memoryLocation = MemoryLocation::Device,
+            .queueAccess = optionEnabled("asyncCompute") ? QueueAccessBits::Graphics | QueueAccessBits::Compute : QueueAccessBits::Graphics,
         };
         auto result = history_.ensureTexture(kHistoryNames[index], desc, TextureViewDesc{.format = desc.format});
         if (!result) { return result; }
@@ -518,11 +691,9 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
         .position = sampled("position"),
         .normal = sampled("normal"),
         .specular = sampled("specular"),
-        .sceneColor = sampled("sceneColor"),
         .blueNoise = writer.sampledImageHandle(blueNoise_.get()),
         .outputReflections = storage("reflections"),
         .trace = storage("trace"),
-        .color = storage("color"),
         .reflections = sampledOutput("reflections"),
         .camera = view->current,
         .width = output.width,
@@ -538,6 +709,8 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
         .rayData = sampledOutput("rayData"),
         .rayHitDistance = sampledOutput("rayHitDistance"),
         .bilateralReflections = sampledOutput("bilateralReflections"),
+        .outputTraceDepth = half ? storage("traceDepth") : ShaderStorageImage{},
+        .traceDepth = half ? sampledOutput("traceDepth") : ShaderSampledImage{},
     };
     if (screenTraces) {
         parameters.screen = {writer.buffer(context.inputBuffer("closestHZB").buffer()), sampled("previousDepth"),
@@ -597,20 +770,14 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
     const auto encodedBilateral = writer.encode(bilateralParams, kLumenReflectionBilateralABI);
     if (!encodedBilateral) { return makeError(encodedBilateral.error()); }
 
+    const bool traceOnly = optionEnabled("traceOnly");
     const bool roughSpecular = optionEnabled("roughSpecular");
-    const LumenReflectionCompositeParams compositeParams{
-        .sceneColor = parameters.sceneColor,
-        .specular = parameters.specular,
-        .bilateralReflections = parameters.bilateralReflections,
-        .position = parameters.position,
-        .roughSpecular = roughSpecular ? sampled("roughSpecular") : ShaderSampledImage{},
-        .color = parameters.color,
-        .width = parameters.width,
-        .height = parameters.height,
-        .maxRoughness = parameters.maxRoughness,
-    };
-    const auto encodedComposite = writer.encode(compositeParams, kLumenReflectionCompositeABI);
-    if (!encodedComposite) { return makeError(encodedComposite.error()); }
+    std::optional<EncodedParameters> encodedComposite;
+    if (!traceOnly) {
+        const auto encoded = encodeComposite(context, writer, parameters.bilateralReflections, roughSpecular, maxRoughness_);
+        if (!encoded) { return makeError(encoded.error()); }
+        encodedComposite.emplace(*encoded);
+    }
 
     using Access = RenderGraphResourceAccess;
     std::vector<RenderGraphStageUse> traceUses{
@@ -661,13 +828,11 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
         {"currentLighting", Access::TextureSampleRead}, {"currentAge", Access::TextureSampleRead},
         {"bilateralReflections", Access::TextureStorageWrite},
     };
-    std::vector<RenderGraphStageUse> compositeUses{
+    const RenderGraphStageUse compositeUses[]{
         {"sceneColor", Access::TextureSampleRead}, {"bilateralReflections", Access::TextureSampleRead},
         {"specular", Access::TextureSampleRead}, {"color", Access::TextureStorageWrite},
+        {"position", Access::TextureSampleRead}, {"roughSpecular", Access::TextureSampleRead},
     };
-    if (roughSpecular) {
-        compositeUses.insert(compositeUses.end(), {{"position", Access::TextureSampleRead}, {"roughSpecular", Access::TextureSampleRead}});
-    }
     const uint32_t groupsX = reflectionTileCount(parameters.width);
     const uint32_t groupsY = reflectionTileCount(parameters.height);
     std::vector<RenderGraphStage> stages;
@@ -679,29 +844,44 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
             {"Bilateral filter reflections", bilateralUses, [&](CommandBuffer& cmd) {
                 return bilateral_.dispatch(cmd, *encodedBilateral, groupsX, groupsY);
             }},
-            {"Composite reflections", compositeUses, [&](CommandBuffer& cmd) {
-                return composite_.dispatch(cmd, *encodedComposite, groupsX, groupsY);
-            }},
         });
+        if (encodedComposite) {
+            stages.push_back({"Composite reflections", std::span(compositeUses).first(roughSpecular ? 6u : 4u), [&](CommandBuffer& cmd) {
+                return composite_.dispatch(cmd, *encodedComposite, groupsX, groupsY);
+            }});
+        }
         return context.executeStages(stages, {}, textures);
     };
     Result<> result;
     if (optionEnabled("classifiedTracing")) {
         const auto work = [&](const char* name) { return writer.buffer(context.outputBuffer(name).buffer()); };
+        const char* traceActiveTiles = half ? "reflectionTraceActiveTiles" : "reflectionActiveTiles";
+        const char* traceClearTiles = half ? "reflectionTraceClearTiles" : "reflectionClearTiles";
+        const char* traceWorkCounts = half ? "reflectionTraceWorkCounts" : "reflectionWorkCounts";
+        const char* traceArguments = half ? "reflectionTraceDispatchArgs" : "reflectionDispatchArgs";
         const LumenReflectionTiledParams tiledParams{parameters, work("reflectionActiveTiles"),
             work("reflectionClearTiles"), work("reflectionWorkCounts"), work("reflectionRayList"), kReflectionMaxDispatchX};
         const auto tiled = writer.encode(tiledParams, kLumenReflectionTiledABI);
         if (!tiled) { return makeError(tiled.error()); }
-        const auto schedule = writer.encode(LumenReflectionScheduleParams{
-            parameters.position, parameters.specular, parameters.rayData, parameters.rayHitDistance, sampledOutput("trace"),
-            work("reflectionTileMask"), tiledParams.activeTiles, tiledParams.clearTiles, tiledParams.workCounts,
-            tiledParams.rayList, work("reflectionDispatchArgs"), parameters.width, parameters.height, kReflectionMaxDispatchX,
-            parameters.maxRoughness, meshSDFTraceDistance_, kLumenCardTraceEndDistance, parameters.maxTraceDistance},
-            kLumenReflectionScheduleABI);
+        const auto makeSchedule = [&](const LumenReflectionTiledParams& tiles, const char* arguments) {
+            return writer.encode(LumenReflectionScheduleParams{
+                parameters.position, parameters.specular, parameters.rayData, parameters.rayHitDistance, sampledOutput("trace"),
+                work("reflectionTileMask"), tiles.activeTiles, tiles.clearTiles, tiles.workCounts,
+                tiles.rayList, work(arguments), parameters.width, parameters.height, kReflectionMaxDispatchX,
+                parameters.maxRoughness, meshSDFTraceDistance_, kLumenCardTraceEndDistance, parameters.maxTraceDistance,
+                parameters.traceDepth}, kLumenReflectionScheduleABI);
+        };
+        const auto schedule = makeSchedule(tiledParams, "reflectionDispatchArgs");
         if (!schedule) { return makeError(schedule.error()); }
+        const LumenReflectionTiledParams traceParams = half ? LumenReflectionTiledParams{parameters, work(traceActiveTiles),
+            work(traceClearTiles), work(traceWorkCounts), tiledParams.rayList, kReflectionMaxDispatchX} : tiledParams;
+        const auto traceTiled = half ? writer.encode(traceParams, kLumenReflectionTiledABI) : tiled;
+        if (!traceTiled) { return makeError(traceTiled.error()); }
+        const auto traceSchedule = half ? makeSchedule(traceParams, traceArguments) : schedule;
+        if (!traceSchedule) { return makeError(traceSchedule.error()); }
         const auto indirect = [&](ComputeKernel& kernel, const EncodedParameters& args, ReflectionDispatch kind,
-                                  CommandBuffer& cmd) -> Result<> {
-            const auto dispatch = context.outputBuffer("reflectionDispatchArgs").buffer()->slice(
+                                  CommandBuffer& cmd, const char* arguments = "reflectionDispatchArgs") -> Result<> {
+            const auto dispatch = context.outputBuffer(arguments).buffer()->slice(
                 {uint32_t(kind) * kReflectionDispatchBytes, kReflectionDispatchBytes});
             if (!dispatch) { return makeError(dispatch.error()); }
             return kernel.dispatchIndirect(cmd, args, *dispatch);
@@ -715,25 +895,35 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
         constexpr RenderGraphStageUse dispatchArgs{"reflectionDispatchArgs", Access::BufferIndirectRead};
         constexpr RenderGraphStageUse workCounts{"reflectionWorkCounts", read};
         constexpr RenderGraphStageUse activeTiles{"reflectionActiveTiles", read};
+        const RenderGraphStageUse traceArgs{traceArguments, Access::BufferIndirectRead};
+        const RenderGraphStageUse traceCounts{traceWorkCounts, read};
+        const RenderGraphStageUse traceTiles{traceActiveTiles, read};
         const RenderGraphStageUse initUses[]{{"reflectionWorkCounts", write}};
+        const RenderGraphStageUse traceInitUses[]{{traceWorkCounts, write}};
         const RenderGraphStageUse markUses[]{{"position", sample}, {"specular", sample}, {"reflectionTileMask", write}};
         const RenderGraphStageUse listUses[]{{"reflectionTileMask", read}, {"reflectionWorkCounts", readWrite},
             {"reflectionActiveTiles", write}, {"reflectionClearTiles", write}};
+        const RenderGraphStageUse traceListBuildUses[]{{"reflectionTileMask", read}, {traceWorkCounts, readWrite},
+            {traceActiveTiles, write}, {traceClearTiles, write}};
         const RenderGraphStageUse setupUses[]{workCounts, {"reflectionDispatchArgs", write}};
-        const RenderGraphStageUse generateUses[]{dispatchArgs, workCounts, activeTiles,
+        const RenderGraphStageUse traceSetupUses[]{traceCounts, {traceArguments, write}};
+        const RenderGraphStageUse generateUses[]{traceArgs, traceCounts, traceTiles,
             {"position", sample}, {"normal", sample}, {"specular", sample},
+            {"reflections", store}, {"trace", store}, {"rayData", store}, {"rayHitDistance", store}, {"traceDepth", store}};
+        std::vector<RenderGraphStageUse> clearUses{traceArgs, traceCounts, {traceClearTiles, read},
             {"reflections", store}, {"trace", store}, {"rayData", store}, {"rayHitDistance", store}};
-        const RenderGraphStageUse clearUses[]{dispatchArgs, workCounts, {"reflectionClearTiles", read},
-            {"reflections", store}, {"trace", store}, {"rayData", store}, {"rayHitDistance", store},
+        const RenderGraphStageUse clearResolveUses[]{dispatchArgs, workCounts, {"reflectionClearTiles", read},
             {"resolvedReflections", store}, {"resolvedHitDistance", store}};
-        const RenderGraphStageUse screenUses[]{dispatchArgs, workCounts, activeTiles,
+        if (half) { clearUses.push_back({"traceDepth", store}); }
+        else { clearUses.insert(clearUses.end(), std::begin(clearResolveUses) + 3, std::end(clearResolveUses)); }
+        const RenderGraphStageUse screenUses[]{traceArgs, traceCounts, traceTiles,
             {"position", sample}, {"normal", sample}, {"specular", sample}, {"rayData", sample},
             {"closestHZB", read}, {"previousDepth", sample}, {"previousColor", sample}, {"traceView", read},
             {"reflections", store}, {"trace", store}, {"rayHitDistance", store}};
-        const RenderGraphStageUse compactUses[]{dispatchArgs, activeTiles, {"reflectionWorkCounts", readWrite},
-            {"position", sample}, {"rayData", sample}, {"rayHitDistance", sample}, {"trace", sample},
+        const RenderGraphStageUse compactUses[]{traceArgs, traceTiles, {traceWorkCounts, readWrite},
+            {half ? "traceDepth" : "position", sample}, {"rayData", sample}, {"rayHitDistance", sample}, {"trace", sample},
             {"reflectionRayList", write}};
-        const RenderGraphStageUse traceListUses[]{dispatchArgs, workCounts, {"reflectionRayList", read},
+        const RenderGraphStageUse traceListUses[]{traceArgs, traceCounts, {"reflectionRayList", read},
             {"position", sample}, {"specular", sample}, {"rayData", sample},
             {"reflections", store}, {"trace", store}, {"rayHitDistance", Access::TextureStorageReadWrite},
             {"pageTable", sample}, {"pageAtlas", sample}, {"coarseMip", sample}, {"domain", read},
@@ -742,6 +932,7 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
         std::vector<RenderGraphStageUse> detailUses(std::begin(traceListUses), std::end(traceListUses));
         std::vector<RenderGraphStageUse> tiledResolveUses(std::begin(resolveUses), std::end(resolveUses));
         tiledResolveUses.insert(tiledResolveUses.end(), {dispatchArgs, workCounts, activeTiles});
+        if (half) { tiledResolveUses.push_back({"traceDepth", sample}); }
         stages.insert(stages.end(), {
             {"Initialize reflection work counts", initUses, [&](CommandBuffer& cmd) {
                 return initWork_.dispatch(cmd, *schedule, 1, 1);
@@ -755,16 +946,35 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
             {"Set up reflection tile dispatches", setupUses, [&](CommandBuffer& cmd) {
                 return setupTileArgs_.dispatch(cmd, *schedule, 1, 1);
             }},
-            {"Generate reflection rays in active tiles", generateUses, [&](CommandBuffer& cmd) {
-                return indirect(generateTiledRays_, *tiled, ReflectionDispatch::ActiveTiles, cmd);
+        });
+        if (half) {
+            stages.insert(stages.end(), {
+                {"Initialize half-resolution trace work counts", traceInitUses, [&](CommandBuffer& cmd) {
+                    return initWork_.dispatch(cmd, *traceSchedule, 1, 1);
+                }},
+                {"Build half-resolution reflection trace lists", traceListBuildUses, [&](CommandBuffer& cmd) {
+                    return buildTraceTileLists_.dispatch(cmd, *traceSchedule,
+                        reflectionTileCount((groupsX + 1u) / 2u), reflectionTileCount((groupsY + 1u) / 2u));
+                }},
+                {"Set up half-resolution reflection trace dispatches", traceSetupUses, [&](CommandBuffer& cmd) {
+                    return setupTileArgs_.dispatch(cmd, *traceSchedule, 1, 1);
+                }},
+                {"Clear unused full-resolution resolve tiles", clearResolveUses, [&](CommandBuffer& cmd) {
+                    return indirect(clearResolveTiles_, *tiled, ReflectionDispatch::ClearTiles, cmd);
+                }},
+            });
+        }
+        stages.insert(stages.end(), {
+            {"Generate reflection rays in active tiles", std::span(generateUses).first(half ? 11u : 10u), [&](CommandBuffer& cmd) {
+                return indirect(generateTiledRays_, *traceTiled, ReflectionDispatch::ActiveTiles, cmd, traceArguments);
             }},
             {"Clear unused reflection tiles", clearUses, [&](CommandBuffer& cmd) {
-                return indirect(clearTiles_, *tiled, ReflectionDispatch::ClearTiles, cmd);
+                return indirect(clearTiles_, *traceTiled, ReflectionDispatch::ClearTiles, cmd, traceArguments);
             }},
         });
         if (screenTraces) {
             stages.push_back({"Trace screen reflections in active tiles", screenUses, [&](CommandBuffer& cmd) {
-                return indirect(traceScreenTiles_, *tiled, ReflectionDispatch::ActiveTiles, cmd);
+                return indirect(traceScreenTiles_, *traceTiled, ReflectionDispatch::ActiveTiles, cmd, traceArguments);
             }});
         }
         if (meshGridFrame) {
@@ -772,25 +982,25 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
             meshGrid_.appendStages(stages, *meshGridFrame);
             stages.insert(stages.end(), {
                 {"Compact unfinished reflections for Mesh SDF", compactUses, [&](CommandBuffer& cmd) {
-                    return indirect(compactDetailRays_, *schedule, ReflectionDispatch::CompactRays, cmd);
+                    return indirect(compactDetailRays_, *traceSchedule, ReflectionDispatch::CompactRays, cmd, traceArguments);
                 }},
-                {"Set up reflection Mesh SDF dispatch", setupUses, [&](CommandBuffer& cmd) {
-                    return setupDetailArgs_.dispatch(cmd, *schedule, 1, 1);
+                {"Set up reflection Mesh SDF dispatch", traceSetupUses, [&](CommandBuffer& cmd) {
+                    return setupDetailArgs_.dispatch(cmd, *traceSchedule, 1, 1);
                 }},
                 {"Trace compacted reflections through Mesh SDF", detailUses, [&](CommandBuffer& cmd) {
-                    return indirect(traceDetailRays_, *tiled, ReflectionDispatch::DetailRays, cmd);
+                    return indirect(traceDetailRays_, *traceTiled, ReflectionDispatch::DetailRays, cmd, traceArguments);
                 }},
             });
         }
         stages.insert(stages.end(), {
             {"Compact remaining reflections for GDF", compactUses, [&](CommandBuffer& cmd) {
-                return indirect(compactGDFRays_, *schedule, ReflectionDispatch::CompactRays, cmd);
+                return indirect(compactGDFRays_, *traceSchedule, ReflectionDispatch::CompactRays, cmd, traceArguments);
             }},
-            {"Set up reflection GDF dispatch", setupUses, [&](CommandBuffer& cmd) {
-                return setupGDFArgs_.dispatch(cmd, *schedule, 1, 1);
+            {"Set up reflection GDF dispatch", traceSetupUses, [&](CommandBuffer& cmd) {
+                return setupGDFArgs_.dispatch(cmd, *traceSchedule, 1, 1);
             }},
             {"Trace compacted reflections through GDF", traceListUses, [&](CommandBuffer& cmd) {
-                return indirect(traceGDFRays_, *tiled, ReflectionDispatch::GDFRays, cmd);
+                return indirect(traceGDFRays_, *traceTiled, ReflectionDispatch::GDFRays, cmd, traceArguments);
             }},
             {"Resolve active reflection tiles", tiledResolveUses, [&](CommandBuffer& cmd) {
                 return indirect(resolve_, *tiled, ReflectionDispatch::ActiveTiles, cmd);
@@ -828,6 +1038,11 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
 std::unique_ptr<RenderGraphPass> createLumenReflectionPass()
 {
     return std::make_unique<LumenReflectionPass>();
+}
+
+std::unique_ptr<RenderGraphPass> createLumenReflectionCompositePass()
+{
+    return std::make_unique<LumenReflectionCompositePass>();
 }
 
 } // namespace metallic::render::builtin_pass

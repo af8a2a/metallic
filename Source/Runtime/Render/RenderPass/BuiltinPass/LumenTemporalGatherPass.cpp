@@ -93,6 +93,9 @@ public:
     Result<> execute(RenderGraphExecutionContext& context) override;
     bool supportsFrameOverlap() const override { return true; }
     bool supportsExternalFrameOverlap() const override { return false; }
+    // ScreenTrace and Temporal's private histories stay on graphics.
+    bool supportsAsyncQueue() const override { return properties().value("asyncOverlap", RenderGraphProperties(false)) == true; }
+    QueueType queueType() const override { return QueueType::Graphics; }
 
 private:
     bool dynamicReprojection() const

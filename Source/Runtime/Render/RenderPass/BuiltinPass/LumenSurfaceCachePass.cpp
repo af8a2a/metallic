@@ -243,6 +243,8 @@ struct PublishedSurfaceCache {
     std::shared_ptr<const CaptureMaterials> materials;
     CaptureLighting lighting;
     std::optional<uint64_t> nonSunLightingRevision;
+    std::vector<uint32_t> pendingLighting;
+    uint32_t nextLightingSlot = 0;
 };
 
 struct SurfaceCacheUpdate {
@@ -267,6 +269,7 @@ private:
     bool shadowedLighting() const;
     bool exportDirectIrradiance() const;
     bool persistentCards() const;
+    bool objectCardRanges() const;
     Result<> prepareCaptureGeometry(const scene::Scene& scene);
     Result<> gather(const scene::Scene& scene, std::vector<SurfaceCard>& cards, std::vector<CaptureCard>& draws,
         std::vector<CaptureSection>& sections, std::vector<CaptureVertex>& vertices) const;
@@ -276,6 +279,7 @@ private:
 
     Device* device_ = nullptr;
     AtlasLayout layout_;
+    uint32_t maxDirectLightingCardsPerFrame_ = 0;
     std::unordered_map<int32_t, std::vector<scene::MeshCardBuildRecord>> fields_;
     std::shared_ptr<const CaptureGeometry> captureGeometry_;
     std::shared_ptr<std::optional<PublishedSurfaceCache>> published_;
@@ -301,6 +305,12 @@ bool LumenSurfaceCachePass::exportDirectIrradiance() const
 bool LumenSurfaceCachePass::persistentCards() const
 {
     const auto property = properties().find("persistentCards");
+    return property != properties().end() && property->is_boolean() && property->get<bool>();
+}
+
+bool LumenSurfaceCachePass::objectCardRanges() const
+{
+    const auto property = properties().find("objectCardRanges");
     return property != properties().end() && property->is_boolean() && property->get<bool>();
 }
 
@@ -341,8 +351,10 @@ RenderPassReflection LumenSurfaceCachePass::reflect(const RenderGraphCompileCont
     reflection.addBufferOutput("cards", "World card boxes and scene object identity in atlas tile order")
         .buffer(layout.capacity() * sizeof(SurfaceCard), sizeof(SurfaceCard)).transferWrite()
         .stageAccess(RenderGraphResourceAccess::BufferStorageRead);
-    reflection.addBufferOutput("scene", "Card count, tile resolution and scene resource identity (low/high)")
-        .buffer(16, sizeof(uint32_t)).bufferLayout("u32").transferWrite();
+    const auto metadataWords = objectCardRanges() ? kLumenCardSceneRangeBase + layout.capacity() * kLumenCardSceneRangeStride :
+        kLumenCardSceneHeaderWords;
+    reflection.addBufferOutput("scene", "Card count, tile resolution, scene identity and optional object ranges")
+        .buffer(metadataWords * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
     if (persistentCards()) {
         reflection.addBufferOutput("cardUpdates", "Capture, direct lighting, and indirect history invalidation flags per tile")
             .buffer(layout.capacity() * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
@@ -387,6 +399,19 @@ Result<> LumenSurfaceCachePass::compile(const RenderGraphCompileContext& context
         log = "Surface Cache persistentCards must be a boolean";
         return makeError(Error::InvalidArgument);
     }
+    const auto cardRanges = properties().find("objectCardRanges");
+    if (cardRanges != properties().end() && !cardRanges->is_boolean()) {
+        log = "Surface Cache objectCardRanges must be a boolean";
+        return makeError(Error::InvalidArgument);
+    }
+    const auto directLightingBudget = properties().find("maxDirectLightingCardsPerFrame");
+    if (directLightingBudget != properties().end() && (!directLightingBudget->is_number_integer() ||
+            directLightingBudget->get<double>() < 0.0 || directLightingBudget->get<double>() > UINT32_MAX ||
+            (*directLightingBudget != 0 && !persistentCards()))) {
+        log = "Surface Cache maxDirectLightingCardsPerFrame must be an unsigned integer and requires persistentCards when positive";
+        return makeError(Error::InvalidArgument);
+    }
+    maxDirectLightingCardsPerFrame_ = properties().value("maxDirectLightingCardsPerFrame", 0u);
     captureGeometry_.reset();
     if (!persistentCards()) { published_.reset(); }
     else if (!published_) { published_ = std::make_shared<std::optional<PublishedSurfaceCache>>(); }
@@ -643,8 +668,8 @@ bool sameCardMaterials(size_t slot, const PublishedSurfaceCache& previous, const
     return true;
 }
 
-SurfaceCacheUpdate planSurfaceCacheUpdate(const PublishedSurfaceCache* previous, const PublishedSurfaceCache& next,
-    uint32_t capacity)
+SurfaceCacheUpdate planSurfaceCacheUpdate(const PublishedSurfaceCache* previous, PublishedSurfaceCache& next,
+    uint32_t capacity, uint32_t maxDirectLightingCardsPerFrame)
 {
     SurfaceCacheUpdate update;
     update.fullCapture = !previous || !sameCardRoster(*previous->geometry, *next.geometry);
@@ -654,12 +679,20 @@ SurfaceCacheUpdate planSurfaceCacheUpdate(const PublishedSurfaceCache* previous,
     const bool changedNonSunLighting = previous && previous->nonSunLightingRevision != next.nonSunLightingRevision;
     const bool resetIndirect = changedLights && (!next.nonSunLightingRevision || changedNonSunLighting ||
         !previous->lighting.samePunctualLights(next.lighting));
+    const bool continueLighting = !update.fullCapture && !previous->pendingLighting.empty();
     update.publish = !previous || previous->geometry != next.geometry || previous->materials != next.materials ||
-        changedLights || changedNonSunLighting || previous->lighting.clipmapEye != next.lighting.clipmapEye;
+        changedLights || changedNonSunLighting || previous->lighting.clipmapEye != next.lighting.clipmapEye || continueLighting;
     if (!update.publish) { return update; }
     const bool allLighting = update.fullCapture || changedLights || (next.lighting.tracesShadows() &&
         (previous->geometry->revision != next.geometry->revision || previous->lighting.clipmapEye != next.lighting.clipmapEye));
-    for (uint32_t slot = 0; slot < next.geometry->cardsToDraw.size(); ++slot) {
+    const bool budgetLighting = !update.fullCapture && maxDirectLightingCardsPerFrame != 0;
+    const uint32_t cardCount = uint32_t(next.geometry->cardsToDraw.size());
+    if (!update.fullCapture) { next.nextLightingSlot = previous->nextLightingSlot; }
+    if (continueLighting) { next.pendingLighting = previous->pendingLighting; }
+    if (budgetLighting && allLighting && next.pendingLighting.empty()) { next.pendingLighting.resize(cardCount); }
+    const uint32_t relightFlags = kLumenCardRelit | (resetIndirect ? kLumenCardResetLighting : 0u);
+
+    for (uint32_t slot = 0; slot < cardCount; ++slot) {
         bool capture = update.fullCapture;
         if (!capture) {
             const bool transformed = previous->geometry->cardsToDraw[slot].transformRevision !=
@@ -671,12 +704,30 @@ SurfaceCacheUpdate planSurfaceCacheUpdate(const PublishedSurfaceCache* previous,
             update.captureTiles.push_back(slot);
             update.flags[slot] |= kLumenCardCaptured;
         }
-        if (allLighting || capture) {
+        const uint32_t pending = next.pendingLighting.empty() ? 0u : next.pendingLighting[slot];
+        const uint32_t wanted = pending | (allLighting || capture ? relightFlags : 0u);
+        if (wanted == 0) { continue; }
+        if (budgetLighting && !capture) { next.pendingLighting[slot] = wanted; }
+        else {
             update.lightingTiles.push_back(slot);
-            update.flags[slot] |= kLumenCardRelit;
+            update.flags[slot] |= wanted;
+            if (pending != 0) { next.pendingLighting[slot] = 0; }
         }
-        if (resetIndirect) { update.flags[slot] |= kLumenCardResetLighting; }
     }
+    if (budgetLighting && !next.pendingLighting.empty()) {
+        const auto first = next.nextLightingSlot;
+        // Keep the cursor across light edits so an animated light cannot starve later atlas slots.
+        for (uint32_t offset = 0; offset < cardCount && update.lightingTiles.size() < maxDirectLightingCardsPerFrame; ++offset) {
+            const auto slot = (first + offset) % cardCount;
+            const uint32_t wanted = next.pendingLighting[slot];
+            if (wanted == 0) { continue; }
+            update.lightingTiles.push_back(slot);
+            update.flags[slot] |= wanted;
+            next.pendingLighting[slot] = 0;
+            next.nextLightingSlot = (slot + 1) % cardCount;
+        }
+    }
+    if (std::ranges::none_of(next.pendingLighting, [](uint32_t flags) { return flags != 0; })) { next.pendingLighting.clear(); }
     return update;
 }
 
@@ -832,7 +883,7 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         next.materials = previous && previous->geometry->revision.sceneIdentity == geometry.revision.sceneIdentity &&
                 previous->materials->revision == scene.materialRevision()
             ? previous->materials : captureMaterials(scene);
-        update = planSurfaceCacheUpdate(previous, next, layout_.capacity());
+        update = planSurfaceCacheUpdate(previous, next, layout_.capacity(), maxDirectLightingCardsPerFrame_);
     }
 
     using Access = RenderGraphResourceAccess;
@@ -847,7 +898,30 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
     std::unique_ptr<Buffer> cardUpload, sceneUpload, flagsUpload, statisticsUpload;
     if (update.uploadCards) {
         const auto identity = geometry.revision.sceneIdentity;
-        const std::array metadata{uint32_t(geometry.cardsToDraw.size()), layout_.tile, uint32_t(identity), uint32_t(identity >> 32)};
+        const auto cardCount = uint32_t(geometry.cardsToDraw.size());
+        const auto sceneOutput = context.outputBuffer("scene");
+        std::vector<uint32_t> metadata(sceneOutput.desc().size / sizeof(uint32_t));
+        metadata[0] = cardCount;
+        metadata[1] = layout_.tile;
+        metadata[2] = uint32_t(identity);
+        metadata[3] = uint32_t(identity >> 32);
+        if (objectCardRanges()) {
+            std::vector<std::array<uint32_t, kLumenCardSceneRangeStride>> ranges;
+            for (uint32_t first = 0; first < cardCount;) {
+                const auto object = geometry.cards[first].metadata[0];
+                uint32_t end = first + 1;
+                while (end < cardCount && geometry.cards[end].metadata[0] == object) { ++end; }
+                ranges.push_back({object, first, end});
+                first = end;
+            }
+            // Preserve ascending atlas-slot order within an object, including ties.
+            std::ranges::sort(ranges);
+            metadata[kLumenCardSceneHeaderWords] = kLumenCardSceneRangeTag;
+            metadata[kLumenCardSceneRangeCount] = uint32_t(ranges.size());
+            for (size_t index = 0; index < ranges.size(); ++index) {
+                std::ranges::copy(ranges[index], metadata.begin() + kLumenCardSceneRangeBase + index * kLumenCardSceneRangeStride);
+            }
+        }
         auto cardsBuffer = upload(*device_, std::as_bytes(std::span(geometry.cards)), BufferUsageBits::TransferSource);
         if (!cardsBuffer) { return makeError(cardsBuffer.error()); }
         cardUpload = std::move(*cardsBuffer);

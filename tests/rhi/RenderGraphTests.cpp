@@ -3112,8 +3112,9 @@ public:
             if (!detail::resolveSceneRealtimeGI(direct, nullptr, directProperties, log) || !direct.validate(log)) {
                 return RHITestResult::fail(prefix + log);
             }
-            constexpr std::array<const char*, 10> giPasses{"GlobalDistanceFieldPages", "SurfaceCache", "Radiosity",
-                "ScreenTrace", "Gather", "Temporal", "Reflections", "ScreenProbePlacement", "RadianceCache", "ShortRangeAO"};
+            constexpr std::array<const char*, 11> giPasses{"GlobalDistanceFieldPages", "SurfaceCache", "Radiosity",
+                "ScreenTrace", "Gather", "Temporal", "Reflections", "ScreenProbePlacement", "RadianceCache", "ShortRangeAO",
+                "ReflectionComposite"};
             const auto& directDeferred = direct.findNode("Deferred")->properties;
             if (std::ranges::any_of(giPasses, [&](const char* name) { return direct.findNode(name) != nullptr; }) ||
                 directDeferred.value("exportLumenReceivers", true) ||
@@ -3139,8 +3140,21 @@ public:
                 !reflections.value("detailTracing", false) || !hasEdge(baked, "VBuffer.depth", "Reflections.detailDepth") ||
                 !hasEdge(baked, "Deferred.lumenPosition", "Gather.position") ||
                 !hasEdge(baked, "Deferred.lumenPreviousPosition", "Temporal.previousPosition") ||
-                !hasEdge(baked, "Deferred.lumenSpecular", "Reflections.specular") || !hasPresentation(baked, "Reflections.color")) {
+                !hasEdge(baked, "Deferred.lumenSpecular", "Reflections.specular") || !hasPresentation(baked, "ReflectionComposite.color")) {
                 return RHITestResult::fail(prefix + "baked Sponza must resolve its assets and connect Lumen before post processing");
+            }
+            if (!reflections.value("traceOnly", false) ||
+                !hasEdge(baked, "Reflections.bilateralReflections", "ReflectionComposite.bilateralReflections") ||
+                !hasEdge(baked, "Temporal.color", "ReflectionComposite.sceneColor") ||
+                !hasEdge(baked, "Temporal.roughSpecular", "ReflectionComposite.roughSpecular") ||
+                !hasEdge(baked, "Deferred.lumenSpecular", "RadianceCache.reflectionSpecular") ||
+                !hasEdge(baked, "Deferred.lumenPreviousPosition", "RadianceCache.reflectionPreviousPosition") ||
+                !hasEdge(baked, "ScreenTrace.previousDepth", "RadianceCache.reflectionPreviousDepth") ||
+                !hasEdge(baked, "ScreenTrace.previousColor", "RadianceCache.reflectionPreviousColor") ||
+                std::ranges::any_of(baked.edges(), [](const auto& edge) {
+                    return edge.srcPass == "Temporal" && edge.dstPass == "Reflections";
+                })) {
+                return RHITestResult::fail(prefix + "reflections must finish tracing before joining the diffuse and rough specular results");
             }
             const auto& gather = baked.findNode("Gather")->properties;
             const auto& temporal = baked.findNode("Temporal")->properties;
@@ -3168,7 +3182,7 @@ public:
             const auto& cornellReflections = withoutDetail.findNode("Reflections")->properties;
             if (withoutDetail.findNode("GlobalDistanceFieldPages")->properties.value("clipmapCount", 1) != 1 ||
                 cornellReflections.value("detailTracing", true) || !cornellReflections.at("detailDistanceFieldPaths").empty() ||
-                hasEdge(withoutDetail, "VBuffer.depth", "Reflections.detailDepth") || !hasPresentation(withoutDetail, "Reflections.color") ||
+                hasEdge(withoutDetail, "VBuffer.depth", "Reflections.detailDepth") || !hasPresentation(withoutDetail, "ReflectionComposite.color") ||
                 serializeRenderGraphToString(sample.graph) != authored) {
                 return RHITestResult::fail(prefix + "scene routing must preserve the authored graph and allow GI without detail tracing");
             }
