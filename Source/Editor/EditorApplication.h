@@ -347,6 +347,7 @@ private:
     bool imguiRendererInitialized_ = false;
     bool viewportPreviewValid_ = false;
     bool viewportCompileFailed_ = false;
+    uint64_t viewportRealtimeGIScene_ = 0;
     uint32_t failedPreviewWidth_ = 0;
     uint32_t failedPreviewHeight_ = 0;
     std::string failedPreviewOutput_;

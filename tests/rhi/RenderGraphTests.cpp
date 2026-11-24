@@ -8,6 +8,7 @@
 #include "Runtime/Render/Core/HistoryResources.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Render/RenderGraph/RenderGraphRealtimeGI.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
@@ -24,6 +25,7 @@
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
+#include "Runtime/Scene/SceneDocument.h"
 
 #include <algorithm>
 #include <array>
@@ -3030,6 +3032,123 @@ public:
         return RHITestResult::pass();
     }
 };
+class RenderGraphSceneRealtimeGITest final : public RHITest {
+public:
+    RenderGraphSceneRealtimeGITest()
+    {
+        type = RHITestType::Rendering;
+        name = "render_graph_scene_realtime_gi";
+    }
+
+    RHITestResult run(RHITestContext&) override
+    {
+        using namespace render;
+        const std::filesystem::path root(PROJECT_SOURCE_DIR);
+        scene::SceneDocument sponza;
+        if (!sponza.loadDeferredMeshlets(root / "Asset/Sponza/SponzaGI.metallic_scene.json", {})) {
+            return RHITestResult::fail(sponza.lastLoadResult().error);
+        }
+        scene::SceneDocument cornell;
+        if (!cornell.loadDeferredMeshlets(root / "Asset/Lumen/CornellBox.metallic_scene.json", {})) {
+            return RHITestResult::fail(cornell.lastLoadResult().error);
+        }
+        if (!sponza.realtimeGI() || !cornell.realtimeGI()) {
+            return RHITestResult::fail("Sponza and Cornell Box must declare scene realtime GI bakes");
+        }
+
+        RenderWorld world;
+        world.setScene(&sponza);
+        world.setEnvironment(sponza.environment());
+        if (detail::realtimeGISceneIdentity(nullptr, world) != 0 ||
+            detail::realtimeGISceneIdentity(&sponza, world) != sponza.resourceIdentity()) {
+            return RHITestResult::fail("Baked Sponza must activate scene realtime GI with HDRI lighting off");
+        }
+        auto hdri = sponza.environment();
+        hdri.enabled = true;
+        world.setEnvironment(hdri);
+        if (detail::realtimeGISceneIdentity(&sponza, world) != 0) {
+            return RHITestResult::fail("HDRI lighting must select the direct realtime graph");
+        }
+        world.setEnvironment(sponza.environment());
+        auto atmosphere = sponza.worldEnvironment();
+        atmosphere.source = environment::EnvironmentSource::PhysicalAtmosphere;
+        if (!world.setWorldEnvironment(atmosphere) || detail::realtimeGISceneIdentity(&sponza, world) != 0) {
+            return RHITestResult::fail("Physical atmosphere must select the direct realtime graph");
+        }
+
+        const auto hasEdge = [](const RenderGraph& graph, std::string_view source, std::string_view destination) {
+            return std::ranges::any_of(graph.edges(), [&](const auto& edge) {
+                return makeRenderGraphFieldName(edge.srcPass, edge.srcField) == source &&
+                    makeRenderGraphFieldName(edge.dstPass, edge.dstField) == destination;
+            });
+        };
+        const auto assetPath = [&](const char* filename) {
+            return std::filesystem::weakly_canonical(root / "Asset/Sponza/SponzaGIBakes" / filename).generic_string();
+        };
+        const auto hasPresentation = [&](const RenderGraph& graph, std::string_view hdrSource) {
+            return hasEdge(graph, hdrSource, "DLSSSR.inputColor") && hasEdge(graph, "DLSSSR.color", "AutoExposure.source") &&
+                hasEdge(graph, "DLSSNR.color", "FinalBlit.source") && graph.presentationOutputName() == "FinalBlit.color";
+        };
+
+        for (const char* id : {"realtime-lighting", "realtime-lighting-vsm"}) {
+            const std::string prefix = std::string(id) + ": ";
+            RenderSampleLoadResult sample;
+            std::string log;
+            if (!loadBuiltInRenderSample(id, sample, log)) { return RHITestResult::fail(prefix + log); }
+            if (!detail::usesSceneRealtimeGI(sample.graph)) {
+                return RHITestResult::fail(prefix + "missing the scene realtime GI request");
+            }
+            const std::string authored = serializeRenderGraphToString(sample.graph);
+            auto direct = sample.graph;
+            detail::RealtimeGIProperties directProperties;
+            if (!detail::resolveSceneRealtimeGI(direct, nullptr, directProperties, log) || !direct.validate(log)) {
+                return RHITestResult::fail(prefix + log);
+            }
+            constexpr std::array<const char*, 7> giPasses{"GlobalDistanceFieldPages", "SurfaceCache", "Radiosity",
+                "ScreenTrace", "Gather", "Temporal", "Reflections"};
+            const auto& directDeferred = direct.findNode("Deferred")->properties;
+            if (std::ranges::any_of(giPasses, [&](const char* name) { return direct.findNode(name) != nullptr; }) ||
+                directDeferred.value("exportLumenReceivers", true) ||
+                directDeferred.value("exportLumenPreviousPosition", true) ||
+                directDeferred.value("exportLumenSpecular", true) || !hasPresentation(direct, "Deferred.color")) {
+                return RHITestResult::fail(prefix + "a scene without GI bakes must keep the direct HDR presentation route");
+            }
+
+            auto baked = sample.graph;
+            detail::RealtimeGIProperties bakedProperties;
+            if (!detail::resolveSceneRealtimeGI(baked, &sponza, bakedProperties, log) || !baked.validate(log)) {
+                return RHITestResult::fail(prefix + log);
+            }
+            const auto& gdf = baked.findNode("GlobalDistanceFieldPages")->properties;
+            const auto& cards = baked.findNode("SurfaceCache")->properties;
+            const auto& reflections = baked.findNode("Reflections")->properties;
+            if (gdf.at("distanceFieldPaths") != RenderGraphProperties::array({assetPath("SponzaOpaque.meshdf")}) ||
+                gdf.at("center") != RenderGraphProperties::array({0, 5, 0}) || gdf.at("extent") != 16 ||
+                cards.at("meshCardPaths") != RenderGraphProperties::array({assetPath("SponzaOpaque.meshcards")}) ||
+                reflections.at("detailDistanceFieldPaths") != RenderGraphProperties::array({assetPath("SponzaOpaqueReflection.meshdf")}) ||
+                !reflections.value("detailTracing", false) || !hasEdge(baked, "VBuffer.depth", "Reflections.detailDepth") ||
+                !hasEdge(baked, "Deferred.lumenPosition", "Gather.position") ||
+                !hasEdge(baked, "Deferred.lumenPreviousPosition", "Temporal.previousPosition") ||
+                !hasEdge(baked, "Deferred.lumenSpecular", "Reflections.specular") || !hasPresentation(baked, "Reflections.color")) {
+                return RHITestResult::fail(prefix + "baked Sponza must resolve its assets and connect Lumen before post processing");
+            }
+
+            auto withoutDetail = sample.graph;
+            detail::RealtimeGIProperties withoutDetailProperties;
+            if (!detail::resolveSceneRealtimeGI(withoutDetail, &cornell, withoutDetailProperties, log) || !withoutDetail.validate(log)) {
+                return RHITestResult::fail(prefix + log);
+            }
+            const auto& cornellReflections = withoutDetail.findNode("Reflections")->properties;
+            if (cornellReflections.value("detailTracing", true) || !cornellReflections.at("detailDistanceFieldPaths").empty() ||
+                hasEdge(withoutDetail, "VBuffer.depth", "Reflections.detailDepth") || !hasPresentation(withoutDetail, "Reflections.color") ||
+                serializeRenderGraphToString(sample.graph) != authored) {
+                return RHITestResult::fail(prefix + "scene routing must preserve the authored graph and allow GI without detail tracing");
+            }
+        }
+        return RHITestResult::pass();
+    }
+};
+
 class RenderGraphValidationTest : public RHITest {
 public:
     RenderGraphValidationTest()
@@ -10799,6 +10918,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphRuntimeRebuildDirtyTest);
 METALLIC_REGISTER_RHI_TEST(RenderSampleLoadTest);
 METALLIC_REGISTER_RHI_TEST(GPUDrivenSceneCatalogTest);
 METALLIC_REGISTER_RHI_TEST(RenderSampleFallbackAndValidationTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphSceneRealtimeGITest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphValidationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyWireframePreviewTest);

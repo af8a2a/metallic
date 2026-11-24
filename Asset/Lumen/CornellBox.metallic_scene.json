@@ -18,6 +18,30 @@
                 "enabled": false
             },
             "lights": []
+        },
+        "realtimeGI": {
+            "distanceFieldPaths": [
+                "CornellBoxBakes/CornellBoxFloor.meshdf",
+                "CornellBoxBakes/CornellBoxCeiling.meshdf",
+                "CornellBoxBakes/CornellBoxBackWall.meshdf",
+                "CornellBoxBakes/CornellBoxLeftWall.meshdf",
+                "CornellBoxBakes/CornellBoxRightWall.meshdf",
+                "CornellBoxBakes/CornellBoxShortBlock.meshdf",
+                "CornellBoxBakes/CornellBoxTallBlock.meshdf",
+                "CornellBoxBakes/CornellBoxCeilingEmitter.meshdf"
+            ],
+            "meshCardPaths": [
+                "CornellBoxBakes/CornellBoxFloor.meshcards",
+                "CornellBoxBakes/CornellBoxCeiling.meshcards",
+                "CornellBoxBakes/CornellBoxBackWall.meshcards",
+                "CornellBoxBakes/CornellBoxLeftWall.meshcards",
+                "CornellBoxBakes/CornellBoxRightWall.meshcards",
+                "CornellBoxBakes/CornellBoxShortBlock.meshcards",
+                "CornellBoxBakes/CornellBoxTallBlock.meshcards",
+                "CornellBoxBakes/CornellBoxCeilingEmitter.meshcards"
+            ],
+            "center": [0, 1, 0],
+            "extent": 1.8
         }
     },
     "sources": [

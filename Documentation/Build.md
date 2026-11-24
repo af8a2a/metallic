@@ -863,6 +863,14 @@ The sample uses the UE 5.7.4 uniform placement, equal-area directions, plane-wei
 
 `exportLumenReceivers` substitutes Lumen diffuse for the usual environment diffuse on supported opaque materials. The exported receiver response uses the existing Metallic BRDF and material occlusion, including the camera-path aerial transmittance and UE's distant illumination rescale with short-range AO disabled. `shadowedLighting` evaluates direct sunlight and world point/spot lights in a separate card lighting stage. It adapts UE's opaque GDF shadow trace to Metallic's resident tiles and uses the existing photometric light sampling. The sample uses a single fixed clipmap and per-covered-texel lighting over the world light list.
 
+### Realtime renderer GI
+
+The standard `realtime-lighting` and `realtime-lighting-vsm` graphs use the bound scene's realtime GI settings. In the editor, use **File → New Realtime Graph (VSM Candidate)** and **Open Scene** to switch scenes on the same graph. Sponza GI and Cornell Box include their baked settings. The graph adds Lumen Final Gather, multi-bounce Surface Cache lighting and software reflections to scene-linear Deferred color before DLSS Super Resolution and exposure.
+
+To enable the baked path for another scene, add `world.realtimeGI` to its `.metallic_scene.json`. Set `distanceFieldPaths` and `meshCardPaths` to the baked files for the loaded scene's mesh indices and geometry fingerprints. Asset paths are relative to the scene document. `detailDistanceFieldPaths` optionally supplies finer Mesh SDFs for reflections. `center` and `extent` optionally specify the fixed GDF center and half-extent in metres. The default bounds come from the loaded scene.
+
+The standard realtime graphs use their existing Deferred lighting route when the scene has no GI settings, HDRI or Physical Atmosphere lighting is active, or the device lacks the required storage image support. Changing the bound scene or compatible lighting mode selects the appropriate route. Offline bakers remain the source of the world-space GI assets.
+
 ### Cornell Box GI Playground
 
 In the **Render Graph Editor**, open **Built-in Sample** and select a Cornell Box variant.

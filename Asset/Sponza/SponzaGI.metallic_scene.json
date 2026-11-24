@@ -30,6 +30,13 @@
                 "enabled": false,
                 "compensation": 0.0
             }
+        },
+        "realtimeGI": {
+            "distanceFieldPaths": ["SponzaGIBakes/SponzaOpaque.meshdf"],
+            "meshCardPaths": ["SponzaGIBakes/SponzaOpaque.meshcards"],
+            "detailDistanceFieldPaths": ["SponzaGIBakes/SponzaOpaqueReflection.meshdf"],
+            "center": [0, 5, 0],
+            "extent": 16
         }
     },
     "sources": [

@@ -12,6 +12,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Render/RenderGraph/RenderGraphRealtimeGI.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
@@ -7125,6 +7126,20 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
         return false;
     }
 
+    const uint64_t realtimeGIScene = render::detail::usesSceneRealtimeGI(renderGraph_) &&
+        device_->capabilities().shaderStorageImageExtendedFormats ?
+        render::detail::realtimeGISceneIdentity(renderWorld_.scene(), renderWorld_) : 0;
+    if (realtimeGIScene != viewportRealtimeGIScene_) {
+        viewportCompileFailed_ = false;
+        viewportRealtimeGIScene_ = realtimeGIScene;
+    }
+    if (realtimeGIScene == 0 && render::detail::hasSceneRealtimeGIRoute(renderGraph_) &&
+        render::detail::isRealtimeGIOutput(activePreviewOutput_)) {
+        activePreviewOutput_ = renderGraph_.presentationOutputName();
+        copyToBuffer(activePreviewOutput_, previewOutputBuffer_, sizeof(previewOutputBuffer_));
+        viewportPreviewValid_ = false;
+    }
+
     if (!activePreviewOutput_.empty() &&
         findRenderGraphNodeForOutput(renderGraph_, activePreviewOutput_) == nullptr) {
         activePreviewOutput_ = renderGraph_.firstOutputName();
@@ -8261,6 +8276,9 @@ void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> 
     renderWorld_.setLighting(scene_.lighting());
     if (graphExecutor_ != nullptr) {
         graphExecutor_->bindRuntimeScene(&scene_);
+    }
+    if (scene_.realtimeGI() && render::detail::usesSceneRealtimeGI(renderGraph_)) {
+        environmentFromSample_ = false;
     }
     if (!environmentUserEdited_ && !environmentFromSample_) {
         if (scene_.hasEnvironmentSettings()) {

@@ -117,7 +117,7 @@ public:
     std::string_view category() const override { return "Lighting"; }
     std::string_view description() const override
     {
-        return "Raster visibility, clustered OpenPBR lighting, SH diffuse and filtered HDRI reflections, ray-traced main-light shadows with NRD SIGMA, auto exposure and DLSS-SR. Optional DLSS-NR.";
+        return "Raster visibility, clustered OpenPBR lighting, scene-authored realtime GI, ray-traced main-light shadows with NRD SIGMA, auto exposure and DLSS-SR. Supports HDRI lighting and optional DLSS-NR.";
     }
     std::string scenePath() const override { return "Asset/meet_mat.glb"; }
     std::string graphPath() const override { return "Pipelines/Samples/realtime_lighting.metallic_graph.json"; }
@@ -136,7 +136,7 @@ public:
     std::string_view name() const override { return "Real-time / VSM Candidate"; }
     std::string_view description() const override
     {
-        return "Realtime template with cached PCF virtual shadows and no shadow acceleration structures. "
+        return "Realtime template with cached PCF virtual shadows, scene-authored realtime GI and no shadow acceleration structures. "
             "Candidate pending representative scene, memory and performance acceptance; the RT template remains available.";
     }
     std::string graphPath() const override { return "Pipelines/Samples/realtime_lighting_vsm.metallic_graph.json"; }

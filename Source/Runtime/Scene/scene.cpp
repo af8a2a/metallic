@@ -5619,6 +5619,7 @@ void Scene::clearParsedData()
 {
     streamGeometry_ = false;
     lighting_ = LightingSettings{};
+    realtimeGI_.reset();
     worldEnvironment_ = environment::WorldEnvironment{};
     celestialRevision_ = 1;
     atmosphereRevision_ = 0;

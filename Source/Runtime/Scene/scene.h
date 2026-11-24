@@ -380,6 +380,15 @@ struct SceneSourceDesc {
     bool enabled = true;
 };
 
+struct RealtimeGISettings {
+    // Bakes identify mesh indices in the loaded scene. Paths are resolved by the scene document.
+    std::vector<std::filesystem::path> distanceFieldPaths;
+    std::vector<std::filesystem::path> meshCardPaths;
+    std::vector<std::filesystem::path> detailDistanceFieldPaths;
+    std::optional<std::array<double, 3>> center;
+    std::optional<float> extent;
+};
+
 class Scene {
 public:
     Scene();
@@ -470,6 +479,7 @@ public:
     // Authored document lights remain available when a render graph resolves
     // this scene independently of the editor's active RenderWorld.
     const LightingSettings& authoredLighting() const { return lighting_; }
+    const std::optional<RealtimeGISettings>& realtimeGI() const { return realtimeGI_; }
     const environment::WorldEnvironment& worldEnvironment() const { return worldEnvironment_; }
     environment::EnvironmentSnapshot environmentSnapshot() const
     {
@@ -487,6 +497,7 @@ public:
 
 protected:
     mutable LightingSettings lighting_;
+    std::optional<RealtimeGISettings> realtimeGI_;
     environment::WorldEnvironment worldEnvironment_;
     uint64_t celestialRevision_ = 1;
     uint64_t atmosphereRevision_ = 0;

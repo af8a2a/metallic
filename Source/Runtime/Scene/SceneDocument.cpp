@@ -599,6 +599,79 @@ std::filesystem::path normalizedPath(const std::filesystem::path& path)
     return error ? path : normalized;
 }
 
+std::optional<RealtimeGISettings> parseRealtimeGI(const nlohmann::json& value,
+    const std::filesystem::path& documentDirectory, std::string& error)
+{
+    if (!value.is_object()) {
+        error = "world.realtimeGI must be an object.";
+        return std::nullopt;
+    }
+
+    RealtimeGISettings settings;
+    const auto readPaths = [&](const char* key, std::vector<std::filesystem::path>& paths, bool required) {
+        const auto entries = value.find(key);
+        if (entries == value.end() && !required) { return true; }
+        if (entries == value.end() || !entries->is_array() || (required && entries->empty()) ||
+            !std::ranges::all_of(*entries, [](const nlohmann::json& entry) {
+                return entry.is_string() && !entry.get_ref<const std::string&>().empty();
+            })) {
+            error = std::string("Invalid world.realtimeGI.") + key + " path array.";
+            return false;
+        }
+        paths.reserve(entries->size());
+        for (const auto& entry : *entries) {
+            paths.push_back(normalizedPath(documentDirectory / entry.get_ref<const std::string&>()));
+        }
+        return true;
+    };
+    if (!readPaths("distanceFieldPaths", settings.distanceFieldPaths, true) ||
+        !readPaths("meshCardPaths", settings.meshCardPaths, true) ||
+        !readPaths("detailDistanceFieldPaths", settings.detailDistanceFieldPaths, false)) {
+        return std::nullopt;
+    }
+
+    if (const auto center = value.find("center"); center != value.end()) {
+        if (!center->is_array() || center->size() != 3u ||
+            !std::ranges::all_of(*center, [](const nlohmann::json& component) {
+                return component.is_number() && std::isfinite(component.get<double>());
+            })) {
+            error = "world.realtimeGI.center must be a finite three-number array.";
+            return std::nullopt;
+        }
+        settings.center = center->get<std::array<double, 3>>();
+    }
+    if (const auto extent = value.find("extent"); extent != value.end()) {
+        const float meters = extent->is_number() ? extent->get<float>() : 0.0f;
+        if (!std::isfinite(meters) || meters <= 0.0f) {
+            error = "world.realtimeGI.extent must be a finite positive number.";
+            return std::nullopt;
+        }
+        settings.extent = meters;
+    }
+    return settings;
+}
+
+nlohmann::json serializeRealtimeGI(const RealtimeGISettings& settings, const std::filesystem::path& documentDirectory)
+{
+    const auto serializePaths = [&](const std::vector<std::filesystem::path>& paths) {
+        auto value = nlohmann::json::array();
+        for (const auto& path : paths) {
+            std::error_code error;
+            const auto relative = std::filesystem::relative(path, documentDirectory, error);
+            value.push_back((error || relative.empty() ? path : relative).generic_string());
+        }
+        return value;
+    };
+    nlohmann::json value{{"distanceFieldPaths", serializePaths(settings.distanceFieldPaths)},
+        {"meshCardPaths", serializePaths(settings.meshCardPaths)}};
+    if (!settings.detailDistanceFieldPaths.empty()) {
+        value["detailDistanceFieldPaths"] = serializePaths(settings.detailDistanceFieldPaths);
+    }
+    if (settings.center) { value["center"] = *settings.center; }
+    if (settings.extent) { value["extent"] = *settings.extent; }
+    return value;
+}
+
 bool writeAtomically(
     const std::filesystem::path& path,
     const std::string& contents,
@@ -1435,6 +1508,10 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
             appendWarning(documentWarning_, "Ignored a non-object world setting.");
         } else {
             const nlohmann::json& world = document["world"];
+            if (const auto settings = world.find("realtimeGI"); settings != world.end()) {
+                realtimeGI_ = parseRealtimeGI(*settings, path.parent_path(), documentWarning_);
+                if (!realtimeGI_) { return false; }
+            }
             if (world.contains("lighting")) {
                 const auto& lighting = world["lighting"];
                 if (!lighting.is_object() ||
@@ -2132,6 +2209,9 @@ bool SceneDocument::save(std::string& message)
     };
     if (environment_.hasExplicitSourceColorSpace()) {
         document["world"]["environment"]["colorSpace"] = render::colorSpaceName(environment_.sourceColorSpace);
+    }
+    if (realtimeGI_) {
+        document["world"]["realtimeGI"] = serializeRealtimeGI(*realtimeGI_, documentPath_.parent_path());
     }
     if (!writeAtomically(documentPath_, document.dump(2) + '\n', message)) {
         return false;

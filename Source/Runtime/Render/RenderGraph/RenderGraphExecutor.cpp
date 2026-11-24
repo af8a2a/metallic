@@ -10,6 +10,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraphInternal.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/RenderGraph/RenderGraphResourceAliasPlan.h"
+#include "Runtime/Render/RenderGraph/RenderGraphRealtimeGI.h"
 #include "Runtime/Render/RenderGraph/RenderGraphGPULabels.h"
 #include "Runtime/Render/Streamer/StreamingUploads.h"
 #include "Runtime/Render/Core/HistoryResources.h"
@@ -503,6 +504,9 @@ struct RenderGraphExecutor::Impl {
     HistoryResourceManager* historyResources = nullptr;
     HistoryResourceManager graphHistoryResources;
     const scene::Scene* runtimeScene = nullptr;
+    bool sceneRealtimeGICapable = false;
+    uint64_t realtimeGIScene = 0;
+    RealtimeGIProperties realtimeGIProperties;
     RenderSubsystemHost ownedSubsystemHost;
     RenderWorld ownedWorld;
     RenderSubsystemHost* subsystemHost = &ownedSubsystemHost;
@@ -3892,12 +3896,28 @@ Result<> RenderGraphExecutor::compile(
 
 Result<> RenderGraphExecutor::compile(
     Device& device,
-    const RenderGraph& graph,
+    const RenderGraph& authoredGraph,
     uint32_t width,
     uint32_t height,
     const RenderGraphCompileOptions& options,
     std::string& log)
 {
+    const bool sceneRealtimeGI = usesSceneRealtimeGI(authoredGraph);
+    const uint64_t previousRealtimeGIScene = impl_->realtimeGIScene;
+    impl_->sceneRealtimeGICapable = sceneRealtimeGI && device.capabilities().shaderStorageImageExtendedFormats;
+    impl_->realtimeGIScene = impl_->sceneRealtimeGICapable ? realtimeGISceneIdentity(impl_->runtimeScene, *impl_->world) : 0;
+    impl_->realtimeGIProperties.clear();
+    std::optional<RenderGraph> resolvedGraph;
+    if (hasSceneRealtimeGIRoute(authoredGraph)) {
+        resolvedGraph = authoredGraph;
+        if (!resolveSceneRealtimeGI(*resolvedGraph, impl_->realtimeGIScene ? impl_->runtimeScene : nullptr,
+                impl_->realtimeGIProperties, log)) {
+            impl_->isCompiled = false;
+            return makeError(Error::InvalidArgument);
+        }
+        spdlog::info("[RenderGraph] Scene realtime GI: {}", impl_->realtimeGIScene ? "enabled" : "direct lighting");
+    }
+    const RenderGraph& graph = resolvedGraph ? *resolvedGraph : authoredGraph;
     impl_->captureGraphName = graph.name();
     impl_->capturedExecution.reset();
     impl_->capturedCompletion = {};
@@ -4113,7 +4133,8 @@ Result<> RenderGraphExecutor::compile(
         log = "Invalid display output parameters";
         return makeError(Error::InvalidArgument);
     }
-    const bool canReuseCompiledPasses = impl_->displayOutput == options.displayOutput &&
+    const bool canReuseCompiledPasses = previousRealtimeGIScene == impl_->realtimeGIScene &&
+        impl_->displayOutput == options.displayOutput &&
         impl_->canReuseCompiledPasses(device, graph, activeGraph);
     impl_->displayOutput = options.displayOutput;
 
@@ -6342,7 +6363,9 @@ bool RenderGraphExecutor::syncRuntimeProperties(const RenderGraph& graph)
         if (graphNode == nullptr ||
             graphNode->name != compiledNode.name ||
             graphNode->type != compiledNode.type ||
-            graphNode->properties != compiledNode.staticProperties) {
+            (impl_->realtimeGIProperties.contains(graphNode->id) ?
+                applyRealtimeGIProperties(*graphNode, impl_->realtimeGIProperties) != compiledNode.staticProperties :
+                graphNode->properties != compiledNode.staticProperties)) {
             return false;
         }
 
@@ -6521,7 +6544,9 @@ bool RenderGraphExecutor::compiled() const
     const bool resolutionMatches = view == nullptr ||
         (impl_->renderWidth == view->renderWidth(impl_->width) &&
             impl_->renderHeight == view->renderHeight(impl_->height));
-    return impl_->isCompiled && resolutionMatches && (!impl_->hasResourceAliases() ||
+    const bool realtimeGIMatches = !impl_->sceneRealtimeGICapable ||
+        impl_->realtimeGIScene == realtimeGISceneIdentity(impl_->runtimeScene, *impl_->world);
+    return impl_->isCompiled && resolutionMatches && realtimeGIMatches && (!impl_->hasResourceAliases() ||
         std::none_of(impl_->externalCompletions.begin(), impl_->externalCompletions.end(),
             [](const auto& point) { return point.isCancelled(); }));
 }
