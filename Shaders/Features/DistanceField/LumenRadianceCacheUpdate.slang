@@ -65,7 +65,7 @@ static const uint kEvictedProbes = 27u;
 static const uint kOverflowProbes = 28u;
 static const uint kEffectivePriorityBudget = 30u;
 static const uint kGlobalLightingChange = 31u;
-static const uint kUpdateStateCount = 32u;
+static const uint kUpdateStateCount = 34u;
 
 // UE 5.7.4 LumenRadianceCacheUpdate.ush and LumenRadianceCache.cpp defaults.
 static const uint kNeverTraced = 0u;
@@ -357,7 +357,7 @@ void lumenSelectRadianceCacheTraceProbesMain(uint3 thread : SV_DispatchThreadID)
     // UE PackProbeTraceData, LumenRadianceCacheTracingCommon.ush.
     uint packedTrace = (clipmapIndex << 24u) | probeIndex;
     packedTrace |= forceDownsample ? 1u << 31u : 0u;
-#if defined(METALLIC_LUMEN_WRC_PROGRESSIVE)
+#if defined(METALLIC_LUMEN_WRC_HISTORY)
     if (frames.x < params.historyFirstFrame) {
         packedTrace |= kLumenRadianceResetDirectionHistory;
     }
@@ -403,7 +403,7 @@ void lumenSaveRadianceCacheIndirectionMain(uint3 thread : SV_DispatchThreadID)
         RWStructuredBuffer<uint> indirection = resolveUniform(params.indirection);
         uint probeIndex = indirection[thread.x];
         resolveUniform(params.previousIndirection)[thread.x] = probeIndex;
-#if defined(METALLIC_LUMEN_WRC_PROGRESSIVE)
+#if defined(METALLIC_LUMEN_WRC_HISTORY)
         if (probeIndex < params.maxProbes &&
             resolveUniform(params.probeFrames)[probeIndex].x < params.historyFirstFrame) {
             indirection[thread.x] = kLumenRadianceInvalidProbe;

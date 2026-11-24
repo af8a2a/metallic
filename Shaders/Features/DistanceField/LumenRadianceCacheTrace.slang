@@ -6,6 +6,11 @@ import GlobalDistanceField;
 import LumenGlobalRay;
 import LumenProbeMath;
 import LumenRadianceCache;
+#if defined(METALLIC_LUMEN_WRC_SPARSE_CONTINUATION)
+import LumenSurfaceCache;
+import OpenPBR;
+using Metallic.OpenPBR;
+#endif
 
 using Metallic;
 using Metallic.DistanceField;
@@ -30,6 +35,9 @@ struct LumenRadianceCacheTraceParams
     float maxTraceDistance;
     ResourceHandle<RWStructuredBuffer<uint>> directionHistory;
     uint frameNumber;
+    ResourceHandle<Texture2D<float4>> cardAlbedo;
+    ResourceHandle<RWStructuredBuffer<uint2>> continuationHistory;
+    float continuationProbability;
 };
 
 struct RadianceCacheTraceData
@@ -159,6 +167,87 @@ groupshared float3 sharedTraceRadiance[8][8];
 groupshared float sharedTraceHitDistance[8][8];
 groupshared uint sharedTraceHitClass[8][8];
 
+#if defined(METALLIC_LUMEN_WRC_SPARSE_CONTINUATION)
+static const uint kContinuationTraceCountWord = 32u;
+static const uint kContinuationCoveredHitCountWord = 33u;
+static const float kContinuationMinTraceDistance = 0.10f;
+static const float kContinuationSurfaceBias = 0.05f;
+static const float kMaxContinuationHistorySamples = 16.0f;
+groupshared float4 sharedContinuation[8][8];
+
+float3 coveredCardAlbedo(Texture2D<float4> atlas, SamplerState sampler, float2 uv, float4 weights)
+{
+    float4 red = atlas.GatherRed(sampler, uv);
+    float4 green = atlas.GatherGreen(sampler, uv);
+    float4 blue = atlas.GatherBlue(sampler, uv);
+    // Surface Cache stores the square root of diffuse albedo.
+    return float3(dot(red * red, weights), dot(green * green, weights), dot(blue * blue, weights));
+}
+
+// Capsaicin GI-1.2 PopulateMultibounceCells / UpdateMultibounceCells.
+// Both segments sample the original Surface Cache direct radiance and emission.
+float4 traceSparseContinuation(LumenRadianceCacheTraceParams params, LumenGlobalTraceScene scene,
+    LumenGlobalTraceRay primary, LumenGlobalTraceResult firstHit, float4 cardWeights, uint3 random)
+{
+    bool eligible = firstHit.state.w == kCacheSampled && firstHit.metrics.x > primary.originAndMinDistance.w &&
+        dot(firstHit.normal.xyz, primary.directionAndMaxDistance.xyz) < 0.0f;
+    // Use the actual selection probability of the discrete RNG for the estimator.
+    uint acceptedValues = uint(round(params.continuationProbability * 65536.0f));
+    bool selected = eligible && random.x + acceptedValues >= 65536u;
+    bool covered = false;
+    float3 indirect = 0.0f;
+    if (selected) {
+        float3 normal = firstHit.normal.xyz;
+        float2 directionSample = (float2(random.yz) + 0.5f) * (1.0f / 65536.0f);
+        float3 direction = openPBRLocalToWorld(openPBRMakeBasis(normal), openPBRSampleUnitHemisphereCosine(directionSample));
+        float3 position = primary.originAndMinDistance.xyz + primary.directionAndMaxDistance.xyz * firstHit.metrics.x;
+        position += (normal + direction) * kContinuationSurfaceBias;
+        LumenGlobalTraceRay ray = {float4(position, kContinuationMinTraceDistance),
+            float4(direction, primary.directionAndMaxDistance.w)};
+        LumenGlobalTraceResult secondHit = traceLumenGlobalRay(scene, ray);
+        covered = secondHit.state.w == kCacheSampled && secondHit.metrics.x > kContinuationMinTraceDistance;
+        if (covered) {
+            float3 albedo = coveredCardAlbedo(resolveUniform(params.cardAlbedo), scene.cache.sampler,
+                asfloat(firstHit.card.zw), cardWeights);
+            // The cosine PDF cancels the projected Lambertian BRDF, leaving albedo.
+            indirect = secondHit.radiance.xyz * albedo * (firstHit.metrics.w * (65536.0f / float(acceptedValues)));
+        }
+    }
+    uint traceCount = WaveActiveCountBits(selected);
+    uint coveredCount = WaveActiveCountBits(covered);
+    if (WaveIsFirstLane() && traceCount > 0u) {
+        RWStructuredBuffer<uint> state = resolveUniform(params.updateState);
+        InterlockedAdd(state[kContinuationTraceCountWord], traceCount);
+        InterlockedAdd(state[kContinuationCoveredHitCountWord], coveredCount);
+    }
+    return float4(indirect, float(eligible));
+}
+
+float3 accumulateContinuation(RWStructuredBuffer<uint2> rawAtlas, RWStructuredBuffer<uint2> history,
+    uint address, float4 sample, float hitDistance, bool reset, float minTraceDistance)
+{
+    float count = 0.0f;
+    if (sample.w > 0.0f) {
+        if (!reset) {
+            float4 previous = unpackRadianceDepth(history[address]);
+            if (previous.w > 0.0f) {
+                float priorDistance = unpackRadianceDepth(rawAtlas[address]).w;
+                float tolerance = max(0.05f * min(hitDistance, priorDistance), 0.1f * minTraceDistance);
+                if (abs(hitDistance - priorDistance) <= tolerance) {
+                    count = min(previous.w, kMaxContinuationHistorySamples - 1.0f);
+                    sample.xyz = lerp(previous.xyz, sample.xyz, rcp(count + 1.0f));
+                }
+            }
+        }
+        // Eligible samples that do not continue contribute zero to the running mean.
+        count += 1.0f;
+    }
+    sample.xyz = min(sample.xyz, kMaxHalfFloat);
+    history[address] = packRadianceDepth(sample.xyz, count);
+    return sample.xyz;
+}
+#endif
+
 // UE 5.7.4 LumenRadianceCache.usf, TraceForProbeTexel and TraceFromProbesCS.
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -196,7 +285,17 @@ void lumenRadianceCacheTraceMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
     float minTraceDistance = max(kMinTraceDistance, clipmap.traceSettings.x);
     LumenGlobalTraceScene scene = resolveLumenGlobalTraceScene(params.scene, params.gdfClipmapCount);
     LumenGlobalTraceRay ray = {float4(trace.worldCenter, minTraceDistance), float4(direction, params.maxTraceDistance)};
+#if defined(METALLIC_LUMEN_WRC_SPARSE_CONTINUATION)
+    float4 cardWeights;
+    LumenGlobalTraceResult hit = traceLumenGlobalRayWithCardWeights(scene, ray, cardWeights);
+    // Even grids center probes at integers and odd grids at half integers.
+    int3 worldCell = int3(floor(trace.worldCenter / clipmap.cornerAndCellSize.w + 0.25f));
+    uint3 random = lumenRand3DPCG16(worldCell * int(traceResolution) +
+        int3(traceTexel, params.frameNumber * 0x9e3779b9u + trace.clipmapIndex));
+    sharedContinuation[lane.y][lane.x] = traceSparseContinuation(params, scene, ray, hit, cardWeights, random);
+#else
     LumenGlobalTraceResult hit = traceLumenGlobalRay(scene, ray);
+#endif
     const bool opaqueHit = hit.state.x == kGlobalDistanceFieldHit;
     // LumenSoftwareRayTracing.ush, the cache's bZeroRadianceIfRayStartsInsideGeometry branch.
     const bool sampleHitRadiance = opaqueHit && hit.metrics.x > minTraceDistance;
@@ -213,6 +312,9 @@ void lumenRadianceCacheTraceMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
         uint2 probeTexelBase = traceTexel * upsampleFactor;
         float3 radiance = sharedTraceRadiance[lane.y][lane.x];
         float hitDistance = min(sharedTraceHitDistance[lane.y][lane.x], kMaxHalfFloat);
+#if defined(METALLIC_LUMEN_WRC_SPARSE_CONTINUATION)
+        radiance = min(radiance + sharedContinuation[lane.y][lane.x].xyz, kMaxHalfFloat);
+#endif
         uint2 packedSample = packRadianceDepth(radiance, hitDistance);
         for (uint y = 0u; y < upsampleFactor; ++y) {
             for (uint x = 0u; x < upsampleFactor; ++x) {
@@ -220,6 +322,9 @@ void lumenRadianceCacheTraceMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
                 rawAtlas[address] = packedSample;
                 // Replication fills bins without adding independent samples.
                 if (progressive) { resolveUniform(params.directionHistory)[address] = 0u; }
+#if defined(METALLIC_LUMEN_WRC_SPARSE_CONTINUATION)
+                resolveUniform(params.continuationHistory)[address] = uint2(0u);
+#endif
             }
         }
     } else {
@@ -227,9 +332,15 @@ void lumenRadianceCacheTraceMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
         uint writeTileSize = kTraceTileSize / downsampleFactor;
         if (all(lane.xy < writeTileSize)) {
             float3 radiance = 0.0f;
+#if defined(METALLIC_LUMEN_WRC_SPARSE_CONTINUATION)
+            float4 continuation = 0.0f;
+#endif
             for (uint y = 0u; y < downsampleFactor; ++y) {
                 for (uint x = 0u; x < downsampleFactor; ++x) {
                     radiance += sharedTraceRadiance[lane.y * downsampleFactor + y][lane.x * downsampleFactor + x];
+#if defined(METALLIC_LUMEN_WRC_SPARSE_CONTINUATION)
+                    continuation += sharedContinuation[lane.y * downsampleFactor + y][lane.x * downsampleFactor + x];
+#endif
                 }
             }
             radiance /= float(downsampleFactor * downsampleFactor);
@@ -250,6 +361,11 @@ void lumenRadianceCacheTraceMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
                 radiance = accumulateDirectionRadiance(rawAtlas, resolveUniform(params.directionHistory), address,
                     radiance, hitDistance, hitClass, trace.resetDirectionHistory, minTraceDistance);
             }
+#if defined(METALLIC_LUMEN_WRC_SPARSE_CONTINUATION)
+            continuation.xyz /= float(downsampleFactor * downsampleFactor);
+            radiance = min(radiance + accumulateContinuation(rawAtlas, resolveUniform(params.continuationHistory),
+                address, continuation, hitDistance, trace.resetDirectionHistory, minTraceDistance), kMaxHalfFloat);
+#endif
             rawAtlas[address] = packRadianceDepth(radiance, hitDistance);
         }
     }

@@ -102,7 +102,8 @@ float3 computeLumenGlobalDistanceFieldNormal(QuantizedGlobalDistanceFieldSampler
 }
 
 LumenGlobalTraceResult traceLumenGlobalRay(LumenGlobalTraceScene scene, LumenGlobalTraceRay ray,
-    bool rejectRecedingExpansion, GlobalDistanceFieldTraceOptions options, out bool recedingExpansionRejected)
+    bool rejectRecedingExpansion, GlobalDistanceFieldTraceOptions options, out bool recedingExpansionRejected,
+    out float4 cardTexelWeights)
 {
     LumenGlobalTraceResult result = (LumenGlobalTraceResult)0;
     result.metrics.x = -1.0f;
@@ -110,6 +111,7 @@ LumenGlobalTraceResult traceLumenGlobalRay(LumenGlobalTraceScene scene, LumenGlo
     result.candidates = uint4(~0u);
     result.card.xy = uint2(~0u);
     recedingExpansionRejected = false;
+    cardTexelWeights = 0.0f;
 
     if (!scene.identityMatches) {
         result.state.w = kCacheSceneMismatch;
@@ -172,6 +174,7 @@ LumenGlobalTraceResult traceLumenGlobalRay(LumenGlobalTraceScene scene, LumenGlo
         result.normal.w = accumulator.maxSampleWeight;
         result.card.xy = uint2(accumulator.cardIndex, scene.cache.cards[accumulator.cardIndex].metadata.x);
         result.card.zw = asuint(accumulator.physicalAtlasUV);
+        cardTexelWeights = accumulator.texelWeights;
     }
     return result;
 }
@@ -180,7 +183,16 @@ public LumenGlobalTraceResult traceLumenGlobalRay(LumenGlobalTraceScene scene, L
     bool rejectRecedingExpansion, out bool recedingExpansionRejected)
 {
     GlobalDistanceFieldTraceOptions options = {1.0f, true};
-    return traceLumenGlobalRay(scene, ray, rejectRecedingExpansion, options, recedingExpansionRejected);
+    float4 cardTexelWeights;
+    return traceLumenGlobalRay(scene, ray, rejectRecedingExpansion, options, recedingExpansionRejected, cardTexelWeights);
+}
+
+public LumenGlobalTraceResult traceLumenGlobalRayWithCardWeights(LumenGlobalTraceScene scene, LumenGlobalTraceRay ray,
+    out float4 cardTexelWeights)
+{
+    GlobalDistanceFieldTraceOptions options = {1.0f, true};
+    bool recedingExpansionRejected;
+    return traceLumenGlobalRay(scene, ray, false, options, recedingExpansionRejected, cardTexelWeights);
 }
 
 public LumenGlobalTraceResult traceLumenReflectionGlobalRay(LumenGlobalTraceScene scene, LumenGlobalTraceRay ray,
@@ -188,7 +200,8 @@ public LumenGlobalTraceResult traceLumenReflectionGlobalRay(LumenGlobalTraceScen
 {
     GlobalDistanceFieldTraceOptions options = {stepFactor, false};
     bool recedingExpansionRejected;
-    return traceLumenGlobalRay(scene, ray, false, options, recedingExpansionRejected);
+    float4 cardTexelWeights;
+    return traceLumenGlobalRay(scene, ray, false, options, recedingExpansionRejected, cardTexelWeights);
 }
 
 public LumenGlobalTraceResult traceLumenGlobalRay(LumenGlobalTraceScene scene, LumenGlobalTraceRay ray)

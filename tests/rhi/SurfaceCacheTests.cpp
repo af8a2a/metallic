@@ -2351,6 +2351,189 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(LumenWRCProgressiveRefreshTest);
 
+class LumenWRCSparseContinuationTest final : public RHITest {
+public:
+    LumenWRCSparseContinuationTest()
+    {
+        name = "lumen_wrc_sparse_continuation";
+        type = RHITestType::Rendering;
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        scene::SceneDocument document;
+        RenderGraph graph;
+        std::string log;
+        if (!loadSingleBounceFixture(context, document, graph, log)) { return RHITestResult::fail(log); }
+        if (!prepareGraph(graph)) { return RHITestResult::fail("Could not wire the WRC continuation fixture"); }
+
+        RenderView view;
+        ViewCamera camera;
+        camera.eye = {1.1f, 0.72f, 3.0f};
+        camera.center = {0.1f, 0.66f, 0.48f};
+        camera.fovDegrees = 58.0f;
+        camera.farPlane = 8.0f;
+        if (!view.setCamera(camera) || !view.setRenderResolution(kSingleBounceEdge, kSingleBounceEdge)) {
+            return RHITestResult::fail("Invalid WRC continuation camera");
+        }
+
+        bench::ValidationRecorder validation;
+        CardUpdateInspector inspector;
+        RenderGraphPreviewRenderer preview;
+        preview.bindRuntimeScene(&document);
+        preview.bindRenderView(&view);
+        if (!preview.initialize(context.enableValidation, false, false, context.enableValidation, validation.sink())) {
+            return RHITestResult::fail("WRC continuation preview setup: " + preview.lastLog());
+        }
+        preview.setEnvironment({.enabled = false, .visible = false});
+        preview.setDebugObserver(&inspector);
+        preview.setRecordingWorkerLimit(1);
+
+        environment::WorldEnvironment world;
+        world.source = environment::EnvironmentSource::HDRI;
+        world.astronomy.mode = environment::AstronomyMode::Manual;
+        world.moon.enabled = false;
+        world.sun.enabled = true;
+        world.sun.illuminance = 4.0f;
+        world.sun.direction = {0.0f, -0.8f, -0.6f};
+        if (!preview.setLighting(document.lighting()) || !preview.setWorldEnvironment(world)) {
+            return RHITestResult::fail("Could not initialize WRC continuation fixture lighting");
+        }
+
+        auto batches = debug::DebugValue::array();
+        for (const auto& variant : kVariants) {
+            batches.push_back({{"pass", variant.name}, {"resources", debug::DebugValue::array({
+                cardBufferCapture(makeRenderGraphFieldName(variant.name, "updateState"), 34),
+                cardBufferCapture(makeRenderGraphFieldName(variant.name, "cacheIndirection"), kGridCells),
+                cardBufferCapture(makeRenderGraphFieldName(variant.name, "rawAtlas"), 2u * kAtlasSlots * kDirections),
+            })}});
+        }
+        inspector.request = {{"method", "capture.batch"}, {"params", {{"batches", std::move(batches)}}}};
+        if (!preview.render(graph, kSingleBounceEdge, kSingleBounceEdge, "DirectOnly.cacheRadiance", false)) {
+            return RHITestResult::fail("WRC continuation rendering failed: " + preview.lastLog());
+        }
+        inspector.runtime.poll();
+        const auto& response = inspector.response;
+        if (response.value("status", "") != "ok") { return RHITestResult::fail(response.dump()); }
+        const auto& jobs = response.at("result").at("jobs");
+        std::array<CardCapture, kVariants.size()> captures;
+        std::array<Statistics, kVariants.size()> statistics;
+        for (size_t i = 0; i < captures.size(); ++i) {
+            captures[i] = inspector.runtime.core().completedCapture(jobs.at(i).at("job").get<std::string>());
+            if (!captures[i] || captures[i]->artifacts.size() != 3 ||
+                captures[i]->snapshot.evidence.execution != captures[0]->snapshot.evidence.execution ||
+                captures[i]->artifacts[0].bytes.size() != sizeof(Statistics) ||
+                captures[i]->artifacts[1].bytes.size() != kGridCells * sizeof(uint32_t) ||
+                captures[i]->artifacts[2].bytes.size() != kAtlasSlots * kDirections * sizeof(Sample)) {
+                return RHITestResult::fail("Missing same-frame WRC continuation readbacks");
+            }
+            statistics[i] = readSurfaceValue<Statistics>(captures[i]->artifacts[0].bytes, 0);
+        }
+
+        const auto& direct = statistics[0];
+        const auto& continued = statistics[1];
+        const auto& alternate = statistics[2];
+        if (direct[29] == 0 || direct[29] != continued[29] || direct[29] != alternate[29] ||
+            direct[32] != 0 || direct[33] != 0 || continued[32] == 0 || continued[33] == 0 ||
+            continued[33] > continued[32] || continued[32] > continued[29] * kDirections ||
+            continued[32] != alternate[32] || continued[33] != alternate[33]) {
+            return RHITestResult::fail("Unexpected primary tile or continuation counts: " + nlohmann::json(statistics).dump());
+        }
+
+        uint32_t brightened = 0;
+        for (uint32_t cell = 0; cell < kGridCells; ++cell) {
+            std::array<uint32_t, kVariants.size()> slots;
+            for (size_t i = 0; i < slots.size(); ++i) {
+                slots[i] = readSurfaceValue<uint32_t>(captures[i]->artifacts[1].bytes, cell);
+            }
+            if (slots[0] >= kAtlasSlots && slots[1] >= kAtlasSlots && slots[2] >= kAtlasSlots) { continue; }
+            if (std::ranges::any_of(slots, [](uint32_t slot) { return slot >= kAtlasSlots; })) {
+                return RHITestResult::fail("Continuation changed world probe residency");
+            }
+            for (uint32_t direction = 0; direction < kDirections; ++direction) {
+                std::array<Sample, kVariants.size()> samples;
+                for (size_t i = 0; i < samples.size(); ++i) {
+                    samples[i] = readSurfaceValue<Sample>(captures[i]->artifacts[2].bytes, slots[i] * kDirections + direction);
+                }
+                if (samples[1] != samples[2] || samples[0][3] != samples[1][3]) {
+                    return RHITestResult::fail("Continuation used the legacy lighting input or changed primary hit distance");
+                }
+                for (size_t channel = 0; channel < 3; ++channel) {
+                    const float first = halfToFloat(samples[0][channel]);
+                    const float combined = halfToFloat(samples[1][channel]);
+                    if (!std::isfinite(first) || !std::isfinite(combined) || first < 0.0f || combined < first) {
+                        return RHITestResult::fail("Continuation produced invalid radiance or lost direct lighting");
+                    }
+                    brightened += combined > first;
+                }
+            }
+        }
+        if (brightened == 0) { return RHITestResult::fail("The covered second hit added no outgoing radiance"); }
+        if (validation.failed()) {
+            return RHITestResult::fail("WRC continuation Vulkan validation: " + validation.snapshot().dump());
+        }
+        return RHITestResult::pass("Verified sparse second hits, direct lighting isolation, and unchanged primary tracing");
+    }
+
+private:
+    static constexpr uint32_t kGridResolution = 16;
+    static constexpr uint32_t kGridCells = kGridResolution * kGridResolution * kGridResolution;
+    static constexpr uint32_t kAtlasAxis = 16;
+    static constexpr uint32_t kAtlasSlots = kAtlasAxis * kAtlasAxis;
+    static constexpr uint32_t kProbeResolution = 8;
+    static constexpr uint32_t kDirections = kProbeResolution * kProbeResolution;
+    using Statistics = std::array<uint32_t, 34>;
+    using Sample = std::array<uint16_t, 4>;
+    struct Variant {
+        const char* name;
+        float probability;
+        const char* legacyLighting;
+    };
+    // Use emission alone as an alternate legacy source. The shared direct input
+    // also includes sunlight, so reading the legacy edge would change the result.
+    static constexpr std::array kVariants{Variant{"DirectOnly", 0.0f, "SurfaceCache.lighting"},
+        Variant{"Continued", 1.0f, "SurfaceCache.lighting"}, Variant{"Alternate", 1.0f, "SurfaceCache.emissive"}};
+
+    static bool prepareGraph(render::RenderGraph& graph)
+    {
+        using render::makeRenderGraphFieldName;
+        if (!graph.addNode("LumenScreenProbePlacementPass", "Placement") ||
+            !graph.addEdge("Deferred.lumenPosition", "Placement.position") ||
+            !graph.addEdge("Deferred.lumenNormal", "Placement.normal")) {
+            return false;
+        }
+        graph.clearOutputs();
+        constexpr std::array<std::string_view, 10> traceInputs{"position", "pageTable", "pageAtlas", "coarseMip", "domain",
+            "objectGrid", "objectGridScene", "cards", "cardScene", "cardDepth"};
+        const auto edges = graph.edges();
+        for (const auto& variant : kVariants) {
+            const auto field = [&](std::string_view name) { return makeRenderGraphFieldName(variant.name, name); };
+            if (!graph.addNode("LumenRadianceCachePass", variant.name, {{"gridResolution", kGridResolution},
+                    {"clipmapCount", 1u}, {"probeResolution", kProbeResolution}, {"atlasProbesPerAxis", kAtlasAxis},
+                    {"traceBudget", kAtlasSlots}, {"worldExtent", 4.0f}, {"maxTraceDistance", 5.0f},
+                    {"compactProbeAtlas", true}, {"sparseContinuation", true}, {"continuationProbability", variant.probability}}) ||
+                !graph.addEdge("Placement.probePositions", field("probePositions")) ||
+                !graph.addEdge("Placement.probeAdaptiveCount", field("probeAdaptiveCount")) ||
+                !graph.addEdge(variant.legacyLighting, field("cardLighting")) ||
+                !graph.addEdge("SurfaceCache.lighting", field("cardDirectRadiance")) ||
+                !graph.addEdge("SurfaceCache.albedo", field("cardAlbedo")) ||
+                !graph.markOutput(field("cacheRadiance"))) {
+                return false;
+            }
+            for (const auto& edge : edges) {
+                if (edge.dstPass == "Gather" && std::ranges::find(traceInputs, edge.dstField) != traceInputs.end() &&
+                    !graph.addEdge(makeRenderGraphFieldName(edge.srcPass, edge.srcField), field(edge.dstField))) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(LumenWRCSparseContinuationTest);
+
 debug::DebugValue surfaceUpdateCaptures(std::string_view pass, bool captureStochasticHistory = false)
 {
     using render::makeRenderGraphFieldName;

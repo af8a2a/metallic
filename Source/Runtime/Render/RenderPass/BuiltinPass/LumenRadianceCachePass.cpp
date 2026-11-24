@@ -21,14 +21,14 @@ namespace metallic::render::builtin_pass {
 namespace {
 
 constexpr uint64_t kUpdateABI = 0x4c554d454e050005ull;
-constexpr uint64_t kTraceABI = 0x4c554d454e050006ull;
+constexpr uint64_t kTraceABI = 0x4c554d454e050008ull;
 constexpr uint64_t kCompactMarkABI = 0x4c554d454e050007ull;
 constexpr uint64_t kPriorityABI = 0x4c554d454e050004ull;
 constexpr uint32_t kGlobalLightingTraceBudgetScale = 4;
 constexpr uint32_t kMaxClipmaps = 6;
 constexpr uint32_t kTraceGroupEdge = 8;
 constexpr uint32_t kUpdateThreads = 64;
-constexpr uint32_t kUpdateStateWords = 32;
+constexpr uint32_t kUpdateStateWords = 34;
 constexpr uint32_t kIndirectDispatchCount = 4;
 constexpr uint32_t kProbePositionStride = 2 * sizeof(uint32_t);
 constexpr uint64_t kMaxAtlasBufferBytes = 128ull * 1024 * 1024;
@@ -74,8 +74,11 @@ struct RadianceCacheTraceParams {
     float maxTraceDistance;
     ShaderBuffer directionHistory;
     uint32_t frameNumber;
+    ShaderSampledImage cardAlbedo;
+    ShaderBuffer continuationHistory;
+    float continuationProbability;
 };
-static_assert(sizeof(RadianceCacheTraceParams) == 108);
+static_assert(sizeof(RadianceCacheTraceParams) == 120);
 
 struct RadianceCacheLayout {
     uint32_t gridResolution = 48;
@@ -189,6 +192,8 @@ private:
     RadianceCacheLayout layout_;
     bool compactProbeAtlas_ = false;
     bool progressiveAccumulation_ = false;
+    bool sparseContinuation_ = false;
+    float continuationProbability_ = 0.30f;
     std::optional<CacheContent> previousContent_;
     std::shared_ptr<SubmissionTransaction> previousSubmission_;
     SunLightingSample recordedSunLighting_;
@@ -205,6 +210,16 @@ RenderPassReflection LumenRadianceCachePass::reflect(const RenderGraphCompileCon
     const auto layout = readLayout(properties()).value_or(RadianceCacheLayout{});
     RenderPassReflection reflection;
     reflectLumenGlobalTraceInputs(reflection);
+    const auto sparse = properties().find("sparseContinuation");
+    const bool sparseContinuation = sparse != properties().end() && *sparse == true;
+    auto& cardDirect = reflection.addTextureInput("cardDirectRadiance", "Surface Cache direct outgoing radiance and emission")
+        .sampledRead().setOptional(!sparseContinuation);
+    cardDirect.format = Format::RGBA16Sfloat;
+    cardDirect.matchOutputExtent = false;
+    auto& cardAlbedo = reflection.addTextureInput("cardAlbedo", "Surface Cache encoded diffuse albedo")
+        .sampledRead().setOptional(!sparseContinuation);
+    cardAlbedo.format = Format::RGBA8Unorm;
+    cardAlbedo.matchOutputExtent = false;
     auto& position = reflection.addTextureInput("position", "Receiver world position and depth").sampledRead();
     position.format = Format::RGBA32Sfloat;
     position.matchOutputExtent = false;
@@ -263,6 +278,9 @@ RenderPassReflection LumenRadianceCachePass::reflect(const RenderGraphCompileCon
         addBuffer("directionHistory", "Effective sample count and hit class per world probe direction", layout.atlasTexels(), 4)
             .bufferLayout("u32");
     }
+    if (sparseContinuation) {
+        addBuffer("continuationHistory", "Indirect radiance and effective sample count per direction", layout.atlasTexels(), 8);
+    }
     addBuffer("filteredAtlas", "Spatially filtered probe radiance", layout.atlasTexels(), 8);
     auto& radiance = reflection.addTextureOutput("cacheRadiance", "Persistent bordered directional radiance atlas")
         .texture2D(layout.borderedAtlasEdge(), layout.borderedAtlasEdge()).storageWrite();
@@ -288,16 +306,36 @@ Result<> LumenRadianceCachePass::compile(const RenderGraphCompileContext& contex
         log = "Lumen Radiance Cache progressiveAccumulation must be a boolean";
         return makeError(Error::InvalidArgument);
     }
+    const auto sparse = properties().find("sparseContinuation");
+    if (sparse != properties().end() && !sparse->is_boolean()) {
+        log = "Lumen Radiance Cache sparseContinuation must be a boolean";
+        return makeError(Error::InvalidArgument);
+    }
+    const auto probability = properties().find("continuationProbability");
+    if (probability != properties().end() && (!probability->is_number() ||
+        !std::isfinite(probability->get<double>()) || *probability < 0 || *probability > 1)) {
+        log = "Lumen Radiance Cache continuationProbability must be a finite number in [0, 1]";
+        return makeError(Error::InvalidArgument);
+    }
     device_ = context.device;
     layout_ = *layout;
     compactProbeAtlas_ = compact != properties().end() && *compact == true;
     progressiveAccumulation_ = progressive != properties().end() && *progressive == true;
+    sparseContinuation_ = sparse != properties().end() && *sparse == true;
+    continuationProbability_ = properties().value("continuationProbability", 0.30f);
+    if (progressiveAccumulation_ && sparseContinuation_) {
+        log = "Lumen Radiance Cache progressiveAccumulation and sparseContinuation require separate direct history";
+        return makeError(Error::InvalidArgument);
+    }
     // A cache rebuild ends residency without creating a new Sun lighting change.
     previousContent_.reset();
-    const SlangMacroDefine progressiveDefine{"METALLIC_LUMEN_WRC_PROGRESSIVE", "1"};
+    const std::array historyDefines{SlangMacroDefine{"METALLIC_LUMEN_WRC_HISTORY", "1"},
+        SlangMacroDefine{sparseContinuation_ ? "METALLIC_LUMEN_WRC_SPARSE_CONTINUATION" : "METALLIC_LUMEN_WRC_PROGRESSIVE", "1"}};
     const auto compileKernel = [&](const char* module, const char* entry, ParameterABI abi, ComputeKernel& kernel) {
-        const std::span defines = progressiveAccumulation_ && std::string_view(module).starts_with("Features/DistanceField/LumenRadianceCache") ?
-            std::span<const SlangMacroDefine>(&progressiveDefine, 1) : std::span<const SlangMacroDefine>{};
+        const std::span<const SlangMacroDefine> defines =
+            (progressiveAccumulation_ || sparseContinuation_) &&
+                std::string_view(module).starts_with("Features/DistanceField/LumenRadianceCache") ?
+            std::span<const SlangMacroDefine>(historyDefines) : std::span<const SlangMacroDefine>{};
         return ShaderRegistry::instance().getComputeKernel(*device_,
             {.moduleName = module, .entryPointName = entry, .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = defines},
             {.parameters = abi, .debugName = entry}, kernel, log);
@@ -376,7 +414,8 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
         context.temporalValid("previousIndirection") && previousSubmitted && !globalLightingChanged;
     const uint32_t frameNumber = uint32_t(context.frameIndex() + 1u);
     uint32_t historyFirstFrame = 0u;
-    if (progressiveAccumulation_) {
+    const bool trackHistory = progressiveAccumulation_ || sparseContinuation_;
+    if (trackHistory) {
         const auto sun = buildCelestialLightRecords(resolveWorldEnvironment(scene, world))[0];
         currentSunLighting.effectiveLight = {sun.direction[0], sun.direction[1], sun.direction[2],
             sun.irradiance[0], sun.irradiance[1], sun.irradiance[2], sun.angularRadius};
@@ -468,12 +507,29 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
     saveParams.previousIndirection = bind("savedIndirection");
     const auto saveUpdate = writer.encode(saveParams, kUpdateABI);
     if (!saveUpdate) { return makeError(saveUpdate.error()); }
+    auto traceScene = bindLumenGlobalTrace(context, writer);
+    ShaderSampledImage cardAlbedo{};
+    if (sparseContinuation_) {
+        const auto direct = context.inputTexture("cardDirectRadiance");
+        const auto albedo = context.inputTexture("cardAlbedo");
+        const auto depth = context.inputTexture("cardDepth");
+        const auto matchesDepth = [&](const auto& texture) {
+            return texture.desc().width == depth.desc().width && texture.desc().height == depth.desc().height;
+        };
+        if (!matchesDepth(direct) || !matchesDepth(albedo)) {
+            spdlog::error("Lumen sparse continuation requires direct radiance and albedo to match the card depth atlas");
+            return makeError(Error::InvalidArgument);
+        }
+        traceScene.cardLighting = writer.sampledImageHandle(direct.view());
+        cardAlbedo = writer.sampledImageHandle(albedo.view());
+    }
     const auto trace = writer.encode(RadianceCacheTraceParams{
-        bindLumenGlobalTrace(context, writer), bind("cacheClipmaps"), bind("cacheIndirection"), bind("traceData"),
+        traceScene, bind("cacheClipmaps"), bind("cacheIndirection"), bind("traceData"),
         bind("updateState"), bind("traceTiles"), bind("indirectArgs"),
         bind("rawAtlas"), bind("filteredAtlas"), writer.storageImageHandle(context.outputTexture("cacheRadiance").view()),
         *gdfClipmaps, eye, layout_.maxTraceDistance, progressiveAccumulation_ ? bind("directionHistory") : ShaderBuffer{},
-        frameNumber}, kTraceABI);
+        frameNumber, cardAlbedo, sparseContinuation_ ? bind("continuationHistory") : ShaderBuffer{},
+        continuationProbability_}, kTraceABI);
     if (!trace) { return makeError(trace.error()); }
 
     using Access = RenderGraphResourceAccess;
@@ -520,11 +576,15 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
         }});
     };
     const auto dispatchIndirect = [&](const char* name, ComputeKernel& kernel, uint32_t argumentIndex,
-        std::initializer_list<Use> uses, bool appendDirectionHistory = false) {
+        std::initializer_list<Use> uses, bool traceWork = false) {
         auto& ownedUses = stageUses[useIndex++];
         ownedUses.assign(uses);
         ownedUses.push_back({"indirectArgs", indirect});
-        if (appendDirectionHistory) { ownedUses.push_back({"directionHistory", rw}); }
+        if (traceWork && progressiveAccumulation_) { ownedUses.push_back({"directionHistory", rw}); }
+        if (traceWork && sparseContinuation_) {
+            ownedUses.push_back({"cardAlbedo", sample});
+            ownedUses.push_back({"continuationHistory", rw});
+        }
         stages.push_back({name, ownedUses, [&, argumentIndex, kernelPtr = &kernel](CommandBuffer& cmd) -> Result<> {
             constexpr uint32_t stride = 3 * sizeof(uint32_t);
             const auto args = buffer("indirectArgs")->slice({argumentIndex * stride, stride});
@@ -556,12 +616,12 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
         {{"cacheClipmaps", read}, {"traceData", read}, {"traceTiles", write}, {"updateState", rw}});
     dispatch("Set up directional trace dispatch", traceArgs_, *trace, 1, {{"updateState", read}, {"indirectArgs", rw}});
     dispatchIndirect("Trace world probe radiance", trace_, 3,
-        {{"cacheClipmaps", read}, {"traceData", read}, {"traceTiles", read}, {"updateState", read},
-            {"rawAtlas", progressiveAccumulation_ ? rw : write},
+        {{"cacheClipmaps", read}, {"traceData", read}, {"traceTiles", read}, {"updateState", sparseContinuation_ ? rw : read},
+            {"rawAtlas", trackHistory ? rw : write},
             {"pageTable", sample}, {"pageAtlas", sample}, {"coarseMip", sample}, {"domain", read},
             {"objectGrid", read}, {"objectGridScene", read}, {"cards", read}, {"cardScene", read},
-            {"cardDepth", sample}, {"cardLighting", sample}}, progressiveAccumulation_);
-    if (progressiveAccumulation_) {
+            {"cardDepth", sample}, {sparseContinuation_ ? "cardDirectRadiance" : "cardLighting", sample}}, true);
+    if (trackHistory) {
         // Keep private residency for the scheduler and publish only probes
         // traced in this lighting epoch before filtering or Gather can read them.
         dispatch("Save and publish fresh world probe indirection", save_, *saveUpdate, groups,
@@ -572,7 +632,7 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
             {"rawAtlas", read}, {"filteredAtlas", write}});
     dispatchIndirect("Fix up octahedral atlas borders", borders_, 2,
         {{"cacheClipmaps", read}, {"traceData", read}, {"filteredAtlas", read}, {"cacheRadiance", Access::TextureStorageWrite}});
-    if (!progressiveAccumulation_) {
+    if (!trackHistory) {
         dispatch("Save world probe indirection", save_, *saveUpdate, groups,
             {{"cacheIndirection", read}, {"savedIndirection", write}});
     }

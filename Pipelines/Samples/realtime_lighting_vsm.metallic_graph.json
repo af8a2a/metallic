@@ -348,7 +348,9 @@
         {"id": 119, "src": "Deferred.lumenSpecular", "dst": "RadianceCache.reflectionSpecular"},
         {"id": 120, "src": "Deferred.lumenPreviousPosition", "dst": "RadianceCache.reflectionPreviousPosition"},
         {"id": 121, "src": "ScreenTrace.previousDepth", "dst": "RadianceCache.reflectionPreviousDepth"},
-        {"id": 122, "src": "ScreenTrace.previousColor", "dst": "RadianceCache.reflectionPreviousColor"}
+        {"id": 122, "src": "ScreenTrace.previousColor", "dst": "RadianceCache.reflectionPreviousColor"},
+        {"id": 123, "src": "SurfaceCache.lighting", "dst": "RadianceCache.cardDirectRadiance"},
+        {"id": 124, "src": "SurfaceCache.albedo", "dst": "RadianceCache.cardAlbedo"}
     ],
     "outputs": [],
     "view": {

@@ -333,7 +333,9 @@
         {"id": 122, "src": "Deferred.lumenPreviousPosition", "dst": "RadianceCache.reflectionPreviousPosition"},
         {"id": 123, "src": "ScreenTrace.previousDepth", "dst": "RadianceCache.reflectionPreviousDepth"},
         {"id": 124, "src": "ScreenTrace.previousColor", "dst": "RadianceCache.reflectionPreviousColor"},
-        {"id": 125, "src": "VBuffer.accelerationStructure", "dst": "SurfaceCache.accelerationStructure"}
+        {"id": 125, "src": "VBuffer.accelerationStructure", "dst": "SurfaceCache.accelerationStructure"},
+        {"id": 126, "src": "SurfaceCache.lighting", "dst": "RadianceCache.cardDirectRadiance"},
+        {"id": 127, "src": "SurfaceCache.albedo", "dst": "RadianceCache.cardAlbedo"}
     ],
     "outputs": [],
     "view": {

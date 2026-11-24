@@ -52,6 +52,7 @@ public struct LumenCardSampleAccumulator
     public uint cardIndex;
     public float maxSampleWeight;
     public float2 physicalAtlasUV;
+    public float4 texelWeights;
 };
 
 public LumenCardSampleAccumulator initLumenCardSampleAccumulator()
@@ -141,6 +142,7 @@ void sampleLumenCard(LumenSurfaceCache cache, SurfaceCacheCard card, uint cardIn
         if (cardSampleWeight > accumulator.maxSampleWeight) {
             accumulator.cardIndex = cardIndex;
             accumulator.physicalAtlasUV = cardSample.physicalAtlasUV;
+            accumulator.texelWeights = texelWeights;
             accumulator.maxSampleWeight = cardSampleWeight;
         }
     }
