@@ -25,9 +25,9 @@ namespace {
 
 constexpr char kShaderModule[] = "Features/DistanceField/SurfaceCacheCapture";
 constexpr uint64_t kCaptureABI = 0x4c554d454e010001ull;
-constexpr uint64_t kResolveABI = 0x4c554d454e010102ull;
+constexpr uint64_t kResolveABI = 0x4c554d454e010109ull;
 constexpr uint64_t kEncodeDepthABI = 0x4c554d454e010104ull;
-constexpr uint64_t kShadowedLightingABI = 0x4c554d454e010108ull;
+constexpr uint64_t kShadowedLightingABI = 0x4c554d454e01010aull;
 constexpr uint32_t kGDFDomainStride = 32;
 constexpr uint32_t kCardsPerDispatchRow = 128u;
 constexpr std::array kCaptureFormats{Format::RGBA8Unorm, Format::RGBA8Unorm, Format::RGBA16Sfloat};
@@ -73,6 +73,8 @@ struct alignas(16) ResolveParams {
     Float4 lightDirection, illuminance;
     ShaderBuffer updateTiles;
     uint32_t updateCount;
+    ShaderBuffer rectLights;
+    uint32_t rectLightCount;
 };
 
 struct EncodeDepthParams {
@@ -97,14 +99,18 @@ struct alignas(16) ShadowedLightingParams {
     uint32_t exportDirectIrradiance;
     ShaderBuffer updateTiles;
     uint32_t updateCount;
+    ShaderBuffer rectLights;
+    uint32_t rectLightCount;
 };
 
 static_assert(sizeof(CaptureVertex) == 64 && sizeof(SurfaceCard) == 80);
 static_assert(sizeof(CaptureParams) == 288 && offsetof(CaptureParams, textureTransforms) == 160);
-static_assert(sizeof(ResolveParams) == 80 && offsetof(ResolveParams, updateTiles) == 64);
+static_assert(sizeof(ResolveParams) == 80 && offsetof(ResolveParams, updateTiles) == 64 &&
+    offsetof(ResolveParams, rectLights) == 72 && offsetof(ResolveParams, rectLightCount) == 76);
 static_assert(sizeof(EncodeDepthParams) == 28 && offsetof(EncodeDepthParams, updateTiles) == 20);
-static_assert(sizeof(ShadowedLightingParams) == 112 && offsetof(ShadowedLightingParams, pageTable) == 64 &&
-    offsetof(ShadowedLightingParams, directIrradiance) == 96 && offsetof(ShadowedLightingParams, updateTiles) == 104);
+static_assert(sizeof(ShadowedLightingParams) == 128 && offsetof(ShadowedLightingParams, pageTable) == 64 &&
+    offsetof(ShadowedLightingParams, directIrradiance) == 96 && offsetof(ShadowedLightingParams, updateTiles) == 104 &&
+    offsetof(ShadowedLightingParams, rectLights) == 112 && offsetof(ShadowedLightingParams, rectLightCount) == 116);
 
 struct AtlasLayout {
     uint32_t edge = 128;
@@ -215,20 +221,24 @@ struct CaptureLighting {
     Float4 direction, illuminance;
     bool sunCastsShadow;
     std::vector<GPUPunctualLight> punctual;
+    std::vector<GPURectLight> rectLights;
     std::array<float, 3> clipmapEye{};
 
-    bool samePunctualLights(const CaptureLighting& other) const
+    bool sameLocalLights(const CaptureLighting& other) const
     {
         // The first punctual row only contains the count and exposure.
         return punctual.size() == other.punctual.size() &&
             (punctual.size() <= 1 || std::memcmp(punctual.data() + 1, other.punctual.data() + 1,
-                (punctual.size() - 1) * sizeof(GPUPunctualLight)) == 0);
+                (punctual.size() - 1) * sizeof(GPUPunctualLight)) == 0) &&
+            rectLights.size() == other.rectLights.size() &&
+            (rectLights.empty() || std::memcmp(rectLights.data(), other.rectLights.data(),
+                rectLights.size() * sizeof(GPURectLight)) == 0);
     }
 
     bool sameLights(const CaptureLighting& other) const
     {
         return direction == other.direction && illuminance == other.illuminance &&
-            sunCastsShadow == other.sunCastsShadow && samePunctualLights(other);
+            sunCastsShadow == other.sunCastsShadow && sameLocalLights(other);
     }
 
     bool tracesShadows() const
@@ -678,7 +688,7 @@ SurfaceCacheUpdate planSurfaceCacheUpdate(const PublishedSurfaceCache* previous,
     const bool changedLights = previous && !previous->lighting.sameLights(next.lighting);
     const bool changedNonSunLighting = previous && previous->nonSunLightingRevision != next.nonSunLightingRevision;
     const bool resetIndirect = changedLights && (!next.nonSunLightingRevision || changedNonSunLighting ||
-        !previous->lighting.samePunctualLights(next.lighting));
+        !previous->lighting.sameLocalLights(next.lighting));
     const bool continueLighting = !update.fullCapture && !previous->pendingLighting.empty();
     update.publish = !previous || previous->geometry != next.geometry || previous->materials != next.materials ||
         changedLights || changedNonSunLighting || previous->lighting.clipmapEye != next.lighting.clipmapEye || continueLighting;
@@ -851,6 +861,13 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         next.nonSunLightingRevision = world->nonSunLightingRevision();
     }
     auto& lighting = next.lighting;
+    const auto resolvedLighting = resolveSceneLighting(&scene, context.world());
+    auto rectLights = buildRectLightRecords(resolvedLighting.rectLights);
+    if (!rectLights) {
+        spdlog::error("Surface Cache could not pack rectangular lights");
+        return makeError(rectLights.error());
+    }
+    lighting.rectLights = std::move(*rectLights);
     TextureHandle pageTable, coarseMip;
     BufferHandle domains;
     uint32_t clipmapCount = 0;
@@ -867,7 +884,7 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
             spdlog::error("Surface Cache shadowed lighting requires matching quantized GDF clipmap resources");
             return makeError(Error::InvalidArgument);
         }
-        lighting.punctual = buildPunctualLightRecords(&scene, resolveSceneLighting(&scene, context.world()));
+        lighting.punctual = buildPunctualLightRecords(&scene, resolvedLighting);
         if (clipmapCount > 1 && context.viewConstants()) {
             const auto& eye = context.viewConstants()->current.eye;
             lighting.clipmapEye = {eye[0], eye[1], eye[2]};
@@ -987,6 +1004,12 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
 
     auto lightingDispatch = makeCardDispatch(*device_, layout_, update.lightingTiles, update.fullCapture);
     if (!lightingDispatch) { return makeError(lightingDispatch.error()); }
+    std::unique_ptr<Buffer> rectLightBuffer;
+    if (!lighting.rectLights.empty()) {
+        auto records = upload(*device_, std::as_bytes(std::span(lighting.rectLights)), BufferUsageBits::Storage);
+        if (!records) { return makeError(records.error()); }
+        rectLightBuffer = std::move(*records);
+    }
     const auto bindLighting = [&](ParameterWriter& writer, auto& params) {
         params.albedo = writer.sampledImageHandle(context.outputTexture("albedo").view());
         params.normal = writer.sampledImageHandle(context.outputTexture("normal").view());
@@ -998,6 +1021,10 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         params.illuminance = lighting.illuminance;
         params.updateCount = lightingDispatch->count;
         if (lightingDispatch->tiles) { params.updateTiles = writer.buffer(lightingDispatch->tiles.get()); }
+        if (rectLightBuffer) {
+            params.rectLights = writer.buffer(rectLightBuffer.get());
+            params.rectLightCount = uint32_t(lighting.rectLights.size());
+        }
     };
 
     if (!shadowed) {
@@ -1013,7 +1040,7 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
             {"emissive", Access::TextureSampleRead}, {"hardwareDepth", Access::TextureSampleRead},
             {"cards", Access::BufferStorageRead}, {"depth", Access::TextureStorageWrite}, {"lighting", Access::TextureStorageWrite}};
         stages.push_back({"Encode depth and shade cards", resolveUses, [&](CommandBuffer& cmd) {
-            return lightingDispatch->record(resolve_, cmd, *resolveParams);
+            return lightingDispatch->record(resolve_, cmd, *resolveParams, rectLightBuffer != nullptr);
         }});
         return executeAndPublish();
     }

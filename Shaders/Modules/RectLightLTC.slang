@@ -195,15 +195,43 @@ public float rectLightAttenuation(GPURectLight light, float3 center)
     return 1.0;
 }
 
-public float3 evaluateRectLightLTC(RectLightLTCReceiver receiver, GPURectLight light,
-    float3 center, float attenuation)
+static const float3x3 kRectLTCIdentity = float3x3(1, 0, 0, 0, 1, 0, 0, 0, 1);
+
+void makeRectLightCorners(GPURectLight light, float3 center, out float3 points[4])
 {
     float3 ex = light.halfWidth.xyz;
     float3 ey = light.halfHeight.xyz;
-    float3 points[4] = {center - ex - ey, center + ex - ey, center + ex + ey, center - ex + ey};
-    float3x3 identity = float3x3(1, 0, 0, 0, 1, 0, 0, 0, 1);
+    points[0] = center - ex - ey;
+    points[1] = center + ex - ey;
+    points[2] = center + ex + ey;
+    points[3] = center - ex + ey;
+}
+
+public float3x3 rectLightLambertBasis(float3 normal)
+{
+    float3 tangent = openPBRMakeBasis(normal).t;
+    return float3x3(tangent, cross(normal, tangent), normal);
+}
+
+public float3 evaluateRectLightDiffuseIrradiance(GPURectLight light, float3 position, float3x3 basis)
+{
+    float3 center = light.positionRange.xyz - position;
+    float attenuation = rectLightAttenuation(light, center);
+    if (attenuation == 0.0) { return float3(0.0); }
+    float3 points[4];
+    makeRectLightCorners(light, center, points);
+    // The reference integrates cosine / pi. Surface Cache stores incident irradiance.
+    float irradiance = 3.1415926535897932f * evaluateLTC(basis, kRectLTCIdentity, points);
+    return light.radiance.rgb * irradiance * attenuation;
+}
+
+public float3 evaluateRectLightLTC(RectLightLTCReceiver receiver, GPURectLight light,
+    float3 center, float attenuation)
+{
+    float3 points[4];
+    makeRectLightCorners(light, center, points);
     float3 spec = evaluateLTC(receiver.basis, receiver.inverseTransform, points) * receiver.specularScale;
-    float diff = evaluateLTC(receiver.basis, identity, points);
+    float diff = evaluateLTC(receiver.basis, kRectLTCIdentity, points);
     return light.radiance.rgb * (spec + receiver.diffuseColor * diff) * attenuation;
 }
 

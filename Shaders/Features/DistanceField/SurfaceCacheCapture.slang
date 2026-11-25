@@ -7,6 +7,7 @@ import LumenSurfaceCache;
 import GlobalDistanceField;
 import GlobalDistanceFieldPages;
 import Lighting;
+import RectLightLTC;
 using Metallic;
 using Metallic.DistanceField;
 using Metallic.Lighting;
@@ -157,6 +158,8 @@ struct SurfaceCacheResolveParams
     float4 illuminance;
     ResourceHandle<StructuredBuffer<uint>> updateTiles;
     uint updateCount;
+    ResourceHandle<StructuredBuffer<GPURectLight>> rectLights;
+    uint rectLightCount;
 };
 
 // Fixed-resolution cards have equal-sized rectangles. Pack the update list
@@ -203,6 +206,17 @@ void writeSurfaceCacheLighting(SurfaceCacheLightingTexture finalLightingAtlas, u
     finalLightingAtlas[texel] = float4(finalLighting, 0.0f);
 }
 
+float3 surfaceCacheRectIrradiance(StructuredBuffer<GPURectLight> lights, uint count,
+    float3 position, float3 normal)
+{
+    const float3x3 basis = rectLightLambertBasis(normal);
+    float3 irradiance = float3(0.0);
+    for (uint index = 0u; index < count; ++index) {
+        irradiance += evaluateRectLightDiffuseIrradiance(lights[index], position, basis);
+    }
+    return irradiance;
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void surfaceCacheResolveMain(uint3 threadID : SV_DispatchThreadID)
@@ -226,14 +240,24 @@ void surfaceCacheResolveMain(uint3 threadID : SV_DispatchThreadID)
     }
 
     Texture2D<float> hardwareDepthAtlas = resolveUniform(params.hardwareDepth);
-    depthAtlas[texel] = encodeSurfaceCacheDepth(1.0f - hardwareDepthAtlas.Load(int3(texel, 0)));
+    const float depth = encodeSurfaceCacheDepth(1.0f - hardwareDepthAtlas.Load(int3(texel, 0)));
+    depthAtlas[texel] = depth;
 
     StructuredBuffer<SurfaceCacheCard> cards = resolveUniform(params.cards);
     uint2 tile = texel / params.tileResolution;
     uint cardIndex = tile.x + tile.y * (width / params.tileResolution);
-    float3 worldNormal = decodeSurfaceCacheNormal(cards[cardIndex], encodedNormal.xy);
+    const SurfaceCacheCard card = cards[cardIndex];
+    float3 worldNormal = decodeSurfaceCacheNormal(card, encodedNormal.xy);
     // DeferredLightingCommon.ush:545, an unshadowed directional light at default diffuse scale.
     float3 directLighting = params.illuminance.xyz * saturate(dot(worldNormal, params.lightDirection.xyz));
+    if (params.rectLightCount != 0u) {
+        float2 cardUV = (float2(texel - tile * params.tileResolution) + 0.5f) / float(params.tileResolution);
+        // Match the R16 UNORM depth read by the separate lighting pass.
+        float cardDepth = round(depth * 65535.0f) * (1.0f / 65535.0f);
+        float3 worldPosition = surfaceCacheWorldPosition(card, cardUV, cardDepth);
+        directLighting += surfaceCacheRectIrradiance(resolveUniform(params.rectLights),
+            params.rectLightCount, worldPosition, worldNormal);
+    }
 
     writeSurfaceCacheLighting(finalLightingAtlas, texel, resolveUniform(params.albedo),
         resolveUniform(params.emissive), directLighting);
@@ -291,6 +315,8 @@ struct SurfaceCacheShadowedLightingParams
     uint exportDirectIrradiance;
     ResourceHandle<StructuredBuffer<uint>> updateTiles;
     uint updateCount;
+    ResourceHandle<StructuredBuffer<GPURectLight>> rectLights;
+    uint rectLightCount;
 };
 
 // UE 5.7.4 defaults in Scene.cpp (20000 cm) and LumenSceneDirectLighting.cpp.
@@ -370,6 +396,10 @@ void surfaceCacheShadowedLightingMain(uint3 threadID : SV_DispatchThreadID)
         PunctualLightSample light = samplePunctualLight(localLights, lightIndex, worldPosition);
         directLighting += shadowedSurfaceCacheLight(distanceField, domains, params.clipmapCount,
             worldPosition, worldNormal, light, true, true);
+    }
+    if (params.rectLightCount != 0u) {
+        directLighting += surfaceCacheRectIrradiance(resolveUniform(params.rectLights),
+            params.rectLightCount, worldPosition, worldNormal);
     }
 
     if (params.exportDirectIrradiance != 0u) {

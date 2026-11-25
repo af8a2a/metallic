@@ -67,6 +67,26 @@ size_t tileCenter(uint32_t cardIndex)
     return size_t(y) * kAtlasEdge + x;
 }
 
+std::array<float, 3> cardCenterWorldPosition(const CapturedCard& card, uint16_t encodedDepth)
+{
+    const float depth = float(encodedDepth) / float(UINT16_MAX);
+    // An even tile's center texel is one half-pixel from the midpoint.
+    std::array<float, 3> position{};
+    for (size_t axis = 0; axis < position.size(); ++axis) {
+        position[axis] = card.origin[axis] + card.axisX[axis] * (card.axisX[3] / kTileEdge) -
+            card.axisY[axis] * (card.axisY[3] / kTileEdge) + card.axisZ[axis] * ((1.0f - 2.0f * depth) * card.axisZ[3]);
+    }
+    return position;
+}
+
+float centeredRectCosineIntegral(float halfWidth, float halfHeight, float distance)
+{
+    const float edgeX = std::hypot(halfWidth, distance);
+    const float edgeY = std::hypot(halfHeight, distance);
+    return 2.0f * (halfWidth / edgeX * std::atan(halfHeight / edgeX) +
+        halfHeight / edgeY * std::atan(halfWidth / edgeY));
+}
+
 bool writeAnalyticBoxCards(const std::filesystem::path& path, const scene::Scene& document, int32_t meshIndex,
     std::string& log)
 {
@@ -362,6 +382,43 @@ public:
         }
         if (readSurfaceValue<uint16_t>(depth, tileCenter(kCardCount)) != 0xffffu) {
             return RHITestResult::fail("Uncovered Surface Cache depth did not retain the UE sentinel");
+        }
+
+        const auto& cards = capture->artifacts[4].bytes;
+        uint32_t front = 0;
+        while (front < kCardCount && readSurfaceValue<CapturedCard>(cards, front).axisZ[2] < 0.9999f) {
+            ++front;
+        }
+        if (front == kCardCount) { return RHITestResult::fail("Missing unrotated receiver card for Rect lighting"); }
+        const size_t pixel = tileCenter(front);
+        const auto position = cardCenterWorldPosition(readSurfaceValue<CapturedCard>(cards, front),
+            readSurfaceValue<uint16_t>(depth, pixel));
+        scene::LightingSettings lighting = document.lighting();
+        scene::RectLight rect;
+        rect.position = {position[0], position[1], position[2] + 1.0f};
+        rect.direction = {0.0f, 0.0f, -1.0f};
+        rect.width = rect.height = 2.0f;
+        rect.luminance = 1.0f;
+        lighting.rectLights = {rect};
+        if (!preview.setLighting(lighting) || !preview.render(graph, kAtlasEdge, kAtlasEdge, "SurfaceCache.lighting")) {
+            return RHITestResult::fail("Basic Resolve Rect lighting: " + preview.lastLog());
+        }
+        using HalfPixel = std::array<uint16_t, 4>;
+        if (preview.readbackFormat() != Format::RGBA16Sfloat ||
+            preview.readbackBytes().size() != kAtlasPixels * sizeof(HalfPixel)) {
+            return RHITestResult::fail("Unexpected basic Resolve lighting atlas format");
+        }
+        const auto before = readSurfaceValue<HalfPixel>(capture->artifacts[3].bytes, pixel);
+        const auto after = readSurfaceValue<HalfPixel>(preview.readbackBytes(), pixel);
+        const auto albedo = readSurfaceValue<std::array<uint8_t, 4>>(capture->artifacts[0].bytes, pixel);
+        const float normalizedIntegral = centeredRectCosineIntegral(1.0f, 1.0f, 1.0f) / 3.14159265358979323846f;
+        for (size_t channel = 0; channel < 3; ++channel) {
+            const float encoded = float(albedo[channel]) / 255.0f;
+            const float actual = halfToFloat(after[channel]) - halfToFloat(before[channel]);
+            const float expected = normalizedIntegral * encoded * encoded;
+            if (!(std::abs(actual - expected) < 0.003f)) {
+                return RHITestResult::fail(std::format("Basic Resolve Rect contribution is {}, expected {}", actual, expected));
+            }
         }
         if (validation.failed()) {
             return RHITestResult::fail("Surface Cache Vulkan validation: " + validation.snapshot().dump());
@@ -2356,18 +2413,20 @@ std::string checkDenseRadiosity(const CardUpdateFrame& frame, float highestExpec
     return expectRadiantTrace && !tracedLight ? "Dense Radiosity did not trace lit cards" : std::string();
 }
 
-class LumenPersistentCardUpdateTest final : public RHITest {
+class LumenPersistentCardUpdateTest : public RHITest {
 public:
-    LumenPersistentCardUpdateTest()
+    explicit LumenPersistentCardUpdateTest(bool rectDiffuse = false)
+        : rectDiffuse_(rectDiffuse)
     {
-        name = "lumen_persistent_card_updates";
+        name = rectDiffuse_ ? "lumen_surface_cache_rect_diffuse" : "lumen_persistent_card_updates";
         type = RHITestType::Rendering;
     }
 
     RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
-        const auto fixture = context.outputDirectory / "LumenCardUpdateBoxes.gltf";
+        const std::string fixtureName = rectDiffuse_ ? "LumenRectDiffuse" : "LumenCardUpdate";
+        const auto fixture = context.outputDirectory / (fixtureName + "Boxes.gltf");
         std::error_code error;
         std::filesystem::copy_file(std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/Lumen/SingleBounce.gltf", fixture,
             std::filesystem::copy_options::overwrite_existing, error);
@@ -2385,11 +2444,18 @@ public:
         if (!document.setObjectWorldMatrix(blocker, offsideBlocker)) {
             return RHITestResult::fail("Could not expose the receiver to the emitter in the card fixture");
         }
+        if (rectDiffuse_) {
+            auto material = document.materials()[1];
+            material.emissiveFactor = float3(0.0f);
+            if (!document.setMaterialProperties(1, material)) {
+                return RHITestResult::fail("Could not isolate the analytical rectangle from emissive surfaces");
+            }
+        }
 
         std::string log;
         std::vector<std::string> fieldPaths, cardPaths;
         for (int32_t mesh = 0; mesh < 3; ++mesh) {
-            const auto base = "LumenCardUpdate" + std::to_string(mesh);
+            const auto base = fixtureName + std::to_string(mesh);
             const auto field = context.outputDirectory / (base + ".meshdf");
             const auto cards = context.outputDirectory / (base + ".meshcards");
             if (!writeAnalyticBoxField(field, document, log, mesh) || !writeAnalyticBoxCards(cards, document, mesh, log)) {
@@ -2422,6 +2488,7 @@ public:
         RenderView view;
         ViewCamera camera;
         camera.eye = {0.0f, 0.0f, 3.0f};
+        if (rectDiffuse_) { camera.center = {0.0f, 0.0f, 4.0f}; }
         camera.orthographic = true;
         if (!view.setCamera(camera) || !view.setRenderResolution(kAtlasEdge, kAtlasEdge)) {
             return RHITestResult::fail("Invalid card update test camera");
@@ -2475,6 +2542,15 @@ public:
         if (const auto message = checkCardFlags(*previous, kPersistentResidentCards, emitter,
                 kCardCaptured | kCardRelit, kCardCaptured | kCardRelit);
             !message.empty()) { return RHITestResult::fail(message); }
+
+        if (rectDiffuse_) {
+            const auto result = checkRectDiffuse(renderWorld, receiver, *previous, runFrame,
+                context.outputDirectory / "LumenRectDiffuseAtlas.png", log);
+            if (validation.failed()) {
+                return RHITestResult::fail("Rect diffuse Vulkan validation " + validation.snapshot().dump());
+            }
+            return result;
+        }
 
         std::array<bool, kPersistentCardCapacity> refreshed{};
         constexpr uint32_t framesPerSweep = kPersistentResidentCards / kRadiosityCardBudget;
@@ -2685,6 +2761,142 @@ public:
     }
 
 private:
+    template<class RunFrame>
+    static RHITestResult checkRectDiffuse(render::RenderWorld& world, scene::SceneEntity receiver,
+        const CardUpdateFrame& initial, const RunFrame& runFrame, const std::filesystem::path& imagePath,
+        std::string& log)
+    {
+        using FloatPixel = std::array<float, 4>;
+        using HalfPixel = std::array<uint16_t, 4>;
+        using BytePixel = std::array<uint8_t, 4>;
+        constexpr size_t kRawIrradiance = 5;
+        constexpr float kPi = 3.14159265358979323846f;
+        const auto& atlas = initial.surface->artifacts;
+        uint32_t slot = 0;
+        CapturedCard card;
+        for (; slot < kPersistentResidentCards; ++slot) {
+            card = readSurfaceValue<CapturedCard>(atlas[kCardRecords].bytes, slot);
+            if (card.metadata[0] == uint32_t(receiver) && card.axisZ[2] > 0.9999f) { break; }
+        }
+        if (slot == kPersistentResidentCards) { return RHITestResult::fail("Missing receiver card facing +Z"); }
+        const size_t pixelIndex = tileCenter(slot);
+        const auto encodedDepth = readSurfaceValue<uint16_t>(atlas[3].bytes, pixelIndex);
+        if (encodedDepth == UINT16_MAX) { return RHITestResult::fail("Offscreen receiver card center has no coverage"); }
+        const auto position = cardCenterWorldPosition(card, encodedDepth);
+        const auto normal = readSurfaceValue<BytePixel>(atlas[1].bytes, pixelIndex);
+        const float normalX = float(normal[0]) * (2.0f / 255.0f) - 1.0f;
+        const float normalY = float(normal[1]) * (2.0f / 255.0f) - 1.0f;
+        const float receiverCosine = std::sqrt(1.0f - normalX * normalX - normalY * normalY);
+        const auto checkEnergy = [&](const CardUpdateFrame& frame, float expected) -> std::string {
+            const auto& surface = frame.surface->artifacts;
+            const auto& radiosity = frame.radiosity->artifacts;
+            const auto irradiance = readSurfaceValue<FloatPixel>(surface[kRawIrradiance].bytes, pixelIndex);
+            const auto albedo = readSurfaceValue<BytePixel>(surface[0].bytes, pixelIndex);
+            const auto emission = readSurfaceValue<HalfPixel>(surface[2].bytes, pixelIndex);
+            const auto outgoing = readSurfaceValue<HalfPixel>(surface[kSurfaceLighting].bytes, pixelIndex);
+            const auto indirect = readSurfaceValue<HalfPixel>(radiosity[0].bytes, pixelIndex);
+            const auto combined = readSurfaceValue<HalfPixel>(radiosity[1].bytes, pixelIndex);
+            for (size_t channel = 0; channel < 3; ++channel) {
+                if (!(std::abs(irradiance[channel] - expected) <= 0.002f * std::max(1.0f, expected))) {
+                    return std::format("Receiver irradiance channel {} is {}, expected {}",
+                        channel, irradiance[channel], expected);
+                }
+                const float encoded = float(albedo[channel]) / 255.0f;
+                const float response = encoded * encoded / kPi;
+                const float emitted = halfToFloat(emission[channel]);
+                const float direct = irradiance[channel] * response + emitted;
+                const float total = direct + halfToFloat(indirect[channel]) * response;
+                if (!(std::abs(halfToFloat(outgoing[channel]) - direct) < 0.002f &&
+                    std::abs(halfToFloat(combined[channel]) - total) < 0.002f)) {
+                    return "Rect irradiance and the card material response disagree in Surface Cache or Radiosity";
+                }
+            }
+            return {};
+        };
+        if (const auto message = checkEnergy(initial, 0.0f); !message.empty()) {
+            return RHITestResult::fail("Before adding a rectangle. " + message);
+        }
+
+        scene::RectLight light;
+        light.position = {position[0], position[1], position[2] + 1.0f};
+        light.direction = {0.0f, 0.0f, -1.0f};
+        light.width = light.height = 2.0f;
+        light.luminance = 1.0f;
+        scene::LightingSettings lighting = world.lighting();
+        struct LightEdit {
+            const char* name;
+            float width, range, direction, distance;
+            uint32_t count;
+        };
+        const LightEdit edits[]{
+            {"Enable Rect", 2.0f, 0.0f, -1.0f, 1.0f, 1u},
+            {"Add overlapping Rect", 2.0f, 0.0f, -1.0f, 1.0f, 2u},
+            {"Resize and move Rect", 1.0f, 2.0f, -1.0f, 1.5f, 1u},
+            {"Exclude receiver by range", 1.0f, 1.0f, -1.0f, 1.5f, 1u},
+            {"Rotate Rect away", 1.0f, 2.0f, 1.0f, 1.5f, 1u},
+            {"Restore Rect face", 1.0f, 2.0f, -1.0f, 1.5f, 1u},
+            {"Disable Rect", 1.0f, 2.0f, -1.0f, 1.5f, 0u},
+        };
+        for (const auto& edit : edits) {
+            light.width = edit.width;
+            light.range = edit.range;
+            light.direction.z = edit.direction;
+            light.position.z = position[2] + edit.distance;
+            light.enabled = edit.count != 0;
+            lighting.rectLights.assign(std::max(1u, edit.count), light);
+            if (!world.setLighting(lighting)) {
+                return RHITestResult::fail(std::string("Could not apply Rect light edit ") + edit.name);
+            }
+            auto frame = runFrame(edit.name, {0u, 0u, kPersistentResidentCards});
+            if (!frame) { return RHITestResult::fail(log); }
+            if (const auto message = checkCardFlags(*frame, kPersistentResidentCards, receiver,
+                    kCardRelit | kCardLightingChanged, kCardRelit | kCardLightingChanged); !message.empty()) {
+                return RHITestResult::fail(std::string(edit.name) + ". " + message);
+            }
+            const auto resets = readSurfaceValue<std::array<uint32_t, 4>>(
+                frame->radiosity->artifacts[kRadiosityUpdateStats].bytes, 0)[1];
+            if (resets != kPersistentResidentCards) {
+                return RHITestResult::fail(std::string(edit.name) + " failed to reset the resident indirect history");
+            }
+            const float cosineIntegral = centeredRectCosineIntegral(edit.width / 2.0f,
+                light.height / 2.0f, edit.distance);
+            const float fade = edit.range == 0.0f ? 1.0f :
+                std::max(0.0f, 1.0f - std::pow(edit.distance / edit.range, 4.0f));
+            const float expected = edit.direction < 0.0f
+                ? float(edit.count) * light.luminance * cosineIntegral * receiverCosine * fade : 0.0f;
+            if (const auto message = checkEnergy(*frame, expected); !message.empty()) {
+                return RHITestResult::fail(std::string(edit.name) + ". " + message);
+            }
+            if (edit.count == 2) {
+                // Display irradiance on the left and outgoing Surface Cache radiance on the right.
+                const auto& surface = frame->surface->artifacts;
+                std::vector<uint8_t> pixels(kAtlasPixels * 2 * 4, 255);
+                const auto display = [](float value) {
+                    return static_cast<uint8_t>(std::lround(255.0f * std::sqrt(std::clamp(value, 0.0f, 1.0f))));
+                };
+                for (size_t index = 0; index < kAtlasPixels; ++index) {
+                    const size_t offset = (index + index / kAtlasEdge * kAtlasEdge) * 4;
+                    const auto direct = readSurfaceValue<FloatPixel>(surface[kRawIrradiance].bytes, index);
+                    const auto outgoing = readSurfaceValue<HalfPixel>(surface[kSurfaceLighting].bytes, index);
+                    for (size_t channel = 0; channel < 3; ++channel) {
+                        pixels[offset + channel] = display(direct[channel] / edit.count);
+                        pixels[offset + kAtlasEdge * 4 + channel] = display(halfToFloat(outgoing[channel]));
+                    }
+                }
+                if (!saveRgba8Png(imagePath, pixels.data(), kAtlasEdge * 2, kAtlasEdge, log)) {
+                    return RHITestResult::fail(log);
+                }
+            }
+        }
+        const auto settled = runFrame("Idle after disabling Rect", {0u, 0u, 0u});
+        if (!settled) { return RHITestResult::fail(log); }
+        if (const auto message = checkEnergy(*settled, 0.0f); !message.empty()) {
+            return RHITestResult::fail(message);
+        }
+        return RHITestResult::pass("Offscreen rectangular emitters match analytical irradiance, material response, and persistent history edits.");
+    }
+
+    bool rectDiffuse_;
     static constexpr std::string_view kGdfPass = "GDF";
     static constexpr uint32_t kGdfResolution = 84;
 
@@ -2786,6 +2998,13 @@ private:
 };
 
 METALLIC_REGISTER_RHI_TEST(LumenPersistentCardUpdateTest);
+
+class LumenRectDiffuseTest final : public LumenPersistentCardUpdateTest {
+public:
+    LumenRectDiffuseTest() : LumenPersistentCardUpdateTest(true) {}
+};
+
+METALLIC_REGISTER_RHI_TEST(LumenRectDiffuseTest);
 
 constexpr uint64_t kFastLightingPulseFrame = 6;
 constexpr uint64_t kFastLightingDisocclusionFrame = kFastLightingPulseFrame + 3;
