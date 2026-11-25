@@ -358,6 +358,9 @@ struct SurfaceCacheShadowedLightingParams
     SurfaceCacheRectLightingParams rectLighting;
     ResourceHandle<SurfaceCacheIrradianceTexture> deterministicIrradiance;
     uint separateLighting;
+#if defined(METALLIC_SURFACE_CACHE_HARDWARE_LOCAL_SHADOWS)
+    uint64_t scene;
+#endif
 };
 
 // UE 5.7.4 defaults in Scene.cpp (20000 cm) and LumenSceneDirectLighting.cpp.
@@ -390,6 +393,33 @@ float3 shadowedSurfaceCacheLight(QuantizedGlobalDistanceFieldSampler distanceFie
     const float shadowFactor = result.classification == kGlobalDistanceFieldHit ? 0.0f : 1.0f;
     return directLighting * shadowFactor;
 }
+
+#if defined(METALLIC_SURFACE_CACHE_HARDWARE_LOCAL_SHADOWS)
+float3 hardwareShadowedSurfaceCacheLight(RaytracingAccelerationStructure scene,
+    float3 worldPosition, float3 worldNormal, PunctualLightSample light)
+{
+    const float normalCosine = saturate(dot(worldNormal, light.direction));
+    const float3 directLighting = light.illuminance * normalCosine;
+    if (!any(directLighting > 0.0f)) { return directLighting; }
+
+    // The card shadow origin uses the UE 5.7.4 hardware bias of one centimeter.
+    const float surfaceBias = 0.01f;
+    const float slopeScaledSurfaceBias = 2.0f * surfaceBias;
+    RayDesc ray;
+    ray.Origin = worldPosition + light.direction * (surfaceBias + slopeScaledSurfaceBias * (1.0f - normalCosine));
+    ray.Direction = light.direction;
+    ray.TMin = 0.0f;
+    ray.TMax = min(kMaxCardShadowTraceDistance, light.distance);
+
+    // Metallic's CLAS TLAS uses instance flags to distinguish opaque geometry.
+    const uint rayFlags = RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_CULL_FRONT_FACING_TRIANGLES |
+        RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
+    RayQuery<rayFlags> query;
+    query.TraceRayInline(scene, rayFlags, 0xffu, ray);
+    while (query.Proceed()) {}
+    return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? float3(0.0f) : directLighting;
+}
+#endif
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -436,11 +466,18 @@ void surfaceCacheShadowedLightingMain(uint3 threadID : SV_DispatchThreadID)
     float3 directLighting = shadowedSurfaceCacheLight(distanceField, domains, params.clipmapCount,
         worldPosition, worldNormal, sun, params.sunCastsShadow != 0u, false);
     StructuredBuffer<GPUPunctualLight> localLights = resolveUniform(params.localLights);
+#if defined(METALLIC_SURFACE_CACHE_HARDWARE_LOCAL_SHADOWS)
+    RaytracingAccelerationStructure scene = resolveAccelerationStructure(params.scene);
+#endif
     const uint lightCount = punctualLightCount(localLights);
     for (uint lightIndex = 0u; lightIndex < lightCount; ++lightIndex) {
         PunctualLightSample light = samplePunctualLight(localLights, lightIndex, worldPosition);
+#if defined(METALLIC_SURFACE_CACHE_HARDWARE_LOCAL_SHADOWS)
+        directLighting += hardwareShadowedSurfaceCacheLight(scene, worldPosition, worldNormal, light);
+#else
         directLighting += shadowedSurfaceCacheLight(distanceField, domains, params.clipmapCount,
             worldPosition, worldNormal, light, true, true);
+#endif
     }
     if (params.rectLighting.count != 0u) {
         directLighting += surfaceCacheRectIrradiance(params.rectLighting, texel, 0u, worldPosition, worldNormal);

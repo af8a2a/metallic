@@ -3339,6 +3339,245 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(LumenRectReGIRTest);
 
+class LumenHardwarePunctualSurfaceCacheTest final : public RHITest {
+public:
+    LumenHardwarePunctualSurfaceCacheTest()
+    {
+        name = "lumen_surface_cache_hardware_punctual";
+        type = RHITestType::Rendering;
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        bench::ValidationRecorder validation;
+        auto device = bench::createTestDevice(context, {.applicationName = "Lumen hardware punctual card reference",
+            .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
+            .enableBindlessDescriptorHeap = true, .enableRayTracingAccelerationStructure = true, .enableRayQuery = true,
+            .enableClusterAccelerationStructure = true, .validationSink = validation.sink()});
+        if (hasError(device, Error::Unsupported)) {
+            return RHITestResult::skip("Hardware punctual card lighting requires scene acceleration structures and ray queries");
+        }
+        if (!device) { return RHITestResult::fail("Could not initialize the hardware punctual card reference device"); }
+        auto& gpu = **device;
+        if (!gpu.capabilities().shaderStorageImageExtendedFormats) {
+            return RHITestResult::skip("Hardware punctual card lighting requires the R8 GDF and R16 depth storage formats");
+        }
+
+        const auto fixture = context.outputDirectory / "LumenHardwarePunctual.gltf";
+        std::error_code copyError;
+        std::filesystem::copy_file(std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/Lumen/SingleBounce.gltf", fixture,
+            std::filesystem::copy_options::overwrite_existing, copyError);
+        if (copyError) { return RHITestResult::fail("Could not copy the hardware shadow fixture: " + copyError.message()); }
+        scene::SceneDocument document;
+        if (!document.load(fixture)) { return RHITestResult::fail(document.lastLoadResult().error); }
+        const auto receiver = document.objectForNode(0).entity();
+        const auto blocker = document.objectForNode(2).entity();
+        const auto blockerBetween = document.nodes()[2].worldMatrix;
+        auto blockerAside = blockerBetween;
+        blockerAside.a[12] += 1.3f;
+        if (!document.setObjectVisible(document.objectForNode(1).entity(), false) ||
+            !document.setObjectWorldMatrix(blocker, blockerAside)) {
+            return RHITestResult::fail("Could not isolate the hardware shadow receiver");
+        }
+
+        std::string log;
+        const auto field = context.outputDirectory / "LumenHardwareReceiver.meshdf";
+        const auto receiverCards = context.outputDirectory / "LumenHardwareReceiver.meshcards";
+        const auto blockerCards = context.outputDirectory / "LumenHardwareBlocker.meshcards";
+        // Only the scene TLAS contains blocker triangles. A GDF shadow cannot pass this test.
+        if (!writeAnalyticBoxField(field, document, log, 0) || !writeAnalyticBoxCards(receiverCards, document, 0, log) ||
+            !writeAnalyticBoxCards(blockerCards, document, 2, log)) {
+            return RHITestResult::fail(log);
+        }
+        RenderGraph graph;
+        if (!graph.addNode("SceneAccelerationStructurePass", "SceneAS", {{"path", fixture.generic_string()},
+                {"AsyncComputePreferred", false}, {"meshletNormalConeCull", false}}) ||
+            !graph.addNode("GlobalDistanceFieldPagesPass", "GDF", {{"distanceFieldPaths", {field.generic_string()}},
+                {"center", {0.0f, 0.5f, 0.65f}}, {"extent", 2.2f}, {"resolution", 84}, {"maxPhysicalPages", 1728},
+                {"quantized", true}, {"persistentPages", true}}) ||
+            !graph.addNode("LumenSurfaceCachePass", "SurfaceCache", {
+                {"meshCardPaths", {receiverCards.generic_string(), blockerCards.generic_string()}},
+                {"atlasSize", kAtlasEdge}, {"tileResolution", kTileEdge}, {"shadowedLighting", true},
+                {"hardwarePunctualShadows", true}, {"exportDirectIrradiance", true}, {"persistentCards", true},
+                {"maxDirectLightingCardsPerFrame", kCardsPerBox}}) ||
+            !graph.addEdge("SceneAS.accelerationStructure", "SurfaceCache.accelerationStructure") ||
+            !graph.markOutput("SurfaceCache.directIrradiance")) {
+            return RHITestResult::fail("Could not configure the hardware punctual Surface Cache graph");
+        }
+        for (const char* name : {"pageTable", "pageAtlas", "coarseMip", "domain"}) {
+            if (!graph.addEdge(makeRenderGraphFieldName("GDF", name), makeRenderGraphFieldName("SurfaceCache", name))) {
+                return RHITestResult::fail("Could not connect the Surface Cache GDF inputs");
+            }
+        }
+        scene::PunctualLight point, spot;
+        point.properties.intensityUnit = spot.properties.intensityUnit = scene::LightUnit::Candela;
+        point.properties.intensity = 4.0;
+        spot.properties.intensity = 8.0;
+        point.properties.range = spot.properties.range = 4.0;
+        point.position = float3(0.0f, 1.2f, 0.95f);
+        spot.position = point.position;
+        spot.properties.type = "spot";
+        spot.properties.innerConeAngle = 0.35;
+        spot.properties.outerConeAngle = 0.5;
+        spot.direction = float3(0.0f, -0.8f, -0.6f);
+        scene::LightingSettings lights;
+        lights.lights = {point, spot};
+
+        RenderWorld world;
+        world.setScene(&document);
+        world.setEnvironment({.enabled = false, .visible = false});
+        environment::WorldEnvironment environment;
+        environment.sun.enabled = environment.moon.enabled = false;
+        if (!world.setWorldEnvironment(environment) || !world.setLighting(lights)) {
+            return RHITestResult::fail("Could not configure the fixture point and spot lights");
+        }
+        RenderView view;
+        ViewCamera camera;
+        camera.eye = {0.0f, 0.0f, 3.0f};
+        camera.orthographic = true;
+        camera.orthoHeight = 1.25f;
+        if (!view.setCamera(camera) || !view.setRenderResolution(kAtlasEdge, kAtlasEdge)) {
+            return RHITestResult::fail("Invalid hardware shadow fixture camera");
+        }
+
+        CardUpdateInspector inspector;
+        inspector.request = {{"method", "capture.batch"}, {"params", {{"batches", debug::DebugValue::array({
+            {{"pass", "SurfaceCache"}, {"resources", debug::DebugValue::array({
+                cardAtlasCapture("SurfaceCache.directIrradiance"), cardAtlasCapture("SurfaceCache.depth"),
+                cardBufferCapture("SurfaceCache.cards", kPersistentCardCapacity * sizeof(CapturedCard) / sizeof(uint32_t)),
+                cardBufferCapture("SurfaceCache.cardUpdates", kPersistentCardCapacity)})}}})}}}};
+        RenderGraphExecutor executor;
+        executor.bindRenderWorld(&world);
+        executor.bindRenderView(&view);
+        executor.setDebugObserver(&inspector);
+        if (!executor.compile(gpu, graph, kAtlasEdge, kAtlasEdge, RenderGraphCompileOptions{.enableDebugReadback = true}, log)) {
+            return RHITestResult::fail("Hardware punctual card graph compile: " + log);
+        }
+        const RenderGraphSubmitDesc submission{.graphicsQueue = gpu.getQueue(QueueType::Graphics), .recordingWorkerLimit = 1};
+        const auto capture = [&](std::string_view stage) -> CardCapture {
+            log = std::string(stage);
+            if (const auto result = executor.execute(submission); !result) {
+                log += ": " + std::string(resultToString(result));
+                return {};
+            }
+            if (!executor.waitForSubmittedWork()) { log += ": Could not wait for the GPU frame"; return {}; }
+            inspector.runtime.poll();
+            const auto& response = inspector.response;
+            if (response.value("status", "") != "ok") { log += ": " + response.dump(); return {}; }
+            const auto id = response.at("result").at("jobs").at(0).at("job").get<std::string>();
+            auto result = inspector.runtime.core().completedCapture(id);
+            if (!result || result->artifacts.size() != 4u ||
+                result->artifacts[0].bytes.size() != kAtlasPixels * sizeof(Pixel) ||
+                result->artifacts[1].bytes.size() != kAtlasPixels * sizeof(uint16_t) ||
+                result->artifacts[2].bytes.size() != kPersistentCardCapacity * sizeof(CapturedCard) ||
+                result->artifacts[3].bytes.size() != kPersistentCardCapacity * sizeof(uint32_t)) {
+                log += ": Missing or invalid Surface Cache readback";
+                return {};
+            }
+            return result;
+        };
+
+        const auto open = capture("Visible point and spot");
+        if (!open) { return RHITestResult::fail(log); }
+        uint32_t receiverSlot = 0;
+        for (; receiverSlot < kPersistentCardCapacity; ++receiverSlot) {
+            const auto card = readSurfaceValue<CapturedCard>(open->artifacts[2].bytes, receiverSlot);
+            if (card.metadata[0] == uint32_t(receiver) && card.axisZ[2] > 0.99f) { break; }
+        }
+        if (receiverSlot == kPersistentCardCapacity) { return RHITestResult::fail("Missing the receiver front card"); }
+        const size_t texel = tileCenter(receiverSlot);
+        const auto receiverDepth = readSurfaceValue<uint16_t>(open->artifacts[1].bytes, texel);
+        if (receiverDepth == UINT16_MAX) { return RHITestResult::fail("The receiver center texel is uncovered"); }
+        const auto center = cardCenterWorldPosition(
+            readSurfaceValue<CapturedCard>(open->artifacts[2].bytes, receiverSlot), receiverDepth);
+        const float3 toLight = point.position - float3(center[0], center[1], center[2]);
+        const float distance = std::hypot(toLight.x, toLight.y, toLight.z);
+        const float ratio = distance / float(point.properties.range);
+        const float expectedPoint = float(point.properties.intensity) * toLight.z *
+            (1.0f - ratio * ratio * ratio * ratio) / (distance * distance * distance);
+        const auto centerIrradiance = [&](const CardCapture& frame) {
+            return readSurfaceValue<Pixel>(frame->artifacts[0].bytes, texel);
+        };
+        const auto matches = [&](const CardCapture& frame, float expected) {
+            const auto actual = centerIrradiance(frame);
+            return std::ranges::all_of(std::span(actual).first<3>(), [expected](float sample) {
+                return std::abs(sample - expected) <= std::max(1e-5f, expected * 0.025f);
+            });
+        };
+        const float expectedOpen = 3.0f * expectedPoint;
+        if (!matches(open, expectedOpen)) {
+            return RHITestResult::fail(std::format("Point and spot expected {} lx, observed {} lx",
+                expectedOpen, centerIrradiance(open)[0]));
+        }
+
+        if (!document.setObjectWorldMatrix(blocker, blockerBetween)) {
+            return RHITestResult::fail("Could not move the TLAS-only blocker into the ray segment");
+        }
+        const auto deferred = capture("Blocker recapture uses the card budget");
+        if (!deferred) { return RHITestResult::fail(log); }
+        const auto& before = open->artifacts[0].bytes;
+        const auto& after = deferred->artifacts[0].bytes;
+        if (readSurfaceValue<uint32_t>(deferred->artifacts[3].bytes, receiverSlot) != 0u) {
+            return RHITestResult::fail("An unselected receiver card was unexpectedly relit");
+        }
+        for (uint32_t row = 0; row < kTileEdge; ++row) {
+            const size_t offset = size_t(cardPixelOffset(receiverSlot, row)) * sizeof(Pixel);
+            if (std::memcmp(before.data() + offset, after.data() + offset, kTileEdge * sizeof(Pixel)) != 0) {
+                return RHITestResult::fail("An unselected receiver card failed to preserve its previous irradiance");
+            }
+        }
+        const auto occluded = capture("Relight after moving blocker");
+        if (!occluded) { return RHITestResult::fail(log); }
+        if (!matches(occluded, 0.0f) ||
+            !(readSurfaceValue<uint32_t>(occluded->artifacts[3].bytes, receiverSlot) & kCardRelit)) {
+            return RHITestResult::fail("The updated receiver did not observe the moved hardware blocker");
+        }
+        auto blockerBeyond = blockerBetween;
+        const float3 beyond = point.position + 0.5f * toLight;
+        blockerBeyond.a[12] = beyond.x;
+        blockerBeyond.a[13] = beyond.y;
+        blockerBeyond.a[14] = beyond.z;
+        if (!document.setObjectWorldMatrix(blocker, blockerBeyond)) {
+            return RHITestResult::fail("Could not move the blocker beyond the light");
+        }
+        if (!capture("Blocker recapture behind the light")) { return RHITestResult::fail(log); }
+        const auto beyondLight = capture("Relight with the blocker beyond the light");
+        if (!beyondLight) { return RHITestResult::fail(log); }
+        if (centerIrradiance(beyondLight) != centerIrradiance(open)) {
+            return RHITestResult::fail("A blocker beyond the finite point or spot ray changed receiver irradiance");
+        }
+
+        lights.lights[1].direction = -spot.direction;
+        if (!world.setLighting(lights)) { return RHITestResult::fail("Could not turn the spot away"); }
+        if (!capture("Spot edit first budget")) { return RHITestResult::fail(log); }
+        const auto pointOnly = capture("Spot edit second budget");
+        if (!pointOnly) { return RHITestResult::fail(log); }
+        if (!matches(pointOnly, expectedPoint)) { return RHITestResult::fail("The spot outside the cone contributed irradiance"); }
+        lights.lights.clear();
+        if (!world.setLighting(lights)) { return RHITestResult::fail("Could not remove the fixture lights"); }
+        if (!capture("Light removal first budget")) { return RHITestResult::fail(log); }
+        const auto dark = capture("Light removal second budget");
+        if (!dark) { return RHITestResult::fail(log); }
+        if (!std::ranges::all_of(dark->artifacts[0].bytes, [](uint8_t byte) { return byte == 0u; })) {
+            return RHITestResult::fail("Removing all lights left stale direct irradiance");
+        }
+        if (validation.failed()) {
+            return RHITestResult::fail("Hardware punctual Vulkan validation: " + validation.snapshot().dump());
+        }
+        const auto summary = std::format("Center irradiance: {:.4f} lx visible, {:.4f} lx blocked, {:.4f} lx beyond light, "
+            "{:.4f} lx point only, {:.4f} lx with zero lights.", centerIrradiance(open)[0], centerIrradiance(occluded)[0],
+            centerIrradiance(beyondLight)[0], centerIrradiance(pointOnly)[0], centerIrradiance(dark)[0]);
+        spdlog::info("[LumenHardwarePunctual] {}", summary);
+        return RHITestResult::pass(summary);
+    }
+
+private:
+    using Pixel = std::array<float, 4>;
+};
+
+METALLIC_REGISTER_RHI_TEST(LumenHardwarePunctualSurfaceCacheTest);
+
 constexpr uint64_t kFastLightingPulseFrame = 6;
 constexpr uint64_t kFastLightingDisocclusionFrame = kFastLightingPulseFrame + 3;
 constexpr float kFastLightingPulseAmount = 0.7265625f;

@@ -32,6 +32,8 @@ constexpr uint64_t kResolveABI = 0x4c554d454e01010dull;
 constexpr uint64_t kEncodeDepthABI = 0x4c554d454e010104ull;
 constexpr uint64_t kShadowedLightingABI = 0x4c554d454e01010eull;
 constexpr uint64_t kComposeLightingABI = 0x4c554d454e01010full;
+constexpr uint64_t kHardwarePunctualLightingABI = 0x4c554d454e010110ull;
+constexpr SlangMacroDefine kHardwarePunctualLightingDefine{"METALLIC_SURFACE_CACHE_HARDWARE_LOCAL_SHADOWS", "1"};
 constexpr uint32_t kGDFDomainStride = 32;
 constexpr uint32_t kCardsPerDispatchRow = 128u;
 constexpr uint32_t kDefaultRectLightSamples = 8u;
@@ -122,6 +124,11 @@ struct alignas(16) ShadowedLightingParams {
     uint32_t separateLighting;
 };
 
+struct HardwarePunctualLightingParams {
+    ShadowedLightingParams base;
+    uint64_t scene;
+};
+
 struct ComposeLightingParams {
     ShaderSampledImage albedo, normal, emissive, depth, deterministicIrradiance;
     ShaderStorageImage stochasticDirectHistory, lighting, directIrradiance;
@@ -139,6 +146,7 @@ static_assert(sizeof(EncodeDepthParams) == 28 && offsetof(EncodeDepthParams, upd
 static_assert(sizeof(ShadowedLightingParams) == 144 && offsetof(ShadowedLightingParams, pageTable) == 64 &&
     offsetof(ShadowedLightingParams, directIrradiance) == 96 && offsetof(ShadowedLightingParams, updateTiles) == 104 &&
     offsetof(ShadowedLightingParams, rectLighting) == 112 && offsetof(ShadowedLightingParams, deterministicIrradiance) == 132);
+static_assert(sizeof(HardwarePunctualLightingParams) == 160 && offsetof(HardwarePunctualLightingParams, scene) == 144);
 static_assert(sizeof(ComposeLightingParams) == 84 && offsetof(ComposeLightingParams, cardUpdates) == 36 &&
     offsetof(ComposeLightingParams, rectLighting) == 64);
 
@@ -265,6 +273,7 @@ struct RectLightSampling {
 struct CaptureLighting {
     Float4 direction, illuminance;
     bool sunCastsShadow;
+    bool hardwarePunctualShadows;
     std::vector<GPUPunctualLight> punctual;
     std::vector<GPURectLight> rectLights;
     std::array<float, 3> clipmapEye{};
@@ -280,7 +289,7 @@ struct CaptureLighting {
     bool sameLocalLights(const CaptureLighting& other) const
     {
         // The first punctual row only contains the count and exposure.
-        return punctual.size() == other.punctual.size() &&
+        return hardwarePunctualShadows == other.hardwarePunctualShadows && punctual.size() == other.punctual.size() &&
             (punctual.size() <= 1 || std::memcmp(punctual.data() + 1, other.punctual.data() + 1,
                 (punctual.size() - 1) * sizeof(GPUPunctualLight)) == 0) &&
             sameRectLighting(other);
@@ -324,13 +333,18 @@ class LumenSurfaceCachePass final : public RasterPass {
 public:
     bool supportsFrameOverlap() const override { return true; }
     bool supportsExternalFrameOverlap() const override { return false; }
-    RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
+    RenderGraphSceneDependency sceneDependency() const override
+    {
+        if (hardwarePunctualShadows()) { return {RenderGraphSceneSource::Input, {"accelerationStructure"}}; }
+        return {RenderGraphSceneSource::World};
+    }
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override;
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override;
     Result<> execute(RenderGraphExecutionContext& context) override;
 
 private:
     bool shadowedLighting() const;
+    bool hardwarePunctualShadows() const;
     bool exportDirectIrradiance() const;
     bool persistentCards() const;
     bool objectCardRanges() const;
@@ -364,6 +378,12 @@ private:
 bool LumenSurfaceCachePass::shadowedLighting() const
 {
     const auto property = properties().find("shadowedLighting");
+    return property != properties().end() && property->is_boolean() && property->get<bool>();
+}
+
+bool LumenSurfaceCachePass::hardwarePunctualShadows() const
+{
+    const auto property = properties().find("hardwarePunctualShadows");
     return property != properties().end() && property->is_boolean() && property->get<bool>();
 }
 
@@ -426,6 +446,10 @@ RenderPassReflection LumenSurfaceCachePass::reflect(const RenderGraphCompileCont
         reflection.addBufferInput("domain", "GDF clipmap domains").buffer(0, kGDFDomainStride).storageRead()
             .stageAccess(RenderGraphResourceAccess::BufferStorageRead);
     }
+    if (hardwarePunctualShadows()) {
+        reflection.addAccelerationStructureInput("accelerationStructure", "Current scene TLAS for card point and spot shadows")
+            .accelerationStructureRead().stageAccess(RenderGraphResourceAccess::AccelerationStructureShaderRead);
+    }
     reflection.addTextureOutput("lighting", "Scene-linear outgoing radiance")
         .texture2D(layout.edge, layout.edge).storageWrite().stageAccess(RenderGraphResourceAccess::TextureStorageWrite)
         .format = Format::RGBA16Sfloat;
@@ -480,6 +504,17 @@ Result<> LumenSurfaceCachePass::compile(const RenderGraphCompileContext& context
     if (shadowed != properties().end() && !shadowed->is_boolean()) {
         log = "Surface Cache shadowedLighting must be a boolean";
         return makeError(Error::InvalidArgument);
+    }
+    const auto hardware = properties().find("hardwarePunctualShadows");
+    const bool hardwarePunctual = hardwarePunctualShadows();
+    if (hardware != properties().end() && (!hardware->is_boolean() || (hardwarePunctual && !shadowedLighting()))) {
+        log = "Surface Cache hardwarePunctualShadows must be a boolean and requires shadowedLighting when enabled";
+        return makeError(Error::InvalidArgument);
+    }
+    const auto caps = context.device->capabilities();
+    if (hardwarePunctual && (!caps.rayQuery || !caps.rayTracingAccelerationStructure)) {
+        log = "Surface Cache hardwarePunctualShadows requires ray queries and scene acceleration structures";
+        return makeError(Error::Unsupported);
     }
     const auto persistent = properties().find("persistentCards");
     if (persistent != properties().end() && !persistent->is_boolean()) {
@@ -576,8 +611,10 @@ Result<> LumenSurfaceCachePass::compile(const RenderGraphCompileContext& context
         }
         return ShaderRegistry::instance().getComputeKernel(*device_,
             {.moduleName = kShaderModule, .entryPointName = "surfaceCacheShadowedLightingMain",
-                .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
-            {.parameters = parameterAbi<ShadowedLightingParams>(kShadowedLightingABI),
+                .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = hardwarePunctual ?
+                    std::span{&kHardwarePunctualLightingDefine, 1u} : std::span<const SlangMacroDefine>{}},
+            {.parameters = hardwarePunctual ? parameterAbi<HardwarePunctualLightingParams>(kHardwarePunctualLightingABI) :
+                    parameterAbi<ShadowedLightingParams>(kShadowedLightingABI),
                 .debugName = "LumenSurfaceCacheShadowedLighting"}, shadowedLighting_, log);
     }
     return ShaderRegistry::instance().getComputeKernel(*device_,
@@ -817,10 +854,13 @@ SurfaceCacheUpdate planSurfaceCacheUpdate(const PublishedSurfaceCache* previous,
     const bool stochastic = maxStochasticCardsPerFrame != 0u && next.lighting.rectLightSamples != 0u;
     const bool resetStochastic = stochastic && (update.fullCapture || !previous->lighting.sameRectLighting(next.lighting));
     const bool continueLighting = !update.fullCapture && !previous->pendingLighting.empty();
+    // An opacity-mode edit can change hardware occlusion on other cards.
+    const bool changedShadowMaterials = previous && next.lighting.hardwarePunctualShadows && next.lighting.punctual.size() > 1u &&
+        previous->materials != next.materials;
     update.publish = !previous || previous->geometry != next.geometry || previous->materials != next.materials ||
         changedLights || changedNonSunLighting || previous->lighting.clipmapEye != next.lighting.clipmapEye || continueLighting;
     if (!update.publish && !stochastic) { return update; }
-    const bool allLighting = update.fullCapture || changedLights || (next.lighting.tracesShadows() &&
+    const bool allLighting = update.fullCapture || changedLights || changedShadowMaterials || (next.lighting.tracesShadows() &&
         (previous->geometry->revision != next.geometry->revision || previous->lighting.clipmapEye != next.lighting.clipmapEye));
     const bool budgetLighting = !update.fullCapture && maxDirectLightingCardsPerFrame != 0;
     const uint32_t cardCount = uint32_t(next.geometry->cardsToDraw.size());
@@ -1009,6 +1049,7 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
 
     const auto& geometry = *captureGeometry_;
     const bool shadowed = shadowedLighting();
+    const bool hardwarePunctual = hardwarePunctualShadows();
     const bool separate = maxStochasticDirectLightingCardsPerFrame_ != 0u;
     const bool exportIrradiance = exportDirectIrradiance();
     const auto sun = buildCelestialLightRecords(resolveWorldEnvironment(&scene, context.world()))[0];
@@ -1016,6 +1057,7 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         .direction = {-sun.direction[0], -sun.direction[1], -sun.direction[2], 0.0f},
         .illuminance = {sun.irradiance[0], sun.irradiance[1], sun.irradiance[2], 0.0f},
         .sunCastsShadow = shadowed && (sun.flags & kGPUCelestialLightCastsShadow) != 0u,
+        .hardwarePunctualShadows = hardwarePunctual,
     }};
     if (const auto* world = context.world(); world && world->scene() == &scene) {
         next.nonSunLightingRevision = world->nonSunLightingRevision();
@@ -1327,11 +1369,10 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         }});
     }
 
-    const RenderGraphStageUse lightingUses[]{{"albedo", Access::TextureSampleRead}, {"normal", Access::TextureSampleRead},
+    std::vector<RenderGraphStageUse> lightingUses{{"albedo", Access::TextureSampleRead}, {"normal", Access::TextureSampleRead},
         {"emissive", Access::TextureSampleRead}, {"depth", Access::TextureSampleRead}, {"cards", Access::BufferStorageRead},
         {"pageTable", Access::TextureSampleRead}, {"pageAtlas", Access::TextureSampleRead}, {"coarseMip", Access::TextureSampleRead},
-        {"domain", Access::BufferStorageRead}, {lightingOutput, Access::TextureStorageWrite},
-        {"directIrradiance", Access::TextureStorageWrite}};
+        {"domain", Access::BufferStorageRead}, {lightingOutput, Access::TextureStorageWrite}};
     std::unique_ptr<Buffer> localLights;
     if (relights && shadowed) {
         auto records = upload(*device_, std::as_bytes(std::span(lighting.punctual)), BufferUsageBits::Storage);
@@ -1353,12 +1394,24 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         if (!separate && exportIrradiance) {
             params.directIrradiance = writer.storageImageHandle(context.outputTexture("directIrradiance").view());
             params.exportDirectIrradiance = true;
+            lightingUses.push_back({"directIrradiance", Access::TextureStorageWrite});
         }
-        auto encoded = writer.encode(params, kShadowedLightingABI);
+        auto encodeLighting = [&]() -> Result<EncodedParameters> {
+            if (!hardwarePunctual) { return writer.encode(params, kShadowedLightingABI); }
+            auto* sceneTLAS = context.inputAccelerationStructure("accelerationStructure");
+            if (!sceneTLAS) {
+                spdlog::error("Surface Cache hardwarePunctualShadows requires a published scene TLAS");
+                return makeError(Error::InvalidArgument);
+            }
+            lightingUses.push_back({"accelerationStructure", Access::AccelerationStructureShaderRead});
+            return writer.encode(HardwarePunctualLightingParams{params, writer.accelerationStructure(sceneTLAS).value},
+                kHardwarePunctualLightingABI);
+        };
+        auto encoded = encodeLighting();
         if (!encoded) { return makeError(encoded.error()); }
         shadowedEncoded = std::move(*encoded);
-        stages.push_back({"Shade cards with GDF shadows", std::span{lightingUses}.first(
-            std::size(lightingUses) - (params.exportDirectIrradiance ? 0u : 1u)), [&](CommandBuffer& cmd) {
+        stages.push_back({hardwarePunctual ? "Shade cards with hardware punctual shadows" : "Shade cards with GDF shadows",
+            lightingUses, [&](CommandBuffer& cmd) {
             return lightingDispatch->record(shadowedLighting_, cmd, *shadowedEncoded, true);
         }});
     }

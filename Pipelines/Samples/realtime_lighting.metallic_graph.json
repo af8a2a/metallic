@@ -119,7 +119,7 @@
         {"id": 9, "name": "GlobalDistanceFieldPages", "type": "GlobalDistanceFieldPagesPass", "position": {"x": 480, "y": 560},
             "properties": {"resolution": 252, "maxPhysicalPages": 12288, "quantized": true, "buildObjectGrid": true, "persistentPages": true}},
         {"id": 10, "name": "SurfaceCache", "type": "LumenSurfaceCachePass", "position": {"x": 800, "y": 560},
-            "properties": {"atlasSize": 512, "tileResolution": 64, "shadowedLighting": true, "exportDirectIrradiance": true, "persistentCards": true,
+            "properties": {"atlasSize": 512, "tileResolution": 64, "shadowedLighting": true, "hardwarePunctualShadows": true, "exportDirectIrradiance": true, "persistentCards": true,
                 "objectCardRanges": true, "maxDirectLightingCardsPerFrame": 4, "maxStochasticDirectLightingCardsPerFrame": 4}},
         {"id": 11, "name": "Radiosity", "type": "LumenRadiosityPass", "position": {"x": 1120, "y": 560},
             "properties": {"atlasSize": 512, "tileResolution": 64, "maxTraceDistance": 40, "persistentCards": true, "maxCardsPerFrame": 4}},
@@ -332,7 +332,8 @@
         {"id": 121, "src": "Deferred.lumenSpecular", "dst": "RadianceCache.reflectionSpecular"},
         {"id": 122, "src": "Deferred.lumenPreviousPosition", "dst": "RadianceCache.reflectionPreviousPosition"},
         {"id": 123, "src": "ScreenTrace.previousDepth", "dst": "RadianceCache.reflectionPreviousDepth"},
-        {"id": 124, "src": "ScreenTrace.previousColor", "dst": "RadianceCache.reflectionPreviousColor"}
+        {"id": 124, "src": "ScreenTrace.previousColor", "dst": "RadianceCache.reflectionPreviousColor"},
+        {"id": 125, "src": "VBuffer.accelerationStructure", "dst": "SurfaceCache.accelerationStructure"}
     ],
     "outputs": [],
     "view": {
