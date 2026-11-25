@@ -28,15 +28,17 @@ namespace {
 
 constexpr char kShaderModule[] = "Features/DistanceField/SurfaceCacheCapture";
 constexpr uint64_t kCaptureABI = 0x4c554d454e010001ull;
-constexpr uint64_t kResolveABI = 0x4c554d454e01010bull;
+constexpr uint64_t kResolveABI = 0x4c554d454e01010dull;
 constexpr uint64_t kEncodeDepthABI = 0x4c554d454e010104ull;
-constexpr uint64_t kShadowedLightingABI = 0x4c554d454e01010cull;
+constexpr uint64_t kShadowedLightingABI = 0x4c554d454e01010eull;
+constexpr uint64_t kComposeLightingABI = 0x4c554d454e01010full;
 constexpr uint32_t kGDFDomainStride = 32;
 constexpr uint32_t kCardsPerDispatchRow = 128u;
 constexpr uint32_t kDefaultRectLightSamples = 8u;
 constexpr uint32_t kRectReGIRGridSize = 8u;
 constexpr uint32_t kRectReGIRLightsPerCell = 64u;
 constexpr float kRectReGIRJitter = 1.0f;
+constexpr uint32_t kMinStochasticGridRefreshFrames = 4u;
 constexpr std::array kCaptureFormats{Format::RGBA8Unorm, Format::RGBA8Unorm, Format::RGBA16Sfloat};
 constexpr std::array kCaptureOutputs{"albedo", "normal", "emissive"};
 constexpr SamplerDesc kMaterialSampler{
@@ -89,6 +91,8 @@ struct alignas(16) ResolveParams {
     ShaderBuffer updateTiles;
     uint32_t updateCount;
     RectLightingParams rectLighting;
+    ShaderStorageImage deterministicIrradiance;
+    uint32_t separateLighting;
 };
 
 struct EncodeDepthParams {
@@ -114,17 +118,29 @@ struct alignas(16) ShadowedLightingParams {
     ShaderBuffer updateTiles;
     uint32_t updateCount;
     RectLightingParams rectLighting;
+    ShaderStorageImage deterministicIrradiance;
+    uint32_t separateLighting;
+};
+
+struct ComposeLightingParams {
+    ShaderSampledImage albedo, normal, emissive, depth, deterministicIrradiance;
+    ShaderStorageImage stochasticDirectHistory, lighting, directIrradiance;
+    ShaderBuffer cards, cardUpdates, updateTiles;
+    uint32_t atlasSize, tileResolution, updateCount, samplePhase, exportDirectIrradiance;
+    RectLightingParams rectLighting;
 };
 
 static_assert(sizeof(CaptureVertex) == 64 && sizeof(SurfaceCard) == 80);
 static_assert(sizeof(CaptureParams) == 288 && offsetof(CaptureParams, textureTransforms) == 160);
 static_assert(sizeof(RectLightingParams) == 20 && offsetof(RectLightingParams, sampleCount) == 16);
-static_assert(sizeof(ResolveParams) == 96 && offsetof(ResolveParams, updateTiles) == 64 &&
-    offsetof(ResolveParams, rectLighting) == 72);
+static_assert(sizeof(ResolveParams) == 112 && offsetof(ResolveParams, updateTiles) == 64 &&
+    offsetof(ResolveParams, rectLighting) == 72 && offsetof(ResolveParams, deterministicIrradiance) == 92);
 static_assert(sizeof(EncodeDepthParams) == 28 && offsetof(EncodeDepthParams, updateTiles) == 20);
 static_assert(sizeof(ShadowedLightingParams) == 144 && offsetof(ShadowedLightingParams, pageTable) == 64 &&
     offsetof(ShadowedLightingParams, directIrradiance) == 96 && offsetof(ShadowedLightingParams, updateTiles) == 104 &&
-    offsetof(ShadowedLightingParams, rectLighting) == 112);
+    offsetof(ShadowedLightingParams, rectLighting) == 112 && offsetof(ShadowedLightingParams, deterministicIrradiance) == 132);
+static_assert(sizeof(ComposeLightingParams) == 84 && offsetof(ComposeLightingParams, cardUpdates) == 36 &&
+    offsetof(ComposeLightingParams, rectLighting) == 64);
 
 struct AtlasLayout {
     uint32_t edge = 128;
@@ -243,6 +259,7 @@ struct RectLightSampling {
     std::unique_ptr<Buffer> lightBuffer;
     ImportancePdfTexture pdf;
     ReGIRLightSelector grid;
+    uint32_t gridPhase = 0;
 };
 
 struct CaptureLighting {
@@ -254,14 +271,19 @@ struct CaptureLighting {
     uint32_t rectLightSamples = 0;
     Float4 rectGridCenterRadius{};
 
+    bool sameRectLighting(const CaptureLighting& other) const
+    {
+        return rectLightSamples == other.rectLightSamples && rectGridCenterRadius == other.rectGridCenterRadius &&
+            sameRectLights(rectLights, other.rectLights);
+    }
+
     bool sameLocalLights(const CaptureLighting& other) const
     {
         // The first punctual row only contains the count and exposure.
         return punctual.size() == other.punctual.size() &&
             (punctual.size() <= 1 || std::memcmp(punctual.data() + 1, other.punctual.data() + 1,
                 (punctual.size() - 1) * sizeof(GPUPunctualLight)) == 0) &&
-            rectLightSamples == other.rectLightSamples && rectGridCenterRadius == other.rectGridCenterRadius &&
-            sameRectLights(rectLights, other.rectLights);
+            sameRectLighting(other);
     }
 
     bool sameLights(const CaptureLighting& other) const
@@ -277,21 +299,24 @@ struct CaptureLighting {
 };
 
 struct PublishedSurfaceCache {
-    uint64_t atlasAllocation = 0;
+    std::array<uint64_t, 3> atlasAllocations{};
     std::shared_ptr<const CaptureGeometry> geometry;
     std::shared_ptr<const CaptureMaterials> materials;
     CaptureLighting lighting;
     std::optional<uint64_t> nonSunLightingRevision;
     std::vector<uint32_t> pendingLighting;
     uint32_t nextLightingSlot = 0;
+    uint32_t nextStochasticSlot = 0;
 };
 
 struct SurfaceCacheUpdate {
     bool fullCapture = true;
     bool uploadCards = true;
     bool publish = false;
+    bool sampledStochastic = false;
     std::vector<uint32_t> captureTiles;
     std::vector<uint32_t> lightingTiles;
+    std::vector<uint32_t> compositionTiles;
     std::vector<uint32_t> flags;
 };
 
@@ -309,6 +334,7 @@ private:
     bool exportDirectIrradiance() const;
     bool persistentCards() const;
     bool objectCardRanges() const;
+    bool separateLighting() const;
     Result<> prepareCaptureGeometry(const scene::Scene& scene);
     Result<> gather(const scene::Scene& scene, std::vector<SurfaceCard>& cards, std::vector<CaptureCard>& draws,
         std::vector<CaptureSection>& sections, std::vector<CaptureVertex>& vertices) const;
@@ -319,6 +345,7 @@ private:
     Device* device_ = nullptr;
     AtlasLayout layout_;
     uint32_t maxDirectLightingCardsPerFrame_ = 0;
+    uint32_t maxStochasticDirectLightingCardsPerFrame_ = 0;
     uint32_t rectLightSamples_ = kDefaultRectLightSamples;
     std::unordered_map<int32_t, std::vector<scene::MeshCardBuildRecord>> fields_;
     std::shared_ptr<const CaptureGeometry> captureGeometry_;
@@ -331,6 +358,7 @@ private:
     ComputeKernel resolve_;
     ComputeKernel encodeDepth_;
     ComputeKernel shadowedLighting_;
+    ComputeKernel composeLighting_;
 };
 
 bool LumenSurfaceCachePass::shadowedLighting() const
@@ -357,6 +385,12 @@ bool LumenSurfaceCachePass::objectCardRanges() const
     return property != properties().end() && property->is_boolean() && property->get<bool>();
 }
 
+bool LumenSurfaceCachePass::separateLighting() const
+{
+    const auto property = properties().find("maxStochasticDirectLightingCardsPerFrame");
+    return property != properties().end() && property->is_number_integer() && property->get<double>() > 0.0;
+}
+
 RenderPassReflection LumenSurfaceCachePass::reflect(const RenderGraphCompileContext&) const
 {
     RenderPassReflection reflection;
@@ -372,6 +406,15 @@ RenderPassReflection LumenSurfaceCachePass::reflect(const RenderGraphCompileCont
     auto& depth = reflection.addTextureOutput("depth", "Card depth, with 1 reserved for uncovered texels")
         .texture2D(layout.edge, layout.edge).storageWrite().stageAccess(RenderGraphResourceAccess::TextureStorageWrite);
     depth.format = Format::R16Unorm;
+    if (separateLighting()) {
+        depth.stageAccess(RenderGraphResourceAccess::TextureSampleRead);
+        reflection.addTextureOutput("deterministicIrradiance", "Direct irradiance before stochastic Rect lighting")
+            .texture2D(layout.edge, layout.edge).storageWrite().stageAccess(RenderGraphResourceAccess::TextureSampleRead)
+            .format = Format::RGBA32Sfloat;
+        reflection.addTextureOutput("stochasticDirectHistory", "Accumulated Rect irradiance and batch count")
+            .texture2D(layout.edge, layout.edge).storageReadWrite()
+            .stageAccess(RenderGraphResourceAccess::TextureStorageReadWrite).format = Format::RGBA32Sfloat;
+    }
     if (shadowedLighting()) {
         depth.stageAccess(RenderGraphResourceAccess::TextureSampleRead);
         reflection.addTextureInput("pageTable", "GDF page table").texture3D(0, 0, 0).sampledRead()
@@ -399,8 +442,9 @@ RenderPassReflection LumenSurfaceCachePass::reflect(const RenderGraphCompileCont
     reflection.addBufferOutput("scene", "Card count, tile resolution, scene identity and optional object ranges")
         .buffer(metadataWords * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
     if (persistentCards()) {
-        reflection.addBufferOutput("cardUpdates", "Capture, direct lighting, and indirect history invalidation flags per tile")
+        auto& cardUpdates = reflection.addBufferOutput("cardUpdates", "Capture, direct lighting, and indirect history invalidation flags per tile")
             .buffer(layout.capacity() * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
+        if (separateLighting()) { cardUpdates.stageAccess(RenderGraphResourceAccess::BufferStorageRead); }
         reflection.addBufferOutput("updateStatistics", "Full capture flag, captured cards, and relit cards")
             .buffer(3 * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
     }
@@ -455,6 +499,14 @@ Result<> LumenSurfaceCachePass::compile(const RenderGraphCompileContext& context
         return makeError(Error::InvalidArgument);
     }
     maxDirectLightingCardsPerFrame_ = properties().value("maxDirectLightingCardsPerFrame", 0u);
+    const auto stochasticBudget = properties().find("maxStochasticDirectLightingCardsPerFrame");
+    if (stochasticBudget != properties().end() && (!stochasticBudget->is_number_integer() ||
+        stochasticBudget->get<double>() < 0.0 || stochasticBudget->get<double>() > UINT32_MAX ||
+        (separateLighting() && !persistentCards()))) {
+        log = "Surface Cache maxStochasticDirectLightingCardsPerFrame must be an unsigned integer and requires persistentCards when positive";
+        return makeError(Error::InvalidArgument);
+    }
+    maxStochasticDirectLightingCardsPerFrame_ = properties().value("maxStochasticDirectLightingCardsPerFrame", 0u);
     const auto rectLightSamples = properties().find("rectLightSamples");
     if (rectLightSamples != properties().end() && (!rectLightSamples->is_number_integer() ||
         rectLightSamples->get<double>() < 0.0 || rectLightSamples->get<double>() > kRectReGIRLightsPerCell)) {
@@ -505,6 +557,15 @@ Result<> LumenSurfaceCachePass::compile(const RenderGraphCompileContext& context
         .usesBindlessHeap = true});
     if (!pipeline) { return makeError(pipeline.error()); }
     pipeline_ = std::move(*pipeline);
+    if (separateLighting()) {
+        if (auto r = ShaderRegistry::instance().getComputeKernel(*device_,
+                {.moduleName = kShaderModule, .entryPointName = "surfaceCacheComposeLightingMain",
+                    .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+                {.parameters = parameterAbi<ComposeLightingParams>(kComposeLightingABI),
+                    .debugName = "LumenSurfaceCacheComposeLighting"}, composeLighting_, log); !r) {
+            return r;
+        }
+    }
     if (shadowedLighting()) {
         if (auto r = ShaderRegistry::instance().getComputeKernel(*device_,
                 {.moduleName = kShaderModule, .entryPointName = "surfaceCacheEncodeDepthMain",
@@ -743,7 +804,7 @@ bool sameCardMaterials(size_t slot, const PublishedSurfaceCache& previous, const
 }
 
 SurfaceCacheUpdate planSurfaceCacheUpdate(const PublishedSurfaceCache* previous, PublishedSurfaceCache& next,
-    uint32_t capacity, uint32_t maxDirectLightingCardsPerFrame)
+    uint32_t capacity, uint32_t maxDirectLightingCardsPerFrame, uint32_t maxStochasticCardsPerFrame)
 {
     SurfaceCacheUpdate update;
     update.fullCapture = !previous || !sameCardRoster(*previous->geometry, *next.geometry);
@@ -753,15 +814,20 @@ SurfaceCacheUpdate planSurfaceCacheUpdate(const PublishedSurfaceCache* previous,
     const bool changedNonSunLighting = previous && previous->nonSunLightingRevision != next.nonSunLightingRevision;
     const bool resetIndirect = changedLights && (!next.nonSunLightingRevision || changedNonSunLighting ||
         !previous->lighting.sameLocalLights(next.lighting));
+    const bool stochastic = maxStochasticCardsPerFrame != 0u && next.lighting.rectLightSamples != 0u;
+    const bool resetStochastic = stochastic && (update.fullCapture || !previous->lighting.sameRectLighting(next.lighting));
     const bool continueLighting = !update.fullCapture && !previous->pendingLighting.empty();
     update.publish = !previous || previous->geometry != next.geometry || previous->materials != next.materials ||
         changedLights || changedNonSunLighting || previous->lighting.clipmapEye != next.lighting.clipmapEye || continueLighting;
-    if (!update.publish) { return update; }
+    if (!update.publish && !stochastic) { return update; }
     const bool allLighting = update.fullCapture || changedLights || (next.lighting.tracesShadows() &&
         (previous->geometry->revision != next.geometry->revision || previous->lighting.clipmapEye != next.lighting.clipmapEye));
     const bool budgetLighting = !update.fullCapture && maxDirectLightingCardsPerFrame != 0;
     const uint32_t cardCount = uint32_t(next.geometry->cardsToDraw.size());
-    if (!update.fullCapture) { next.nextLightingSlot = previous->nextLightingSlot; }
+    if (!update.fullCapture) {
+        next.nextLightingSlot = previous->nextLightingSlot;
+        next.nextStochasticSlot = previous->nextStochasticSlot;
+    }
     if (continueLighting) { next.pendingLighting = previous->pendingLighting; }
     if (budgetLighting && allLighting && next.pendingLighting.empty()) { next.pendingLighting.resize(cardCount); }
     const uint32_t relightFlags = kLumenCardRelit | (resetIndirect ? kLumenCardResetLighting : 0u);
@@ -779,8 +845,10 @@ SurfaceCacheUpdate planSurfaceCacheUpdate(const PublishedSurfaceCache* previous,
             update.flags[slot] |= kLumenCardCaptured;
         }
         const uint32_t pending = next.pendingLighting.empty() ? 0u : next.pendingLighting[slot];
-        const uint32_t wanted = pending | (allLighting || capture ? relightFlags : 0u);
+        uint32_t wanted = pending | (allLighting || capture ? relightFlags : 0u);
         if (wanted == 0) { continue; }
+        if (!stochastic) { wanted &= ~kLumenCardResetStochasticLighting; }
+        else if (resetStochastic || capture) { wanted |= kLumenCardResetStochasticLighting; }
         if (budgetLighting && !capture) { next.pendingLighting[slot] = wanted; }
         else {
             update.lightingTiles.push_back(slot);
@@ -802,6 +870,32 @@ SurfaceCacheUpdate planSurfaceCacheUpdate(const PublishedSurfaceCache* previous,
         }
     }
     if (std::ranges::none_of(next.pendingLighting, [](uint32_t flags) { return flags != 0; })) { next.pendingLighting.clear(); }
+
+    if (maxStochasticCardsPerFrame == 0u) { return update; }
+    update.compositionTiles = update.lightingTiles;
+    if (!stochastic) { return update; }
+
+    for (const auto slot : update.lightingTiles) {
+        if (update.flags[slot] & kLumenCardResetStochasticLighting) {
+            update.flags[slot] |= kLumenCardStochasticRelit;
+            update.sampledStochastic = true;
+        }
+    }
+    // Opportunistic refresh has its own round robin. Cards waiting for a
+    // mandatory relight still hold the previous deterministic base.
+    const auto first = next.nextStochasticSlot;
+    uint32_t refreshed = 0u;
+    for (uint32_t offset = 0; offset < cardCount && refreshed < maxStochasticCardsPerFrame; ++offset) {
+        const auto slot = (first + offset) % cardCount;
+        if ((update.flags[slot] & kLumenCardStochasticRelit) ||
+            (!next.pendingLighting.empty() && next.pendingLighting[slot] != 0u)) { continue; }
+        if (!(update.flags[slot] & kLumenCardRelit)) { update.compositionTiles.push_back(slot); }
+        update.flags[slot] |= kLumenCardRelit | kLumenCardStochasticRelit;
+        next.nextStochasticSlot = (slot + 1u) % cardCount;
+        ++refreshed;
+    }
+    update.sampledStochastic = update.sampledStochastic || refreshed != 0u;
+    update.publish = update.publish || refreshed != 0u;
     return update;
 }
 
@@ -915,6 +1009,8 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
 
     const auto& geometry = *captureGeometry_;
     const bool shadowed = shadowedLighting();
+    const bool separate = maxStochasticDirectLightingCardsPerFrame_ != 0u;
+    const bool exportIrradiance = exportDirectIrradiance();
     const auto sun = buildCelestialLightRecords(resolveWorldEnvironment(&scene, context.world()))[0];
     PublishedSurfaceCache next{.geometry = captureGeometry_, .lighting = {
         .direction = {-sun.direction[0], -sun.direction[1], -sun.direction[2], 0.0f},
@@ -963,12 +1059,18 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
     if (published_) {
         // Scene dependency refreshes compile this pass again in place. A graph
         // resource rebuild replaces the atlas and requires another full capture.
-        next.atlasAllocation = context.outputTexture("albedo").texture()->memoryInfo().allocationId;
-        const auto* previous = *published_ && (*published_)->atlasAllocation == next.atlasAllocation ? &**published_ : nullptr;
+        next.atlasAllocations[0] = context.outputTexture("albedo").texture()->memoryInfo().allocationId;
+        if (separate) {
+            next.atlasAllocations[1] = context.outputTexture("deterministicIrradiance").texture()->memoryInfo().allocationId;
+            next.atlasAllocations[2] = context.outputTexture("stochasticDirectHistory").texture()->memoryInfo().allocationId;
+        }
+        const auto* previous = *published_ && (*published_)->atlasAllocations == next.atlasAllocations
+            ? &**published_ : nullptr;
         next.materials = previous && previous->geometry->revision.sceneIdentity == geometry.revision.sceneIdentity &&
                 previous->materials->revision == scene.materialRevision()
             ? previous->materials : captureMaterials(scene);
-        update = planSurfaceCacheUpdate(previous, next, layout_.capacity(), maxDirectLightingCardsPerFrame_);
+        update = planSurfaceCacheUpdate(previous, next, layout_.capacity(), maxDirectLightingCardsPerFrame_,
+            maxStochasticDirectLightingCardsPerFrame_);
     }
 
     using Access = RenderGraphResourceAccess;
@@ -978,7 +1080,7 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
     const RenderGraphStageUse captureUses[]{{"albedo", Access::TextureColorWrite}, {"normal", Access::TextureColorWrite},
         {"emissive", Access::TextureColorWrite}, {"hardwareDepth", Access::TextureDepthStencilWrite}};
     std::vector<RenderGraphStage> stages;
-    stages.reserve(6);
+    stages.reserve(7);
 
     std::unique_ptr<Buffer> cardUpload, sceneUpload, flagsUpload, statisticsUpload;
     if (update.uploadCards) {
@@ -1023,7 +1125,7 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         if (!flags) { return makeError(flags.error()); }
         flagsUpload = std::move(*flags);
         const std::array statistics{uint32_t(update.fullCapture), uint32_t(update.captureTiles.size()),
-            uint32_t(update.lightingTiles.size())};
+            uint32_t(separate ? update.compositionTiles.size() : update.lightingTiles.size())};
         auto stats = upload(*device_, std::as_bytes(std::span(statistics)), BufferUsageBits::TransferSource);
         if (!stats) { return makeError(stats.error()); }
         statisticsUpload = std::move(*stats);
@@ -1035,6 +1137,7 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
 
     const bool captures = update.fullCapture || !update.captureTiles.empty();
     const bool relights = update.fullCapture || !update.lightingTiles.empty();
+    const bool composes = separate && (update.fullCapture || !update.compositionTiles.empty());
     std::vector<CaptureDraw> draws;
     if (captures) {
         for (uint32_t card = 0; card < geometry.cardsToDraw.size(); ++card) {
@@ -1065,11 +1168,15 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
 
     auto rectSampling = *rectSampling_;
     bool publishRectSampling = false;
+    uint32_t rectGridPhase = 0u;
     const auto executeAndPublish = [&]() -> Result<> {
         if (auto result = context.executeStages(stages); !result) { return result; }
         if (publishRectSampling) {
             auto transaction = std::make_shared<SubmissionTransaction>(
-                [state = rectSampling_, sampling = rectSampling] { *state = sampling; }, [] {});
+                [state = rectSampling_, sampling = rectSampling, rectGridPhase] {
+                    if (sampling) { sampling->gridPhase = rectGridPhase; }
+                    *state = sampling;
+                }, [] {});
             if (auto result = context.commandBuffer().addSubmissionTransaction(std::move(transaction)); !result) {
                 return result;
             }
@@ -1078,14 +1185,21 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         return context.commandBuffer().addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
             [state = published_, next = std::move(next)]() mutable { *state = std::move(next); }, [] {}));
     };
-    if (!relights) { return executeAndPublish(); }
+    if (!relights && !composes) { return executeAndPublish(); }
 
-    auto lightingDispatch = makeCardDispatch(*device_, layout_, update.lightingTiles, update.fullCapture);
-    if (!lightingDispatch) { return makeError(lightingDispatch.error()); }
     std::unique_ptr<Buffer> exactRectLightBuffer;
     if (lighting.rectLightSamples != 0u) {
-        if (!rectSampling || rectSampling->centerRadius != lighting.rectGridCenterRadius ||
-            !sameRectLights(rectSampling->lights, lighting.rectLights)) {
+        if (separate) {
+            rectGridPhase = rectSampling ? rectSampling->gridPhase : 0u;
+            if (update.sampledStochastic) {
+                const uint64_t sweepFrames = (geometry.cardsToDraw.size() - 1u) /
+                    maxStochasticDirectLightingCardsPerFrame_ + 1u;
+                rectGridPhase = uint32_t(context.frameIndex() / std::max<uint64_t>(sweepFrames, kMinStochasticGridRefreshFrames));
+            }
+        }
+        const bool recreateSampling = !rectSampling || rectSampling->centerRadius != lighting.rectGridCenterRadius ||
+            !sameRectLights(rectSampling->lights, lighting.rectLights);
+        if (recreateSampling) {
             rectSampling = std::make_shared<RectLightSampling>();
             rectSampling->centerRadius = lighting.rectGridCenterRadius;
             rectSampling->lights = lighting.rectLights;
@@ -1107,14 +1221,19 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
                 spdlog::error("Surface Cache Rect ReGIR initialization failed: {}", log);
                 return result;
             }
-            stages.push_back({"Build Rect ReGIR", {}, [&, lightCount](CommandBuffer& cmd) -> Result<> {
+        }
+        if (recreateSampling || rectSampling->gridPhase != rectGridPhase) {
+            stages.push_back({"Build Rect ReGIR", {}, [&, recreateSampling](CommandBuffer& cmd) -> Result<> {
                 auto& sampling = *rectSampling;
-                if (auto r = rectPdfCompute_.buildRectLights(cmd, sampling.pdf, *sampling.lightBuffer, lightCount); !r) {
-                    return r;
+                const auto lightCount = uint32_t(sampling.lights.size());
+                if (recreateSampling) {
+                    if (auto r = rectPdfCompute_.buildRectLights(cmd, sampling.pdf, *sampling.lightBuffer, lightCount); !r) {
+                        return r;
+                    }
                 }
                 const auto& center = sampling.centerRadius;
                 return sampling.grid.buildRectLights(cmd, *sampling.pdf.view(), *sampling.lightBuffer, {
-                    .lightCount = lightCount, .sceneCenter = {center[0], center[1], center[2]},
+                    .lightCount = lightCount, .frameIndex = rectGridPhase, .sceneCenter = {center[0], center[1], center[2]},
                     .sceneRadius = center[3], .samplingJitter = kRectReGIRJitter,
                 });
             }});
@@ -1125,10 +1244,32 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         publishRectSampling = rectSampling != nullptr;
         rectSampling.reset();
     }
-    if (!rectSampling && !lighting.rectLights.empty()) {
+    if (relights && !rectSampling && !lighting.rectLights.empty()) {
         auto records = upload(*device_, std::as_bytes(std::span(lighting.rectLights)), BufferUsageBits::Storage);
         if (!records) { return makeError(records.error()); }
         exactRectLightBuffer = std::move(*records);
+    }
+    const auto bindRectLighting = [&](ParameterWriter& writer) -> RectLightingParams {
+        if (rectSampling) {
+            return {
+                .lights = writer.buffer(rectSampling->lightBuffer.get()),
+                .count = uint32_t(rectSampling->lights.size()),
+                .grid = writer.buffer(rectSampling->grid.buffer()),
+                .pdf = writer.sampledImageHandle(rectSampling->pdf.view()),
+                .sampleCount = lighting.rectLightSamples,
+            };
+        }
+        if (exactRectLightBuffer) {
+            return {.lights = writer.buffer(exactRectLightBuffer.get()), .count = uint32_t(lighting.rectLights.size())};
+        }
+        return {};
+    };
+    std::optional<CardDispatch> lightingDispatch, depthDispatch, compositionDispatch;
+    std::optional<EncodedParameters> resolveEncoded, depthEncoded, shadowedEncoded, compositionEncoded;
+    if (relights) {
+        auto dispatch = makeCardDispatch(*device_, layout_, update.lightingTiles, update.fullCapture);
+        if (!dispatch) { return makeError(dispatch.error()); }
+        lightingDispatch = std::move(*dispatch);
     }
     const auto bindLighting = [&](ParameterWriter& writer, auto& params) {
         params.albedo = writer.sampledImageHandle(context.outputTexture("albedo").view());
@@ -1141,43 +1282,34 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         params.illuminance = lighting.illuminance;
         params.updateCount = lightingDispatch->count;
         if (lightingDispatch->tiles) { params.updateTiles = writer.buffer(lightingDispatch->tiles.get()); }
-        if (rectSampling) {
-            params.rectLighting = {
-                .lights = writer.buffer(rectSampling->lightBuffer.get()),
-                .count = uint32_t(rectSampling->lights.size()),
-                .grid = writer.buffer(rectSampling->grid.buffer()),
-                .pdf = writer.sampledImageHandle(rectSampling->pdf.view()),
-                .sampleCount = lighting.rectLightSamples,
-            };
-        } else if (exactRectLightBuffer) {
-            params.rectLighting.lights = writer.buffer(exactRectLightBuffer.get());
-            params.rectLighting.count = uint32_t(lighting.rectLights.size());
+        if (!separate || !rectSampling) { params.rectLighting = bindRectLighting(writer); }
+        if (separate) {
+            params.deterministicIrradiance = writer.storageImageHandle(context.outputTexture("deterministicIrradiance").view());
+            params.separateLighting = 1u;
         }
     };
 
-    if (!shadowed) {
+    const char* lightingOutput = separate ? "deterministicIrradiance" : "lighting";
+    const RenderGraphStageUse resolveUses[]{{"albedo", Access::TextureSampleRead}, {"normal", Access::TextureSampleRead},
+        {"emissive", Access::TextureSampleRead}, {"hardwareDepth", Access::TextureSampleRead},
+        {"cards", Access::BufferStorageRead}, {"depth", Access::TextureStorageWrite}, {lightingOutput, Access::TextureStorageWrite}};
+    if (relights && !shadowed) {
         ParameterWriter writer(*device_, **registry, frame);
         ResolveParams params{};
         bindLighting(writer, params);
         params.hardwareDepth = writer.sampledImageHandle(context.outputTexture("hardwareDepth").view());
         params.depth = writer.storageImageHandle(context.outputTexture("depth").view());
-        auto resolveParams = writer.encode(params, kResolveABI);
-        if (!resolveParams) { return makeError(resolveParams.error()); }
-
-        const RenderGraphStageUse resolveUses[]{{"albedo", Access::TextureSampleRead}, {"normal", Access::TextureSampleRead},
-            {"emissive", Access::TextureSampleRead}, {"hardwareDepth", Access::TextureSampleRead},
-            {"cards", Access::BufferStorageRead}, {"depth", Access::TextureStorageWrite}, {"lighting", Access::TextureStorageWrite}};
+        auto encoded = writer.encode(params, kResolveABI);
+        if (!encoded) { return makeError(encoded.error()); }
+        resolveEncoded = std::move(*encoded);
         stages.push_back({"Encode depth and shade cards", resolveUses, [&](CommandBuffer& cmd) {
-            return lightingDispatch->record(resolve_, cmd, *resolveParams, exactRectLightBuffer != nullptr);
+            return lightingDispatch->record(resolve_, cmd, *resolveEncoded, exactRectLightBuffer != nullptr);
         }});
-        return executeAndPublish();
     }
 
     const RenderGraphStageUse encodeDepthUses[]{{"normal", Access::TextureSampleRead},
         {"hardwareDepth", Access::TextureSampleRead}, {"depth", Access::TextureStorageWrite}};
-    std::optional<CardDispatch> depthDispatch;
-    std::optional<EncodedParameters> depthEncoded;
-    if (captures) {
+    if (captures && shadowed) {
         auto dispatch = makeCardDispatch(*device_, layout_, update.captureTiles, update.fullCapture);
         if (!dispatch) { return makeError(dispatch.error()); }
         depthDispatch = std::move(*dispatch);
@@ -1195,37 +1327,81 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         }});
     }
 
-    auto localLights = upload(*device_, std::as_bytes(std::span(lighting.punctual)), BufferUsageBits::Storage);
-    if (!localLights) { return makeError(localLights.error()); }
-    ParameterWriter writer(*device_, **registry, frame);
-    ShadowedLightingParams params{};
-    bindLighting(writer, params);
-    params.depth = writer.sampledImageHandle(context.outputTexture("depth").view());
-    params.sunCastsShadow = lighting.sunCastsShadow;
-    params.pageTable = writer.sampledImageHandle(pageTable.view());
-    params.pageAtlas = writer.sampledImageHandle(context.inputTexture("pageAtlas").view());
-    params.coarseMip = writer.sampledImageHandle(coarseMip.view());
-    params.domains = writer.buffer(domains.buffer());
-    params.localLights = writer.buffer(localLights->get());
-    params.distanceSampler = writer.samplerHandle({});
-    params.clipmapCount = clipmapCount;
-    params.atlasSize = layout_.edge;
-    if (exportDirectIrradiance()) {
-        params.directIrradiance = writer.storageImageHandle(context.outputTexture("directIrradiance").view());
-        params.exportDirectIrradiance = true;
-    }
-    auto encodedLighting = writer.encode(params, kShadowedLightingABI);
-    if (!encodedLighting) { return makeError(encodedLighting.error()); }
-
     const RenderGraphStageUse lightingUses[]{{"albedo", Access::TextureSampleRead}, {"normal", Access::TextureSampleRead},
         {"emissive", Access::TextureSampleRead}, {"depth", Access::TextureSampleRead}, {"cards", Access::BufferStorageRead},
         {"pageTable", Access::TextureSampleRead}, {"pageAtlas", Access::TextureSampleRead}, {"coarseMip", Access::TextureSampleRead},
-        {"domain", Access::BufferStorageRead}, {"lighting", Access::TextureStorageWrite},
+        {"domain", Access::BufferStorageRead}, {lightingOutput, Access::TextureStorageWrite},
         {"directIrradiance", Access::TextureStorageWrite}};
-    stages.push_back({"Shade cards with GDF shadows", std::span{lightingUses}.first(
-        std::size(lightingUses) - (params.exportDirectIrradiance ? 0u : 1u)), [&](CommandBuffer& cmd) {
-        return lightingDispatch->record(shadowedLighting_, cmd, *encodedLighting, true);
-    }});
+    std::unique_ptr<Buffer> localLights;
+    if (relights && shadowed) {
+        auto records = upload(*device_, std::as_bytes(std::span(lighting.punctual)), BufferUsageBits::Storage);
+        if (!records) { return makeError(records.error()); }
+        localLights = std::move(*records);
+        ParameterWriter writer(*device_, **registry, frame);
+        ShadowedLightingParams params{};
+        bindLighting(writer, params);
+        params.depth = writer.sampledImageHandle(context.outputTexture("depth").view());
+        params.sunCastsShadow = lighting.sunCastsShadow;
+        params.pageTable = writer.sampledImageHandle(pageTable.view());
+        params.pageAtlas = writer.sampledImageHandle(context.inputTexture("pageAtlas").view());
+        params.coarseMip = writer.sampledImageHandle(coarseMip.view());
+        params.domains = writer.buffer(domains.buffer());
+        params.localLights = writer.buffer(localLights.get());
+        params.distanceSampler = writer.samplerHandle({});
+        params.clipmapCount = clipmapCount;
+        params.atlasSize = layout_.edge;
+        if (!separate && exportIrradiance) {
+            params.directIrradiance = writer.storageImageHandle(context.outputTexture("directIrradiance").view());
+            params.exportDirectIrradiance = true;
+        }
+        auto encoded = writer.encode(params, kShadowedLightingABI);
+        if (!encoded) { return makeError(encoded.error()); }
+        shadowedEncoded = std::move(*encoded);
+        stages.push_back({"Shade cards with GDF shadows", std::span{lightingUses}.first(
+            std::size(lightingUses) - (params.exportDirectIrradiance ? 0u : 1u)), [&](CommandBuffer& cmd) {
+            return lightingDispatch->record(shadowedLighting_, cmd, *shadowedEncoded, true);
+        }});
+    }
+
+    const RenderGraphStageUse composeUses[]{{"albedo", Access::TextureSampleRead}, {"normal", Access::TextureSampleRead},
+        {"emissive", Access::TextureSampleRead}, {"depth", Access::TextureSampleRead},
+        {"deterministicIrradiance", Access::TextureSampleRead}, {"stochasticDirectHistory", Access::TextureStorageReadWrite},
+        {"cards", Access::BufferStorageRead}, {"cardUpdates", Access::BufferStorageRead},
+        {"lighting", Access::TextureStorageWrite}, {"directIrradiance", Access::TextureStorageWrite}};
+    if (composes) {
+        auto dispatch = makeCardDispatch(*device_, layout_, update.compositionTiles, update.fullCapture);
+        if (!dispatch) { return makeError(dispatch.error()); }
+        compositionDispatch = std::move(*dispatch);
+        ParameterWriter writer(*device_, **registry, frame);
+        ComposeLightingParams params{
+            .albedo = writer.sampledImageHandle(context.outputTexture("albedo").view()),
+            .normal = writer.sampledImageHandle(context.outputTexture("normal").view()),
+            .emissive = writer.sampledImageHandle(context.outputTexture("emissive").view()),
+            .depth = writer.sampledImageHandle(context.outputTexture("depth").view()),
+            .deterministicIrradiance = writer.sampledImageHandle(context.outputTexture("deterministicIrradiance").view()),
+            .stochasticDirectHistory = writer.storageImageHandle(context.outputTexture("stochasticDirectHistory").view()),
+            .lighting = writer.storageImageHandle(context.outputTexture("lighting").view()),
+            .cards = writer.buffer(context.outputBuffer("cards").buffer()),
+            .cardUpdates = writer.buffer(context.outputBuffer("cardUpdates").buffer()),
+            .atlasSize = layout_.edge,
+            .tileResolution = layout_.tile,
+            .updateCount = compositionDispatch->count,
+            .samplePhase = uint32_t(context.frameIndex()),
+            .exportDirectIrradiance = exportIrradiance,
+        };
+        if (rectSampling) { params.rectLighting = bindRectLighting(writer); }
+        if (compositionDispatch->tiles) { params.updateTiles = writer.buffer(compositionDispatch->tiles.get()); }
+        if (exportIrradiance) {
+            params.directIrradiance = writer.storageImageHandle(context.outputTexture("directIrradiance").view());
+        }
+        auto encoded = writer.encode(params, kComposeLightingABI);
+        if (!encoded) { return makeError(encoded.error()); }
+        compositionEncoded = std::move(*encoded);
+        stages.push_back({"Accumulate stochastic direct light and compose cards", std::span{composeUses}.first(
+            std::size(composeUses) - (exportIrradiance ? 0u : 1u)), [&](CommandBuffer& cmd) {
+            return compositionDispatch->record(composeLighting_, cmd, *compositionEncoded);
+        }});
+    }
     return executeAndPublish();
 }
 

@@ -14,6 +14,8 @@ namespace Metallic.Lumen {
 METALLIC_CARD_UPDATE_FLAG kLumenCardCaptured = 1u;
 METALLIC_CARD_UPDATE_FLAG kLumenCardRelit = 2u;
 METALLIC_CARD_UPDATE_FLAG kLumenCardResetLighting = 4u;
+METALLIC_CARD_UPDATE_FLAG kLumenCardStochasticRelit = 8u;
+METALLIC_CARD_UPDATE_FLAG kLumenCardResetStochasticLighting = 16u;
 
 // Surface Cache scene buffer: the original four header words, range tag and count,
 // then sorted (scene object, first slot, exclusive end slot) records.

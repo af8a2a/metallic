@@ -421,6 +421,29 @@ public:
                 return RHITestResult::fail(std::format("Basic Resolve Rect contribution is {}, expected {}", actual, expected));
             }
         }
+        if (!graph.setNodeProperties(node->id, {{"meshCardPaths", {cardPath.generic_string()}},
+                {"atlasSize", kAtlasEdge}, {"tileResolution", kTileEdge}, {"persistentCards", true},
+                {"rectLightSamples", 1u}, {"maxStochasticDirectLightingCardsPerFrame", kCardCount}})) {
+            return RHITestResult::fail("Could not enable stochastic lighting on the basic Surface Cache");
+        }
+        rect.luminance *= 0.5f;
+        lighting.rectLights = {rect, rect};
+        if (!preview.setLighting(lighting) || !preview.render(graph, kAtlasEdge, kAtlasEdge, "SurfaceCache.lighting")) {
+            return RHITestResult::fail("Basic Resolve stochastic composition: " + preview.lastLog());
+        }
+        const auto composed = readSurfaceValue<HalfPixel>(preview.readbackBytes(), pixel);
+        for (size_t channel = 0; channel < 3; ++channel) {
+            if (std::abs(halfToFloat(composed[channel]) - halfToFloat(after[channel])) > 0.003f) {
+                return RHITestResult::fail("Basic Resolve stochastic composition changed irradiance for identical Rects");
+            }
+        }
+        if (!preview.render(graph, kAtlasEdge, kAtlasEdge, "SurfaceCache.stochasticDirectHistory")) {
+            return RHITestResult::fail("Basic Resolve stochastic refresh: " + preview.lastLog());
+        }
+        if (preview.readbackFormat() != Format::RGBA32Sfloat ||
+            readSurfaceValue<std::array<float, 4>>(preview.readbackBytes(), pixel)[3] != 2.0f) {
+            return RHITestResult::fail("Basic Resolve did not accumulate a second Rect batch");
+        }
         if (validation.failed()) {
             return RHITestResult::fail("Surface Cache Vulkan validation: " + validation.snapshot().dump());
         }
@@ -1096,6 +1119,7 @@ constexpr size_t kCardRecords = kSurfaceAtlases.size();
 constexpr size_t kCardScene = kCardRecords + 1;
 constexpr size_t kSurfaceUpdateStats = kCardScene + 1;
 constexpr size_t kSurfaceUpdateFlags = kSurfaceUpdateStats + 1;
+constexpr size_t kSurfaceStochasticHistory = kSurfaceUpdateFlags + 1;
 constexpr size_t kSurfaceLighting = 4;
 constexpr size_t kSurfaceDirectIrradiance = 5;
 constexpr size_t kRadiosityUpdateStats = 2;
@@ -2231,7 +2255,7 @@ private:
 
 METALLIC_REGISTER_RHI_TEST(LumenWRCSunRefreshTest);
 
-debug::DebugValue surfaceUpdateCaptures(std::string_view pass)
+debug::DebugValue surfaceUpdateCaptures(std::string_view pass, bool captureStochasticHistory = false)
 {
     using render::makeRenderGraphFieldName;
     auto captures = debug::DebugValue::array();
@@ -2244,17 +2268,21 @@ debug::DebugValue surfaceUpdateCaptures(std::string_view pass)
     if (pass == kPersistentSurface) {
         captures.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "updateStatistics"), 3));
         captures.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "cardUpdates"), kPersistentCardCapacity));
+        if (captureStochasticHistory) {
+            captures.push_back(cardAtlasCapture(makeRenderGraphFieldName(pass, "stochasticDirectHistory")));
+        }
     }
     return captures;
 }
 
 std::string compareSurfaceUpdate(const CardUpdateFrame& frame, const std::array<uint32_t, 3>& expectedStats,
-    uint32_t expectedResident, bool compareLighting = true)
+    uint32_t expectedResident, bool compareLighting = true, bool captureStochasticHistory = false)
 {
     const auto& surface = frame.surface->artifacts;
     const auto& full = frame.fullSurface->artifacts;
     const auto& radiosity = frame.radiosity->artifacts;
-    if (surface.size() != kSurfaceUpdateFlags + 1 || full.size() != kCardScene + 1 ||
+    const size_t surfaceResourceCount = captureStochasticHistory ? kSurfaceStochasticHistory + 1 : kSurfaceUpdateFlags + 1;
+    if (surface.size() != surfaceResourceCount || full.size() != kCardScene + 1 ||
         radiosity.size() != kRadiosityCardState + 1 || frame.denseRadiosity->artifacts.size() != 2 ||
         surface[kSurfaceUpdateStats].bytes.size() != sizeof(expectedStats) ||
         surface[kSurfaceUpdateFlags].bytes.size() != kPersistentCardCapacity * sizeof(uint32_t) ||
@@ -2264,7 +2292,9 @@ std::string compareSurfaceUpdate(const CardUpdateFrame& frame, const std::array<
         frame.denseRadiosity->artifacts[0].bytes.size() != kAtlasPixels * 8 ||
         frame.denseRadiosity->artifacts[1].bytes.size() != kAtlasPixels * 8 ||
         radiosity[kRadiosityUpdateStats].bytes.size() != 4 * sizeof(uint32_t) ||
-        radiosity[kRadiosityCardState].bytes.size() != kPersistentCardCapacity * 2 * sizeof(uint32_t)) {
+        radiosity[kRadiosityCardState].bytes.size() != kPersistentCardCapacity * 2 * sizeof(uint32_t) ||
+        (captureStochasticHistory &&
+            surface[kSurfaceStochasticHistory].bytes.size() != kAtlasPixels * sizeof(std::array<float, 4>))) {
         return "Unexpected Surface Cache or Radiosity readback layout";
     }
     if (readSurfaceValue<uint32_t>(surface[kCardScene].bytes, 0) != expectedResident) {
@@ -2421,6 +2451,7 @@ class LumenPersistentCardUpdateTest : public RHITest {
 public:
     enum class Mode { CardUpdates, RectDiffuse, RectReGIR };
     static constexpr uint32_t kRectReGIRTestSamples = 2u;
+    static constexpr uint32_t kRectReGIRTestRefreshCards = 3u;
 
     explicit LumenPersistentCardUpdateTest(Mode mode = Mode::CardUpdates)
         : mode_(mode)
@@ -2434,7 +2465,8 @@ public:
     {
         using namespace render;
         const bool testRectLighting = mode_ != Mode::CardUpdates;
-        const std::string fixtureName = mode_ == Mode::RectReGIR ? "LumenRectReGIR" :
+        const bool testReGIR = mode_ == Mode::RectReGIR;
+        const std::string fixtureName = testReGIR ? "LumenRectReGIR" :
             testRectLighting ? "LumenRectDiffuse" : "LumenCardUpdate";
         const auto fixture = context.outputDirectory / (fixtureName + "Boxes.gltf");
         std::error_code error;
@@ -2476,7 +2508,7 @@ public:
         }
 
         RenderGraph graph;
-        if (!makeGraph(graph, fieldPaths, cardPaths, mode_ == Mode::RectReGIR)) {
+        if (!makeGraph(graph, fieldPaths, cardPaths, testReGIR)) {
             return RHITestResult::fail("Could not configure paired Surface Caches and persistent Radiosity");
         }
         bench::ValidationRecorder validation;
@@ -2519,8 +2551,8 @@ public:
         const auto runFrame = [&](std::string_view stage, const std::array<uint32_t, 3>& stats,
             uint32_t resident = kPersistentResidentCards, std::optional<bool> rebuildGdf = false,
             bool compareLighting = true) -> std::optional<CardUpdateFrame> {
-            auto frame = captureFrame(inspector, executor, submission, log);
-            if (frame) { log = compareSurfaceUpdate(*frame, stats, resident, compareLighting); }
+            auto frame = captureFrame(inspector, executor, submission, log, testReGIR);
+            if (frame) { log = compareSurfaceUpdate(*frame, stats, resident, compareLighting, testReGIR); }
             if (frame && log.empty() && rebuildGdf.has_value()) {
                 constexpr uint32_t pageEdge = kGdfResolution / 7;
                 constexpr uint32_t pageCount = pageEdge * pageEdge * pageEdge;
@@ -2555,7 +2587,7 @@ public:
             !message.empty()) { return RHITestResult::fail(message); }
 
         if (testRectLighting) {
-            const auto result = mode_ == Mode::RectReGIR ?
+            const auto result = testReGIR ?
                 checkRectReGIR(renderWorld, receiver, *previous, runFrame,
                     context.outputDirectory / "LumenRectReGIRAtlas.png", log) :
                 checkRectDiffuse(renderWorld, receiver, *previous, runFrame,
@@ -2917,6 +2949,33 @@ private:
         using render::color::RGB;
         using Pixel = std::array<float, 4>;
         constexpr uint32_t kLightsPerColor = 48u;
+        constexpr uint32_t kRefreshSweeps = 4u;
+        static_assert(kPersistentResidentCards % kRectReGIRTestRefreshCards == 0u);
+        constexpr uint32_t kRefreshFrames = kRefreshSweeps * kPersistentResidentCards / kRectReGIRTestRefreshCards;
+        constexpr uint32_t kRefreshFlags = kCardRelit | render::kLumenCardStochasticRelit;
+        constexpr uint32_t kResetFlags = kRefreshFlags | kCardLightingChanged | render::kLumenCardResetStochasticLighting;
+        std::array<uint32_t, kPersistentCardCapacity> batchCounts{};
+        const auto checkHistory = [&](const CardUpdateFrame& state) -> std::string {
+            const auto& resources = state.surface->artifacts;
+            const auto& history = resources[kSurfaceStochasticHistory].bytes;
+            for (uint32_t tile = 0; tile < kPersistentCardCapacity; ++tile) {
+                for (uint32_t y = 0; y < kTileEdge; ++y) {
+                    const uint32_t offset = cardPixelOffset(tile, y);
+                    for (uint32_t x = 0; x < kTileEdge; ++x) {
+                        const auto index = offset + x;
+                        const bool covered = readSurfaceValue<uint16_t>(resources[3].bytes, index) != UINT16_MAX;
+                        const float expectedCount = covered ? float(batchCounts[tile]) : 0.0f;
+                        const auto pixel = readSurfaceValue<Pixel>(history, index);
+                        if (pixel[3] != expectedCount || (expectedCount == 0.0f && pixel != Pixel{})) {
+                            return std::format("Stochastic Rect history count at tile {} is {}, expected {}",
+                                tile, pixel[3], expectedCount);
+                        }
+                    }
+                }
+            }
+            return {};
+        };
+        if (const auto message = checkHistory(initial); !message.empty()) { return RHITestResult::fail(message); }
         const auto& atlas = initial.surface->artifacts;
         uint32_t slot = 0u;
         CapturedCard card;
@@ -2950,13 +3009,19 @@ private:
         const auto frame = runFrame("Sample many Rects", {0u, 0u, kPersistentResidentCards},
             kPersistentResidentCards, std::nullopt, false);
         if (!frame) { return RHITestResult::fail(log); }
+        if (const auto message = checkCardFlags(*frame, kPersistentResidentCards, receiver, kResetFlags, kResetFlags);
+            !message.empty()) { return RHITestResult::fail(message); }
+        std::fill_n(batchCounts.begin(), kPersistentResidentCards, 1u);
+        if (const auto message = checkHistory(*frame); !message.empty()) { return RHITestResult::fail(message); }
         const auto& sampled = frame->surface->artifacts[kSurfaceDirectIrradiance].bytes;
         const auto& exact = frame->fullSurface->artifacts[kSurfaceDirectIrradiance].bytes;
         const auto decode = [](Pixel value) { return render::color::toLinearRec709({value[0], value[1], value[2]}); };
         std::array<double, 3> sampledEnergy{}, exactEnergy{};
+        double firstSquaredError = 0.0;
         uint32_t covered = 0u;
         uint32_t lit = 0u;
-        std::vector<uint8_t> pixels(kTileEdge * kTileEdge * 2 * 4, 255u);
+        constexpr uint32_t kPreviewWidth = 3u * kTileEdge;
+        std::vector<uint8_t> pixels(kPreviewWidth * kTileEdge * 4, 255u);
         const auto display = [](float value) {
             return static_cast<uint8_t>(std::lround(255.0f * std::sqrt(std::clamp(value, 0.0f, 1.0f))));
         };
@@ -2972,15 +3037,17 @@ private:
                     return RHITestResult::fail("A ReGIR texel accumulated more light colors than its draw budget");
                 }
                 lit += tolerance > 0.0f ? 1u : 0u;
-                const size_t offset = (size_t(y) * kTileEdge * 2 + x) * 4;
+                const size_t offset = (size_t(y) * kPreviewWidth + x) * 4;
                 for (size_t channel = 0; channel < 3; ++channel) {
                     if (!(std::isfinite(estimate[channel]) && reference[channel] > 0.0f)) {
                         return RHITestResult::fail("Invalid ReGIR estimate or unlit exact receiver");
                     }
                     sampledEnergy[channel] += estimate[channel];
                     exactEnergy[channel] += reference[channel];
+                    const double relativeError = double(estimate[channel]) / reference[channel] - 1.0;
+                    firstSquaredError += relativeError * relativeError;
                     pixels[offset + channel] = display(estimate[channel]);
-                    pixels[offset + kTileEdge * 4 + channel] = display(reference[channel]);
+                    pixels[offset + 2u * kTileEdge * 4 + channel] = display(reference[channel]);
                 }
             }
         }
@@ -2995,36 +3062,137 @@ private:
             return RHITestResult::fail(std::format("Sampled Rect irradiance differs from the exact sum by {:.1f}%",
                 maxRelativeError * 100.0));
         }
-        if (!saveRgba8Png(imagePath, pixels.data(), kTileEdge * 2, kTileEdge, log)) { return RHITestResult::fail(log); }
-
-        const auto stationary = runFrame("Keep sampled Rect lighting", {0u, 0u, 0u},
-            kPersistentResidentCards, std::nullopt, false);
-        if (!stationary) { return RHITestResult::fail(log); }
-        if (stationary->surface->artifacts[kSurfaceDirectIrradiance].bytes != sampled) {
-            return RHITestResult::fail("Stationary cards resampled Rect irradiance");
+        const auto sameTile = [](const auto& before, const auto& after, uint32_t tile, size_t stride) {
+            for (uint32_t y = 0; y < kTileEdge; ++y) {
+                const size_t offset = cardPixelOffset(tile, y) * stride;
+                if (std::memcmp(before.bytes.data() + offset, after.bytes.data() + offset, kTileEdge * stride) != 0) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        auto accumulated = frame;
+        std::array<bool, kPersistentCardCapacity> indirectRefreshed{};
+        uint32_t indirectUnscheduledRelights = 0u;
+        for (uint32_t i = 0; i < kRefreshFrames; ++i) {
+            auto next = runFrame("Refresh stochastic direct lighting", {0u, 0u, kRectReGIRTestRefreshCards},
+                kPersistentResidentCards, std::nullopt, false);
+            if (!next) { return RHITestResult::fail(log); }
+            const auto& before = accumulated->surface->artifacts;
+            const auto& after = next->surface->artifacts;
+            uint32_t refreshed = 0u;
+            for (uint32_t tile = 0; tile < kPersistentCardCapacity; ++tile) {
+                const auto flags = readSurfaceValue<uint32_t>(after[kSurfaceUpdateFlags].bytes, tile);
+                if (tile < kPersistentResidentCards && flags == kRefreshFlags) {
+                    ++batchCounts[tile];
+                    ++refreshed;
+                    continue;
+                }
+                if (flags != 0u) { return RHITestResult::fail("Stochastic refresh requested a capture or history reset"); }
+                for (size_t resource : {kSurfaceLighting, kSurfaceDirectIrradiance, kSurfaceStochasticHistory}) {
+                    const size_t stride = resource == kSurfaceLighting ? sizeof(std::array<uint16_t, 4>) : sizeof(Pixel);
+                    if (!sameTile(before[resource], after[resource], tile, stride)) {
+                        return RHITestResult::fail("A tile outside the stochastic refresh budget changed");
+                    }
+                }
+            }
+            if (refreshed != kRectReGIRTestRefreshCards) {
+                return RHITestResult::fail("Stochastic direct refresh did not respect its own card budget");
+            }
+            if (const auto message = checkHistory(*next); !message.empty()) { return RHITestResult::fail(message); }
+            if (const auto message = checkRadiositySchedule(*accumulated, *next, indirectRefreshed,
+                    &indirectUnscheduledRelights); !message.empty()) {
+                return RHITestResult::fail(message);
+            }
+            accumulated = std::move(next);
         }
+        if (!std::ranges::all_of(std::span(batchCounts).first(kPersistentResidentCards),
+                [](uint32_t count) { return count == 1u + kRefreshSweeps; })) {
+            return RHITestResult::fail("Stochastic direct refresh did not revisit every resident tile each sweep");
+        }
+        const auto& converged = accumulated->surface->artifacts[kSurfaceDirectIrradiance].bytes;
+        double accumulatedSquaredError = 0.0;
+        for (uint32_t y = 0; y < kTileEdge; ++y) {
+            for (uint32_t x = 0; x < kTileEdge; ++x) {
+                const auto index = cardPixelOffset(slot, y) + x;
+                if (readSurfaceValue<uint16_t>(atlas[3].bytes, index) == UINT16_MAX) { continue; }
+                const auto estimate = decode(readSurfaceValue<Pixel>(converged, index));
+                const auto reference = decode(readSurfaceValue<Pixel>(exact, index));
+                const size_t offset = (size_t(y) * kPreviewWidth + x + kTileEdge) * 4u;
+                for (size_t channel = 0; channel < estimate.size(); ++channel) {
+                    const double relativeError = double(estimate[channel]) / reference[channel] - 1.0;
+                    accumulatedSquaredError += relativeError * relativeError;
+                    pixels[offset + channel] = display(estimate[channel]);
+                }
+            }
+        }
+        if (!(accumulatedSquaredError < firstSquaredError * 0.65)) {
+            return RHITestResult::fail("Stochastic direct history did not reduce error against the exact Rect sum");
+        }
+        if (!saveRgba8Png(imagePath, pixels.data(), kPreviewWidth, kTileEdge, log)) { return RHITestResult::fail(log); }
+
+        const auto environmentBeforeSun = world.worldEnvironment();
+        auto sunLighting = environmentBeforeSun;
+        sunLighting.sun.direction = {0.0f, 0.0f, -1.0f};
+        sunLighting.sun.illuminance = 1.0f;
+        sunLighting.sun.enabled = true;
+        if (!world.setWorldEnvironment(sunLighting)) { return RHITestResult::fail("Could not enable the fixture Sun"); }
+        const auto sunRelit = runFrame("Relight deterministic Sun lighting", {0u, 0u, kPersistentResidentCards},
+            kPersistentResidentCards, std::nullopt, false);
+        if (!sunRelit) { return RHITestResult::fail(log); }
+        const auto& beforeSunHistory = accumulated->surface->artifacts[kSurfaceStochasticHistory];
+        const auto& afterSunHistory = sunRelit->surface->artifacts[kSurfaceStochasticHistory];
+        uint32_t sunRefreshes = 0u;
+        for (uint32_t tile = 0; tile < kPersistentResidentCards; ++tile) {
+            const auto flags = readSurfaceValue<uint32_t>(sunRelit->surface->artifacts[kSurfaceUpdateFlags].bytes, tile);
+            if (flags == kRefreshFlags) {
+                ++sunRefreshes;
+                ++batchCounts[tile];
+            } else if (flags != kCardRelit || !sameTile(beforeSunHistory, afterSunHistory, tile, sizeof(Pixel))) {
+                return RHITestResult::fail("Deterministic Sun relighting discarded accumulated Rect history");
+            }
+        }
+        if (sunRefreshes != kRectReGIRTestRefreshCards) {
+            return RHITestResult::fail("Deterministic Sun relighting suppressed the independent stochastic budget");
+        }
+        if (const auto message = checkHistory(*sunRelit); !message.empty()) { return RHITestResult::fail(message); }
+        const auto directAfterSun = readSurfaceValue<Pixel>(sunRelit->surface->artifacts[kSurfaceDirectIrradiance].bytes, center);
+        const auto exactAfterSun = readSurfaceValue<Pixel>(sunRelit->fullSurface->artifacts[kSurfaceDirectIrradiance].bytes, center);
+        const auto directBeforeSun = readSurfaceValue<Pixel>(converged, center);
+        const auto exactBeforeSun = readSurfaceValue<Pixel>(exact, center);
+        const auto rectBeforeSun = readSurfaceValue<Pixel>(beforeSunHistory.bytes, center);
+        const auto rectAfterSun = readSurfaceValue<Pixel>(afterSunHistory.bytes, center);
+        for (size_t channel = 0; channel < 3; ++channel) {
+            const float delta = (directAfterSun[channel] - rectAfterSun[channel]) -
+                (directBeforeSun[channel] - rectBeforeSun[channel]);
+            const float expected = exactAfterSun[channel] - exactBeforeSun[channel];
+            if (!(expected > 0.01f && std::abs(delta - expected) < 0.0001f)) {
+                return RHITestResult::fail("The deterministic Sun edit did not immediately reach the lit receiver");
+            }
+        }
+        if (const auto message = checkRadiositySchedule(*accumulated, *sunRelit, indirectRefreshed,
+                &indirectUnscheduledRelights); !message.empty()) {
+            return RHITestResult::fail(message);
+        }
+        if (!world.setWorldEnvironment(environmentBeforeSun)) {
+            return RHITestResult::fail("Could not restore the disabled fixture Sun");
+        }
+
         for (auto& light : lighting.rectLights) { light.luminance *= 0.5f; }
         if (!world.setLighting(lighting)) { return RHITestResult::fail("Could not dim the many-Rect fixture"); }
         const auto dimmed = runFrame("Relight with a new Rect grid", {0u, 0u, kPersistentResidentCards},
             kPersistentResidentCards, std::nullopt, false);
         if (!dimmed) { return RHITestResult::fail(log); }
-        const auto& dimmedIrradiance = dimmed->surface->artifacts[kSurfaceDirectIrradiance].bytes;
-        for (uint32_t y = 0; y < kTileEdge; ++y) {
-            for (uint32_t x = 0; x < kTileEdge; ++x) {
-                const auto index = cardPixelOffset(slot, y) + x;
-                const auto before = readSurfaceValue<Pixel>(sampled, index);
-                const auto after = readSurfaceValue<Pixel>(dimmedIrradiance, index);
-                for (size_t channel = 0; channel < 3; ++channel) {
-                    if (std::abs(after[channel] - before[channel] * 0.5f) > before[channel] * 0.0001f) {
-                        return RHITestResult::fail("ReGIR irradiance did not track the many-light edit");
-                    }
-                }
-            }
-        }
+        if (const auto message = checkCardFlags(*dimmed, kPersistentResidentCards, receiver, kResetFlags, kResetFlags);
+            !message.empty()) { return RHITestResult::fail(message); }
+        std::fill_n(batchCounts.begin(), kPersistentResidentCards, 1u);
+        if (const auto message = checkHistory(*dimmed); !message.empty()) { return RHITestResult::fail(message); }
         lighting.rectLights.resize(1);
         if (!world.setLighting(lighting)) { return RHITestResult::fail("Could not reduce the fixture to one Rect"); }
         const auto small = runFrame("Use the exact small-light path", {0u, 0u, kPersistentResidentCards});
         if (!small) { return RHITestResult::fail(log); }
+        batchCounts.fill(0u);
+        if (const auto message = checkHistory(*small); !message.empty()) { return RHITestResult::fail(message); }
         if (readSurfaceValue<Pixel>(small->surface->artifacts[kSurfaceDirectIrradiance].bytes, center)[0] <= 0.0f) {
             return RHITestResult::fail("The remaining Rect failed to light the receiver");
         }
@@ -3032,13 +3200,17 @@ private:
         if (!world.setLighting(lighting)) { return RHITestResult::fail("Could not disable the remaining Rect"); }
         const auto off = runFrame("Clear Rect lighting", {0u, 0u, kPersistentResidentCards});
         if (!off) { return RHITestResult::fail(log); }
+        if (const auto message = checkHistory(*off); !message.empty()) { return RHITestResult::fail(message); }
         if (off->surface->artifacts[kSurfaceDirectIrradiance].bytes != atlas[kSurfaceDirectIrradiance].bytes) {
             return RHITestResult::fail("Disabled Rect left stale irradiance on the cards");
         }
         if (!runFrame("Idle after clearing Rect lighting", {0u, 0u, 0u})) { return RHITestResult::fail(log); }
-        return RHITestResult::pass(std::format("{} ReGIR draws light {} of {} covered texels with {} Rects. "
-            "Maximum channel energy error vs. exact: {:.1f}%.", kRectReGIRTestSamples, lit, covered, kLightsPerColor * 6,
-            maxRelativeError * 100.0));
+        const auto summary = std::format("{} ReGIR draws light {} of {} covered texels with {} Rects. "
+            "{} batches reduce relative RMS error from {:.3f} to {:.3f}.", kRectReGIRTestSamples, lit, covered,
+            kLightsPerColor * 6, 1u + kRefreshSweeps, std::sqrt(firstSquaredError / (3.0 * covered)),
+            std::sqrt(accumulatedSquaredError / (3.0 * covered)));
+        spdlog::info("[LumenRectReGIR] {}", summary);
+        return RHITestResult::pass(summary);
     }
 
     Mode mode_;
@@ -3059,7 +3231,13 @@ private:
             render::RenderGraphProperties properties{{"meshCardPaths", cards},
                     {"atlasSize", kAtlasEdge}, {"tileResolution", kTileEdge}, {"shadowedLighting", true},
                     {"exportDirectIrradiance", true}, {"persistentCards", name == kPersistentSurface}};
-            if (testReGIR) { properties["rectLightSamples"] = name == kPersistentSurface ? kRectReGIRTestSamples : 0u; }
+            if (testReGIR) {
+                const bool persistent = name == kPersistentSurface;
+                properties["rectLightSamples"] = persistent ? kRectReGIRTestSamples : 0u;
+                if (persistent) {
+                    properties["maxStochasticDirectLightingCardsPerFrame"] = kRectReGIRTestRefreshCards;
+                }
+            }
             if (!graph.addNode("LumenSurfaceCachePass", std::string(name), std::move(properties))) { return false; }
             for (const auto* input : {"pageTable", "pageAtlas", "coarseMip", "domain"}) {
                 if (!edge(kGdfPass, input, name, input)) { return false; }
@@ -3088,7 +3266,8 @@ private:
     }
 
     static std::optional<CardUpdateFrame> captureFrame(CardUpdateInspector& inspector,
-        render::RenderGraphExecutor& executor, const render::RenderGraphSubmitDesc& submission, std::string& log)
+        render::RenderGraphExecutor& executor, const render::RenderGraphSubmitDesc& submission, std::string& log,
+        bool captureStochasticHistory = false)
     {
         using render::makeRenderGraphFieldName;
         log.clear();
@@ -3096,7 +3275,7 @@ private:
         const auto radiosityField = [](std::string_view name) { return makeRenderGraphFieldName(kPersistentRadiosity, name); };
         inspector.request = {{"method", "capture.batch"}, {"params", {
             {"batches", debug::DebugValue::array({
-                {{"pass", kPersistentSurface}, {"resources", surfaceUpdateCaptures(kPersistentSurface)}},
+                {{"pass", kPersistentSurface}, {"resources", surfaceUpdateCaptures(kPersistentSurface, captureStochasticHistory)}},
                 {{"pass", kFullSurface}, {"resources", surfaceUpdateCaptures(kFullSurface)}},
                 {{"pass", kPersistentRadiosity}, {"resources", debug::DebugValue::array({
                     cardAtlasCapture(radiosityField("indirectIrradiance")), cardAtlasCapture(radiosityField("lighting")),

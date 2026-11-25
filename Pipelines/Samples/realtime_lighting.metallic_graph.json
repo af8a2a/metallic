@@ -120,7 +120,7 @@
             "properties": {"resolution": 252, "maxPhysicalPages": 12288, "quantized": true, "buildObjectGrid": true, "persistentPages": true}},
         {"id": 10, "name": "SurfaceCache", "type": "LumenSurfaceCachePass", "position": {"x": 800, "y": 560},
             "properties": {"atlasSize": 512, "tileResolution": 64, "shadowedLighting": true, "exportDirectIrradiance": true, "persistentCards": true,
-                "objectCardRanges": true, "maxDirectLightingCardsPerFrame": 4}},
+                "objectCardRanges": true, "maxDirectLightingCardsPerFrame": 4, "maxStochasticDirectLightingCardsPerFrame": 4}},
         {"id": 11, "name": "Radiosity", "type": "LumenRadiosityPass", "position": {"x": 1120, "y": 560},
             "properties": {"atlasSize": 512, "tileResolution": 64, "maxTraceDistance": 40, "persistentCards": true, "maxCardsPerFrame": 4}},
         {"id": 12, "name": "ScreenTrace", "type": "LumenScreenTraceSetupPass", "position": {"x": 1440, "y": 560},

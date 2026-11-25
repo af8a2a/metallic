@@ -143,6 +143,7 @@ SurfaceCacheCaptureOutputs surfaceCacheCaptureFragmentMain(SurfaceCacheCaptureIn
 // _Texture format identifiers 13 and 2 select r16 and rgba16f with float texels.
 typealias SurfaceCacheDepthTexture = _Texture<float, __Shape2D, 0, 0, 0, 1, 0, 0, 13>;
 typealias SurfaceCacheLightingTexture = _Texture<float4, __Shape2D, 0, 0, 0, 1, 0, 0, 2>;
+typealias SurfaceCacheIrradianceTexture = _Texture<float4, __Shape2D, 0, 0, 0, 1, 0, 0, 1>;
 
 struct SurfaceCacheRectLightingParams
 {
@@ -168,6 +169,8 @@ struct SurfaceCacheResolveParams
     ResourceHandle<StructuredBuffer<uint>> updateTiles;
     uint updateCount;
     SurfaceCacheRectLightingParams rectLighting;
+    ResourceHandle<SurfaceCacheIrradianceTexture> deterministicIrradiance;
+    uint separateLighting;
 };
 
 // Fixed-resolution cards have equal-sized rectangles. Pack the update list
@@ -214,7 +217,7 @@ void writeSurfaceCacheLighting(SurfaceCacheLightingTexture finalLightingAtlas, u
     finalLightingAtlas[texel] = float4(finalLighting, 0.0f);
 }
 
-float3 surfaceCacheRectIrradiance(SurfaceCacheRectLightingParams params, uint2 texel,
+float3 surfaceCacheRectIrradiance(SurfaceCacheRectLightingParams params, uint2 texel, uint samplePhase,
     float3 position, float3 normal)
 {
     let lights = resolveUniform(params.lights);
@@ -227,8 +230,7 @@ float3 surfaceCacheRectIrradiance(SurfaceCacheRectLightingParams params, uint2 t
         return irradiance;
     }
 
-    // A tile keeps the same sequence when it is relit in a partial dispatch.
-    uint seed = punctualSamplingHash(texel.x | (texel.y << 16u));
+    uint seed = punctualSamplingHash((texel.x | (texel.y << 16u)) ^ punctualSamplingHash(samplePhase));
     let grid = resolveUniform(params.grid);
     uint slotBase, slotCount;
     bool inGrid = findReGIRLightCell(grid, position, seed, slotBase, slotCount);
@@ -266,7 +268,11 @@ void surfaceCacheResolveMain(uint3 threadID : SV_DispatchThreadID)
     float4 encodedNormal = normalAtlas.Load(int3(texel, 0));
     if (encodedNormal.w <= 0.5f) {
         depthAtlas[texel] = 1.0f;
-        finalLightingAtlas[texel] = float4(0.0f);
+        if (params.separateLighting != 0u) {
+            resolveUniform(params.deterministicIrradiance)[texel] = float4(0.0f);
+        } else {
+            finalLightingAtlas[texel] = float4(0.0f);
+        }
         return;
     }
 
@@ -286,11 +292,15 @@ void surfaceCacheResolveMain(uint3 threadID : SV_DispatchThreadID)
         // Match the R16 UNORM depth read by the separate lighting pass.
         float cardDepth = round(depth * 65535.0f) * (1.0f / 65535.0f);
         float3 worldPosition = surfaceCacheWorldPosition(card, cardUV, cardDepth);
-        directLighting += surfaceCacheRectIrradiance(params.rectLighting, texel, worldPosition, worldNormal);
+        directLighting += surfaceCacheRectIrradiance(params.rectLighting, texel, 0u, worldPosition, worldNormal);
     }
 
-    writeSurfaceCacheLighting(finalLightingAtlas, texel, resolveUniform(params.albedo),
-        resolveUniform(params.emissive), directLighting);
+    if (params.separateLighting != 0u) {
+        resolveUniform(params.deterministicIrradiance)[texel] = float4(directLighting, 0.0f);
+    } else {
+        writeSurfaceCacheLighting(finalLightingAtlas, texel, resolveUniform(params.albedo),
+            resolveUniform(params.emissive), directLighting);
+    }
 }
 
 struct SurfaceCacheEncodeDepthParams
@@ -341,11 +351,13 @@ struct SurfaceCacheShadowedLightingParams
     SamplerHandle distanceSampler;
     uint clipmapCount;
     uint atlasSize;
-    ResourceHandle<_Texture<float4, __Shape2D, 0, 0, 0, 1, 0, 0, 1>> directIrradiance;
+    ResourceHandle<SurfaceCacheIrradianceTexture> directIrradiance;
     uint exportDirectIrradiance;
     ResourceHandle<StructuredBuffer<uint>> updateTiles;
     uint updateCount;
     SurfaceCacheRectLightingParams rectLighting;
+    ResourceHandle<SurfaceCacheIrradianceTexture> deterministicIrradiance;
+    uint separateLighting;
 };
 
 // UE 5.7.4 defaults in Scene.cpp (20000 cm) and LumenSceneDirectLighting.cpp.
@@ -393,9 +405,13 @@ void surfaceCacheShadowedLightingMain(uint3 threadID : SV_DispatchThreadID)
     SurfaceCacheLightingTexture finalLightingAtlas = resolveUniform(params.lighting);
     float depth = depthAtlas.Load(int3(texel, 0));
     if (depth >= 1.0f) {
-        finalLightingAtlas[texel] = float4(0.0f);
-        if (params.exportDirectIrradiance != 0u) {
-            resolveUniform(params.directIrradiance)[texel] = float4(0.0f);
+        if (params.separateLighting != 0u) {
+            resolveUniform(params.deterministicIrradiance)[texel] = float4(0.0f);
+        } else {
+            finalLightingAtlas[texel] = float4(0.0f);
+            if (params.exportDirectIrradiance != 0u) {
+                resolveUniform(params.directIrradiance)[texel] = float4(0.0f);
+            }
         }
         return;
     }
@@ -427,12 +443,90 @@ void surfaceCacheShadowedLightingMain(uint3 threadID : SV_DispatchThreadID)
             worldPosition, worldNormal, light, true, true);
     }
     if (params.rectLighting.count != 0u) {
-        directLighting += surfaceCacheRectIrradiance(params.rectLighting, texel, worldPosition, worldNormal);
+        directLighting += surfaceCacheRectIrradiance(params.rectLighting, texel, 0u, worldPosition, worldNormal);
     }
 
+    if (params.separateLighting != 0u) {
+        resolveUniform(params.deterministicIrradiance)[texel] = float4(directLighting, 0.0f);
+        return;
+    }
     if (params.exportDirectIrradiance != 0u) {
         resolveUniform(params.directIrradiance)[texel] = float4(directLighting, 0.0f);
     }
     writeSurfaceCacheLighting(finalLightingAtlas, texel, resolveUniform(params.albedo),
+        resolveUniform(params.emissive), directLighting);
+}
+
+struct SurfaceCacheComposeLightingParams
+{
+    ResourceHandle<Texture2D<float4>> albedo;
+    ResourceHandle<Texture2D<float4>> normal;
+    ResourceHandle<Texture2D<float4>> emissive;
+    ResourceHandle<Texture2D<float>> depth;
+    ResourceHandle<Texture2D<float4>> deterministicIrradiance;
+    ResourceHandle<SurfaceCacheIrradianceTexture> stochasticDirectHistory;
+    ResourceHandle<SurfaceCacheLightingTexture> lighting;
+    ResourceHandle<SurfaceCacheIrradianceTexture> directIrradiance;
+    ResourceHandle<StructuredBuffer<SurfaceCacheCard>> cards;
+    ResourceHandle<StructuredBuffer<uint>> cardUpdates;
+    ResourceHandle<StructuredBuffer<uint>> updateTiles;
+    uint atlasSize;
+    uint tileResolution;
+    uint updateCount;
+    uint samplePhase;
+    uint exportDirectIrradiance;
+    SurfaceCacheRectLightingParams rectLighting;
+};
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void surfaceCacheComposeLightingMain(uint3 threadID : SV_DispatchThreadID)
+{
+    SurfaceCacheComposeLightingParams params = getParameters<SurfaceCacheComposeLightingParams>();
+    uint2 texel;
+    if (!surfaceCacheUpdateTexel(threadID, params.atlasSize, params.tileResolution, params.updateTiles, params.updateCount, texel)) {
+        return;
+    }
+
+    let historyAtlas = resolveUniform(params.stochasticDirectHistory);
+    let lightingAtlas = resolveUniform(params.lighting);
+    float depth = resolveUniform(params.depth).Load(int3(texel, 0));
+    if (depth >= 1.0f) {
+        historyAtlas[texel] = float4(0.0f);
+        lightingAtlas[texel] = float4(0.0f);
+        if (params.exportDirectIrradiance != 0u) {
+            resolveUniform(params.directIrradiance)[texel] = float4(0.0f);
+        }
+        return;
+    }
+
+    float4 history = float4(0.0f);
+    if (params.rectLighting.sampleCount != 0u) {
+        uint2 tile = texel / params.tileResolution;
+        uint slot = tile.x + tile.y * (params.atlasSize / params.tileResolution);
+        uint flags = resolveUniform(params.cardUpdates)[slot];
+        if ((flags & kLumenCardResetStochasticLighting) == 0u) {
+            history = historyAtlas[texel];
+        }
+        if ((flags & kLumenCardStochasticRelit) != 0u) {
+            SurfaceCacheCard card = resolveUniform(params.cards)[slot];
+            float2 uv = (float2(texel - tile * params.tileResolution) + 0.5f) / float(params.tileResolution);
+            float3 position = surfaceCacheWorldPosition(card, uv, depth);
+            float3 normal = decodeSurfaceCacheNormal(card, resolveUniform(params.normal).Load(int3(texel, 0)).xy);
+            float3 estimate = surfaceCacheRectIrradiance(params.rectLighting, texel, params.samplePhase, position, normal);
+            estimate = select(isFiniteSurfaceCacheValue(estimate), estimate, 0.0f);
+            const float count = min(history.w + 1.0f, 32.0f);
+            history = float4(lerp(history.xyz, estimate, 1.0f / count), count);
+            historyAtlas[texel] = history;
+        }
+    } else {
+        historyAtlas[texel] = history;
+    }
+
+    float3 directLighting = resolveUniform(params.deterministicIrradiance).Load(int3(texel, 0)).xyz + history.xyz;
+    if (params.exportDirectIrradiance != 0u) {
+        resolveUniform(params.directIrradiance)[texel] = float4(directLighting, 0.0f);
+    }
+    writeSurfaceCacheLighting(lightingAtlas, texel, resolveUniform(params.albedo),
         resolveUniform(params.emissive), directLighting);
 }
