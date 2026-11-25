@@ -6,11 +6,11 @@ See [Checkpoint A implementation and evidence](PhysicalEnvironmentCheckpointA.md
 and [Checkpoint B physical environment](PhysicalEnvironmentCheckpointB.md)
 for the celestial architecture migration and current validation results.
 
-Select **Real-time / Physical Lighting** in Samples, then use the **Physical Lighting** panel to add, disable, edit or remove point and spot lights. Edit Sun and Moon in **Environment**. Local lights and exposure are saved in `world.lighting`; celestial state is saved in `world.environment.sun` and `.moon`. These settings survive reload, and Discard restores the saved state. Changing local-light units preserves the physical intensity (zero cannot be converted to a finite EV).
+Select **Real-time / Physical Lighting** in Samples, then use the **Physical Lighting** panel to add, disable, edit or remove point, spot and rect lights. Edit Sun and Moon in **Environment**. Local lights and exposure are saved in `world.lighting`; celestial state is saved in `world.environment.sun` and `.moon`. These settings survive reload, and Discard restores the saved state. Changing point/spot units preserves the physical intensity (zero cannot be converted to a finite EV).
 
 ## Celestial ownership
 
-[WorldEnvironment](../Source/Runtime/Environment/WorldEnvironment.h) is the authority for the only two infinite sources: Sun at slot 0 and Moon at slot 1. Production `LightingSettings` accepts only point/spot lights. Scene nodes cannot author generic directional emission.
+[WorldEnvironment](../Source/Runtime/Environment/WorldEnvironment.h) owns the two infinite sources, Sun at slot 0 and Moon at slot 1. `LightingSettings` holds the local point, spot and rect lights.
 
 Each celestial light stores an emitted world-space `direction`, linear Rec.709 `color`, perpendicular `illuminance` in lux, `angularRadius` in radians, and `enabled`. Shading points toward the source using `-normalize(direction)`. The renderer converts color into its ACEScg working space and packs two 48-byte `GPUCelestialLight` records. Disabled slots stay present with zero contribution. Sun and Moon default to disabled, preserving scenes that previously had no distant lighting.
 
@@ -39,6 +39,7 @@ Scene distances are **metres**. CPU light colors are linear Rec.709 multipliers.
 | Sun / Moon | Lux | Perpendicular incident illuminance; no distance attenuation |
 | Point | Candela, Lumens or local-light EV | `cd = lm / (4π)`; `cd = 2^EV` |
 | Spot | Candela, Lumens or local-light EV | `cd = lm / Ωeffective`; `cd = 2^EV` |
+| Rect | Nits (cd/m²) | Uniform emitted luminance across the rectangle |
 
 Local-light EV follows Unreal's fixed reference-area convention, not the incident-light meter convention. See [Unreal physical lighting units](https://dev.epicgames.com/documentation/en-us/unreal-engine/using-physical-lighting-units-in-unreal-engine) and local sources `Engine/Source/Runtime/Engine/Private/Components/LocalLightComponent.cpp`, `PointLightComponent.cpp`, and `Engine/Source/Runtime/RenderCore/Public/RenderUtils.h`.
 
@@ -48,9 +49,19 @@ Manual exposure follows Unreal's `EV100ToLuminance(1, EV)` saturation-luminance 
 
 An HDR file is not inherently calibrated. To compare it against physical lamps, its linear pixels must represent cd/m² after multiplying by Environment Intensity. This multiplier is therefore also the HDR calibration scale. Arbitrary HDRIs and the procedural preview sky are not guaranteed to have an absolute physical calibration.
 
+## Rectangular area lights
+
+In **Physical Lighting**, select **Add rect light**. Position and emission direction are in world space. Width, height and optional attenuation range are in metres. Roll rotates the rectangle about its emission direction. Zero range is unbounded. The scene saves the settings in `world.lighting.rectLights`. At constant luminance, increasing the emitting surface also increases its total light output.
+
+The ray-query realtime pass and Visibility Buffer Deferred integrate unoccluded Lambert diffuse and isotropic GGX base reflection for OpenPBR surfaces. The rectangle emits from its front face. The optional center-based range uses Metallic's quartic cutoff. The solid-angle integral accounts for distance falloff. Analytic area lighting currently iterates the active rectangles at each shaded pixel. Rect shadows, source textures, barn doors, layer and transmission lobes, GI, RTXDI and path-traced area sampling are outside this first implementation.
+
+Unreal Rect Light informs the authoring model and the separate matrix and amplitude lookups. The shader ports the LTC authors' horizon-clipped quad integration, and embeds the original 64×64 RGBA16F DDS texels from `selfshadow/ltc_code` (commit `31e5e96b54f98f33098f8503003119ba2231a1c6`). The integration uses their Lambert normalization and GGX Fresnel fit. [Unreal Rect Light](https://dev.epicgames.com/documentation/en-us/unreal-engine/rectangular-area-lights-in-unreal-engine) · [LTC reference](https://github.com/selfshadow/ltc_code/tree/31e5e96b54f98f33098f8503003119ba2231a1c6) · [License](../Shaders/Licenses/PolygonalLightLTC.txt)
+
+Port deviations from the LTC demo are limited to the one-sided coplanar rejection, a tangent basis for the degenerate normal-incidence projection, and avoiding the unused fifth vertex read when clipping yields a triangle. Metallic supplies the rectangle pose, range, ACEScg light color and OpenPBR base-lobe inputs. The demo's horizon-clipped mode is used throughout.
+
 ## Rendering paths
 
-- `SceneRealtimeLightingPass` evaluates OpenPBR direct lighting with one primary ray and shadow rays for fixed Sun/Moon plus point/spot lights. Diffuse environment GI is a deterministic nine-coefficient SH lookup. It is independent of the diagnostic `VisibilityBufferPass` and requires Vulkan ray-query support. It has no stochastic accumulation, multi-bounce transport, environment specular prefilter or indirect visibility solver; SH GI is an unoccluded low-frequency diffuse approximation modulated by material occlusion.
+- `SceneRealtimeLightingPass` evaluates OpenPBR direct lighting with one primary ray, shadow rays for Sun/Moon and point/spot lights, and LTC for rect lights. Diffuse environment GI is a deterministic nine-coefficient SH lookup. It is independent of the diagnostic `VisibilityBufferPass` and requires Vulkan ray-query support. It has no stochastic accumulation, multi-bounce transport, environment specular prefilter or indirect visibility solver; SH GI is an unoccluded low-frequency diffuse approximation modulated by material occlusion.
 - `ScenePathTracePass` evaluates both celestial slots separately and selects one local-light sample per eligible path vertex through the shared GPU ReGIR selector. The standard/OpenPBR paths, SHARC cache query/update paths, and RTXCR hair direct lighting apply the RIS inverse source weight only to the selected local contribution. These are delta-light next-event estimates (MIS weight 1), separate from the existing environment solid-angle PDF/MIS sampler. They do not sample irradiance SH as radiance or add a second full-light contribution. OpenPBR preserves transmission-aware shadow transport; the standard material path uses its direct-light BRDF and opaque shadow queries.
 - `SceneRTXDIPass` defaults to `lightSource = "scene"`, collecting imported and manually authored point/spot lights into its ReSTIR DI reservoirs. Sun/Moon direct lighting is evaluated separately and never enters local ReGIR or local reservoirs. `lightSource = "bench"` substitutes native benchmark point-light records for that pass; only this mode uses the benchmark count, animation and intensity controls. The bundled RTXDI sample selects bench mode explicitly. This remains a Metallic-native implementation modeled after RTXDI Grid ReGIR/ReSTIR DI, not a copied or linked RTXDI SDK integration.
 - Environment PDF construction, SH projection and cosine convolution run entirely on the GPU. SH covers bands l=0,1,2 (nine RGB coefficients), with convolution factors π, 2π/3, π/4. Consumers evaluate irradiance in the rotated environment frame and apply diffuse albedo/π exactly once. The procedural sky is also projected on the GPU.

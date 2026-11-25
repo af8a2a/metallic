@@ -42,6 +42,19 @@ struct PunctualLight {
     std::optional<ImportedLightBinding> imported;
 };
 
+struct RectLight {
+    std::string name = "Rect Light";
+    float3 position{0.0f, 2.0f, 0.0f};
+    float3 direction{0.0f, -1.0f, 0.0f};
+    float3 color{1.0f, 1.0f, 1.0f};
+    float width = 1.0f;
+    float height = 1.0f;
+    float rollDegrees = 0.0f;
+    float luminance = 1000.0f; // cd/m²
+    float range = 0.0f; // Metres; zero is unbounded.
+    bool enabled = true;
+};
+
 struct AutoExposureSettings {
     bool enabled = true;
     float minEV100 = -10.0f;
@@ -78,6 +91,7 @@ struct LightingSettings {
     // RenderUtils::EV100ToLuminance(1, EV100). Applied after light transport.
     float exposureEV100 = 0.0f;
     AutoExposureSettings autoExposure;
+    std::vector<RectLight> rectLights;
 };
 
 inline void normalizePunctualLightIdentities(LightingSettings& settings)
@@ -120,6 +134,22 @@ inline bool validLightingSettings(const LightingSettings& settings)
                     double(localD.x) * localD.x + double(localD.y) * localD.y + double(localD.z) * localD.z < 1e-12)) {
                 return false;
             }
+        }
+    }
+    const auto finiteVector = [](const float3& value) {
+        return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+    };
+    for (const RectLight& light : settings.rectLights) {
+        const auto& d = light.direction;
+        if (!finiteVector(light.position) || !finiteVector(d) ||
+            double(d.x) * d.x + double(d.y) * d.y + double(d.z) * d.z < 1e-12 ||
+            !finiteVector(light.color) || light.color.x < 0.0f || light.color.y < 0.0f || light.color.z < 0.0f ||
+            !std::isfinite(light.width) || light.width <= 0.0f ||
+            !std::isfinite(light.height) || light.height <= 0.0f ||
+            !std::isfinite(light.rollDegrees) ||
+            !std::isfinite(light.luminance) || light.luminance < 0.0f ||
+            !std::isfinite(light.range) || light.range < 0.0f) {
+            return false;
         }
     }
     return true;

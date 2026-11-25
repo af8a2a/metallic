@@ -268,6 +268,7 @@ DR_SCENE_OFFSET(kSceneMaterialTilesOffset, materialTiles, 124);
 DR_SCENE_OFFSET(kSceneMaterialValuesOffset, materialValues, 136);
 DR_SCENE_OFFSET(kSceneMaterialsOffset, materials, 140);
 DR_SCENE_OFFSET(kSceneOpenPBRLUTsOffset, openPBRLut2D, 172);
+DR_SCENE_OFFSET(kSceneOpenPBRLUTSamplerOffset, openPBRLutSampler, 196);
 DR_SCENE_OFFSET(kScenePreviousEnvironmentIrradianceSHOffset, previousEnvironmentIrradianceSH, 216);
 DR_SCENE_OFFSET(kSceneRayStreamChangesOffset, rayStreamChanges, 220);
 DR_SCENE_OFFSET(kSceneRasterDomainOffset, rasterDomain, 228);
@@ -305,6 +306,28 @@ DR_SCENE_OFFSET(kSceneVisibilityDepthOffset, visibilityDepth, 352);
 DR_SCENE_OFFSET(kSceneEnvironmentOffset, environment, 356);
 DR_SCENE_OFFSET(kSceneOutputOffset, output, 200);
 #undef DR_SCENE_OFFSET
+
+DR_PUBLIC struct RectLightResourceParameters
+{
+    DR_PUBLIC DR_SPAN lights;
+    DR_PUBLIC DR_SAMPLED(2D<float4>) matrixLUT;
+    DR_PUBLIC DR_SAMPLED(2D<float4>) amplitudeLUT;
+};
+
+DR_PUBLIC struct SceneRealtimeResourceParameters
+{
+    DR_PUBLIC SceneResourceParameters scene;
+    DR_PUBLIC RectLightResourceParameters rectLights;
+};
+#ifdef __cplusplus
+inline constexpr uint32_t kSceneRectLightsOffset = 416;
+static_assert(offsetof(SceneRealtimeResourceParameters, scene) == 0);
+static_assert(offsetof(SceneRealtimeResourceParameters, rectLights) == kSceneRectLightsOffset);
+static_assert(sizeof(RectLightResourceParameters) == 20);
+static_assert(sizeof(SceneRealtimeResourceParameters) == 440);
+#else
+public static const uint kSceneRectLightsOffset = 416;
+#endif
 
 // Experimental primary-guide split extends the packet without changing the
 // scene ABI used by existing pipelines.

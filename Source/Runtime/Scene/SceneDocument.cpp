@@ -377,6 +377,39 @@ bool readOptionalSpectrum(const nlohmann::json& value, const char* key, float3& 
     return true;
 }
 
+bool parseRectLight(const nlohmann::json& value, RectLight& light, std::string& reason)
+{
+    if (!value.is_object() || (value.contains("name") && !value["name"].is_string()) ||
+        (value.contains("enabled") && !value["enabled"].is_boolean())) {
+        reason = "rect light must be an object with an optional name and enabled flag";
+        return false;
+    }
+    for (const auto& [key, field] : {std::pair{"width", &RectLight::width},
+             {"height", &RectLight::height}, {"rollDegrees", &RectLight::rollDegrees},
+             {"luminance", &RectLight::luminance}, {"range", &RectLight::range}}) {
+        if (value.contains(key) && !value[key].is_number()) {
+            reason = std::string(key) + " must be numeric";
+            return false;
+        }
+        light.*field = value.value(key, light.*field);
+    }
+    light.name = value.value("name", light.name);
+    light.enabled = value.value("enabled", light.enabled);
+    return readOptionalColor(value, light.color, reason) &&
+        readOptionalSpectrum(value, "position", light.position, reason) &&
+        readOptionalSpectrum(value, "direction", light.direction, reason);
+}
+
+nlohmann::json serializeRectLight(const RectLight& light)
+{
+    return {{"name", light.name}, {"enabled", light.enabled},
+        {"position", {light.position.x, light.position.y, light.position.z}},
+        {"direction", {light.direction.x, light.direction.y, light.direction.z}},
+        {"color", {light.color.x, light.color.y, light.color.z}}, {"width", light.width},
+        {"height", light.height}, {"rollDegrees", light.rollDegrees},
+        {"luminance", light.luminance}, {"range", light.range}};
+}
+
 bool parseCelestialLight(const nlohmann::json& value, environment::CelestialLight& light, std::string& reason)
 {
     if (!value.is_object() || (value.contains("enabled") && !value["enabled"].is_boolean())) {
@@ -1525,7 +1558,8 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                 const auto& lighting = world["lighting"];
                 if (!lighting.is_object() ||
                     (lighting.contains("exposureEV100") && !lighting["exposureEV100"].is_number()) ||
-                    (lighting.contains("lights") && !lighting["lights"].is_array())) {
+                    (lighting.contains("lights") && !lighting["lights"].is_array()) ||
+                    (lighting.contains("rectLights") && !lighting["rectLights"].is_array())) {
                     documentWarning_ = "Invalid world.lighting settings.";
                     return false;
                 }
@@ -1636,6 +1670,17 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                         } else {
                             lighting_.lights.push_back(std::move(light));
                         }
+                    }
+                }
+                if (lighting.contains("rectLights")) {
+                    for (const auto& value : lighting["rectLights"]) {
+                        RectLight light;
+                        std::string reason;
+                        if (!parseRectLight(value, light, reason)) {
+                            documentWarning_ = "Invalid world.lighting rect light: " + reason;
+                            return false;
+                        }
+                        lighting_.rectLights.push_back(std::move(light));
                     }
                 }
                 normalizePunctualLightIdentities(lighting_);
@@ -2180,6 +2225,10 @@ bool SceneDocument::save(std::string& message)
         if (light.imported) { value["source"] = serializeImportedSource(*light.imported, true); }
         serializedLights.push_back(std::move(value));
     }
+    nlohmann::json serializedRectLights = nlohmann::json::array();
+    for (const RectLight& light : lighting().rectLights) {
+        serializedRectLights.push_back(serializeRectLight(light));
+    }
     nlohmann::json serializedImportedSources = nlohmann::json::array();
     for (const auto& source : importedLightSources_) {
         serializedImportedSources.push_back(serializeImportedSource(source, false));
@@ -2198,6 +2247,7 @@ bool SceneDocument::save(std::string& message)
                 {"transitionDistance", lighting_.autoExposure.transitionDistance},
             }},
             {"lights", std::move(serializedLights)},
+            {"rectLights", std::move(serializedRectLights)},
             {"importedSources", std::move(serializedImportedSources)},
         }},
         {"environment", {

@@ -5028,6 +5028,55 @@ void EditorApplication::drawLightingControls()
         ImGui::PopID();
         ++i;
     }
+    if (ImGui::Button("Add rect light")) {
+        lighting.rectLights.emplace_back();
+        changed = true;
+    }
+    if (!lighting.rectLights.empty()) {
+        ImGui::PushID("RectLights");
+        for (size_t i = 0; i < lighting.rectLights.size();) {
+            auto& light = lighting.rectLights[i];
+            ImGui::PushID(static_cast<int>(i));
+            bool remove = false;
+            if (ImGui::TreeNode("RectLight", "%s #%zu", light.name.c_str(), i + 1)) {
+                changed |= ImGui::Checkbox("Enabled", &light.enabled);
+                float color[]{light.color.x, light.color.y, light.color.z};
+                if (ImGui::ColorEdit3("Linear Rec.709 color", color, ImGuiColorEditFlags_Float)) {
+                    light.color = float3(color[0], color[1], color[2]);
+                    changed = true;
+                }
+                float position[]{light.position.x, light.position.y, light.position.z};
+                if (ImGui::DragFloat3("Position (m)", position, 0.01f)) {
+                    light.position = float3(position[0], position[1], position[2]);
+                    changed = true;
+                }
+                float direction[]{light.direction.x, light.direction.y, light.direction.z};
+                if (ImGui::DragFloat3("Emission direction", direction, 0.01f)) {
+                    light.direction = float3(direction[0], direction[1], direction[2]);
+                    changed = true;
+                }
+                changed |= ImGui::DragFloat("Width (m)", &light.width, 0.01f, 0.001f, 1e6f,
+                    "%.3f", ImGuiSliderFlags_AlwaysClamp);
+                changed |= ImGui::DragFloat("Height (m)", &light.height, 0.01f, 0.001f, 1e6f,
+                    "%.3f", ImGuiSliderFlags_AlwaysClamp);
+                changed |= ImGui::DragFloat("Roll (deg)", &light.rollDegrees, 0.5f);
+                changed |= ImGui::DragFloat("Luminance (cd/m²)", &light.luminance, 1.0f, 0.0f, 1e12f,
+                    "%.2f", ImGuiSliderFlags_AlwaysClamp);
+                changed |= ImGui::DragFloat("Range (m; 0 = infinite)", &light.range, 0.1f, 0.0f, 1e6f,
+                    "%.2f", ImGuiSliderFlags_AlwaysClamp);
+                remove = ImGui::Button("Remove light");
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+            if (remove) {
+                lighting.rectLights.erase(lighting.rectLights.begin() + static_cast<std::ptrdiff_t>(i));
+                changed = true;
+            } else {
+                ++i;
+            }
+        }
+        ImGui::PopID();
+    }
     ImGui::PopID();
     ImGui::EndDisabled();
     if (changed && scene_.setLighting(lighting)) {

@@ -28,6 +28,7 @@
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
 #include "Runtime/Render/Material/OpenPBRLutData.h"
+#include "Runtime/Render/Material/RectLightLTCData.h"
 
 #include <chrono>
 #include <limits>
@@ -130,7 +131,7 @@ auto lumenReceiverOutputs(const RenderGraphProperties& properties)
 }
 constexpr uint32_t kOpenPBRLut2DCount = 6;
 constexpr uint32_t kOpenPBRLut3DCount = 2;
-struct OpenPBRLutTexture {
+struct LutTexture {
     struct UploadState {
         ResourceState state = ResourceState::Undefined;
         bool uploaded = false;
@@ -144,9 +145,10 @@ struct OpenPBRLutTexture {
     uint32_t depth = 1;
 };
 
-class OpenPBRLutResources final {
+template<size_t Num2D, size_t Num3D>
+class LutResources final {
 public:
-    Result<> prepare(Device& device, std::string& log)
+    Result<> prepare(Device& device, std::span<const LutPayload, Num2D + Num3D> payloads, std::string& log)
     {
         if (valid()) {
             return {};
@@ -155,7 +157,7 @@ public:
         clear();
         // Stable Adobe LUT IDs: the shader stores 2D and 3D views separately.
         uint32_t next2D = 0, next3D = 0;
-        for (const auto& payload : kLutPayloads) {
+        for (const auto& payload : payloads) {
             auto& texture = payload.depth > 1 ? lut3D_[next3D++] : lut2D_[next2D++];
             auto result = createLutTexture(device, payload.pixels, payload.byteSize, payload.format,
                 payload.width, payload.height, payload.depth, payload.label, texture, log);
@@ -171,13 +173,13 @@ public:
 
     Result<> upload(CommandBuffer& commandBuffer)
     {
-        for (OpenPBRLutTexture& texture : lut2D_) {
+        for (LutTexture& texture : lut2D_) {
             Result<> result = uploadTexture(commandBuffer, texture);
             if (!result) {
                 return result;
             }
         }
-        for (OpenPBRLutTexture& texture : lut3D_) {
+        for (LutTexture& texture : lut3D_) {
             Result<> result = uploadTexture(commandBuffer, texture);
             if (!result) {
                 return result;
@@ -191,23 +193,23 @@ public:
         return std::all_of(
             lut2D_.begin(),
             lut2D_.end(),
-            [](const OpenPBRLutTexture& texture) {
+            [](const LutTexture& texture) {
                 return texture.texture != nullptr && texture.view != nullptr;
             }) &&
             std::all_of(
                 lut3D_.begin(),
                 lut3D_.end(),
-                [](const OpenPBRLutTexture& texture) {
+                [](const LutTexture& texture) {
                     return texture.texture != nullptr && texture.view != nullptr;
                 });
     }
 
-    const std::array<TextureView*, kOpenPBRLut2DCount>& lut2DViews() const
+    const std::array<TextureView*, Num2D>& lut2DViews() const
     {
         return lut2DViews_;
     }
 
-    const std::array<TextureView*, kOpenPBRLut3DCount>& lut3DViews() const
+    const std::array<TextureView*, Num3D>& lut3DViews() const
     {
         return lut3DViews_;
     }
@@ -215,11 +217,11 @@ public:
 private:
     void clear()
     {
-        for (OpenPBRLutTexture& texture : lut2D_) {
-            texture = OpenPBRLutTexture{};
+        for (LutTexture& texture : lut2D_) {
+            texture = LutTexture{};
         }
-        for (OpenPBRLutTexture& texture : lut3D_) {
-            texture = OpenPBRLutTexture{};
+        for (LutTexture& texture : lut3D_) {
+            texture = LutTexture{};
         }
         lut2DViews_.fill(nullptr);
         lut3DViews_.fill(nullptr);
@@ -244,14 +246,14 @@ private:
         uint32_t height,
         uint32_t depth,
         std::string_view label,
-        OpenPBRLutTexture& outTexture,
+        LutTexture& outTexture,
         std::string& log)
     {
         if (pixels == nullptr || width == 0 || height == 0 || depth == 0) {
             return makeError(Error::InvalidArgument);
         }
 
-        outTexture = OpenPBRLutTexture{};
+        outTexture = LutTexture{};
         outTexture.width = width;
         outTexture.height = height;
         outTexture.depth = depth;
@@ -268,7 +270,7 @@ private:
 
         void* mapped = outTexture.uploadBuffer->map();
         if (mapped == nullptr) {
-            log += "OpenPBR LUT upload buffer map failed: ";
+            log += "LUT upload buffer map failed: ";
             log += label;
             log += '\n';
             return makeError(Error::Failure);
@@ -307,7 +309,7 @@ private:
         return {};
     }
 
-    static Result<> uploadTexture(CommandBuffer& commandBuffer, OpenPBRLutTexture& texture)
+    static Result<> uploadTexture(CommandBuffer& commandBuffer, LutTexture& texture)
     {
         if (texture.uploadState->uploaded) {
             return {};
@@ -363,10 +365,10 @@ private:
         return {};
     }
 
-    std::array<OpenPBRLutTexture, kOpenPBRLut2DCount> lut2D_;
-    std::array<OpenPBRLutTexture, kOpenPBRLut3DCount> lut3D_;
-    std::array<TextureView*, kOpenPBRLut2DCount> lut2DViews_{};
-    std::array<TextureView*, kOpenPBRLut3DCount> lut3DViews_{};
+    std::array<LutTexture, Num2D> lut2D_;
+    std::array<LutTexture, Num3D> lut3D_;
+    std::array<TextureView*, Num2D> lut2DViews_{};
+    std::array<TextureView*, Num3D> lut3DViews_{};
 };
 
 struct ScenePathTraceCameraSnapshot {
@@ -897,7 +899,7 @@ public:
             (exportLumenSpecular ? "|lumenSpecular=1" : "") +
             (exportLumenDiffuseAlbedo ? "|lumenDiffuseAlbedo=1" : "");
         if (useOpenPBR) {
-            result = openPBRLuts_.prepare(*context.device, log);
+            result = openPBRLuts_.prepare(*context.device, kLutPayloads, log);
             if (!result) {
                 clearPrograms();
                 compiledShaderKey_.clear();
@@ -1004,6 +1006,15 @@ public:
             baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentIrradianceSH), .kind = ComputeResourceBindingKind::StorageBuffer,
             });
+            baseBindings.push_back({
+                .binding = METALLIC_DATA_MEMBER(SceneRealtimeResourceParameters, rectLights.lights),
+                .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = sizeof(GPURectLight),
+                .dataAlignment = 16, .optional = true,
+            });
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, rectLights.matrixLUT),
+                .kind = ComputeResourceBindingKind::SampledImage, .optional = true});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, rectLights.amplitudeLUT),
+                .kind = ComputeResourceBindingKind::SampledImage, .optional = true});
         }
         if (!realtime_) {
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, regirGrid), .kind = ComputeResourceBindingKind::StorageBuffer});
@@ -1047,8 +1058,10 @@ public:
                 baseBindings.push_back({.binding = METALLIC_DATA_MEMBER(SceneResourceParameters, materialTiles), .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 8, .dataAlignment = 8});
             }
         }
-        if (useOpenPBR) {
+        if (useOpenPBR || realtime_) {
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, openPBRLutSampler), .kind = ComputeResourceBindingKind::Sampler});
+        }
+        if (useOpenPBR) {
             baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, openPBRLut2D),
                 .kind = ComputeResourceBindingKind::SampledImage,
@@ -1192,7 +1205,8 @@ public:
                     .debugName = debugName.c_str(),
                     .requiresRayQuery = !visibilityDeferred_,
                     .resourceParameterSize = pathDiagnosticsEnabled() ? sizeof(ScenePathDiagnosticResourceParameters) :
-                        splitPrimaryGuides ? sizeof(ScenePrimarySplitResourceParameters) : sizeof(SceneResourceParameters),
+                        splitPrimaryGuides ? sizeof(ScenePrimarySplitResourceParameters) :
+                        realtime_ ? sizeof(SceneRealtimeResourceParameters) : sizeof(SceneResourceParameters),
                     .specializationConstants = sceneShaderSpecializationConstants(shaderProgram, shaderOptions, defines),
                     .rootTransport = sourcePolicy.rootTransport()},
                 outProgram, artifact, diagnostics,
@@ -1595,6 +1609,11 @@ public:
         Result<> lightResult = lights_.update(*device_, context.commandBuffer(), *context.subsystems(),
             lightScene, resolvedLighting);
         if (!lightResult) { return lightResult; }
+        if (realtime_) {
+            lightResult = rectLights_.update(*device_, context.commandBuffer(), *context.subsystems(),
+                resolvedLighting.rectLights);
+            if (!lightResult) { return lightResult; }
+        }
         if (previousLightRevision != lights_.revision()) {
             resetAccumulation_ = true;
             // Invalidate radiance caches as well as the displayed accumulation.
@@ -1864,6 +1883,15 @@ public:
                 return result;
             }
         }
+        if (rectLights_.buffer() != nullptr) {
+            result = rectLTCs_.prepare(*device_, kRectLTCTextures, syncLog);
+            if (!result) {
+                spdlog::error("[ScenePathTracePass] Rect Light LTC: {}", syncLog);
+                return result;
+            }
+            result = rectLTCs_.upload(context.commandBuffer());
+            if (!result) { return result; }
+        }
 
         profile.next("Prepare dispatch bindings");
         TextureView* const atmosphereTransmittanceViews[]{environment.transmittanceView};
@@ -2105,8 +2133,19 @@ public:
                 bindings.push_back({.binding = METALLIC_DATA_MEMBER(SceneResourceParameters, materialTiles), .buffer = materialBins.tiles});
             }
         }
-        if (useOpenPBR) {
+        if (useOpenPBR || realtime_) {
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, openPBRLutSampler), .sampler = &openPBRLutSampler_});
+        }
+        if (rectLights_.buffer() != nullptr) {
+            const auto& ltcViews = rectLTCs_.lut2DViews();
+            bindings.push_back({.binding = METALLIC_DATA_MEMBER(SceneRealtimeResourceParameters, rectLights.lights),
+                .buffer = rectLights_.buffer()});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, rectLights.matrixLUT),
+                .textureView = ltcViews[0]});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, rectLights.amplitudeLUT),
+                .textureView = ltcViews[1]});
+        }
+        if (useOpenPBR) {
             const auto& lut2DViews = openPBRLuts_.lut2DViews();
             const auto& lut3DViews = openPBRLuts_.lut3DViews();
             bindings.push_back(ComputeDispatchBinding{
@@ -2328,7 +2367,7 @@ private:
         if (trustedSceneParametersEnabled(properties) &&
             (properties.contains("diagnosticPixels") ||
                 !supportsInlineComputeRoot(properties) || !inlineComputeRootEnabled(properties))) {
-            log += "trustedSceneParameters requires the unextended Scene packet and unsplit compute path tracer or visibility-buffer Deferred with inlineComputeRoot\n";
+            log += "trustedSceneParameters requires inlineComputeRoot on the unsplit compute path tracer or visibility-buffer Deferred without path diagnostics\n";
             return false;
         }
         return true;
@@ -3304,7 +3343,9 @@ private:
         .addressV = SamplerAddressMode::ClampToEdge,
         .addressW = SamplerAddressMode::ClampToEdge,
     };
-    OpenPBRLutResources openPBRLuts_;
+    LutResources<kOpenPBRLut2DCount, kOpenPBRLut3DCount> openPBRLuts_;
+    LutResources<2, 0> rectLTCs_;
+    SceneRectLightResources rectLights_;
     std::array<ComputeKernel, static_cast<size_t>(PathTracePermutation::Count)> programs_;
     ComputeKernel primaryGuidesProgram_;
     RayTracingKernel rayProgram_;

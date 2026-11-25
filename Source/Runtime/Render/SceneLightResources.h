@@ -47,6 +47,26 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
 std::vector<GPUPunctualLight> buildPunctualLightRecords(
     const scene::Scene* scene, const scene::LightingSettings& settings);
 
+struct GPURectLight {
+    float positionRange[4];
+    float direction[4];
+    float halfWidth[4];
+    float halfHeight[4];
+    float radiance[4];
+};
+static_assert(sizeof(GPURectLight) == 80);
+
+class SceneRectLightResources {
+public:
+    Result<> update(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
+        std::span<const scene::RectLight> lights);
+    Buffer* buffer() const { return buffer_.get(); }
+
+private:
+    std::vector<GPURectLight> records_;
+    std::shared_ptr<Buffer> buffer_;
+};
+
 class SceneLightResources {
 public:
     Result<> update(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,

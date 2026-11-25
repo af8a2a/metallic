@@ -1,6 +1,7 @@
 #language slang 2026
 module OpenPBRDirectLighting;
 import Core;
+import RectLightLTC;
 import Lighting;
 import Material;
 import MaterialProgram;
@@ -162,7 +163,7 @@ public struct RealtimeSurfaceLights : ISurfaceLightProvider
 
 [ForceInline]
 internal float3 shadeSceneDirectSurfaceRadiance<TProgram : ISceneSurfaceMaterialProgram>(inout Material<TProgram> program, Ray ray, inout HitInfo hit, float2 samplePixel,
-    ScenePathTracePush push, inout uint seed, bool sampledEnvironment, out bool applyAerial)
+    ScenePathTracePush push, inout uint seed, bool sampledEnvironment, bool useRectLights, out bool applyAerial)
 {
     applyAerial = true;
     let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit,
@@ -195,6 +196,10 @@ internal float3 shadeSceneDirectSurfaceRadiance<TProgram : ISceneSurfaceMaterial
     let shaded = shadeEvaluatedSurface(evaluated, viewDirection, TransportMode.Radiance, sampling, lights);
     let prepared = shaded.prepared;
     float3 radiance = shaded.radiance;
+    if (useRectLights && (push.debugFlags & kOpenPBRDebugDisableDirectLighting) == 0u) {
+        radiance += evaluateRectLights(hit.position, hit.normal, viewDirection, summary.diffuseColor,
+            summary.specularReflectance, summary.roughness);
+    }
 #if METALLIC_REALTIME_DEFERRED
     if (push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
 #if METALLIC_CUSTOM_MATERIALS
@@ -248,10 +253,11 @@ internal float3 shadeSceneDirectSurfaceRadiance<TProgram : ISceneSurfaceMaterial
 }
 
 public float3 shadeSceneDirectSurface<TProgram : ISceneSurfaceMaterialProgram>(inout Material<TProgram> program, Ray ray, HitInfo hit, float2 samplePixel,
-    ScenePathTracePush push, inout uint seed, bool sampledEnvironment)
+    ScenePathTracePush push, inout uint seed, bool sampledEnvironment, bool useRectLights)
 {
     bool applyAerial;
-    float3 radiance = shadeSceneDirectSurfaceRadiance(program, ray, hit, samplePixel, push, seed, sampledEnvironment, applyAerial);
+    float3 radiance = shadeSceneDirectSurfaceRadiance(program, ray, hit, samplePixel, push, seed,
+        sampledEnvironment, useRectLights, applyAerial);
     return applyAerial ? applyPrimaryAerialPerspective(radiance, hit.position, ray.origin) : radiance;
 }
 
@@ -270,16 +276,16 @@ public float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel
     uint family = sceneSurfaceMaterialFamily(hit.materialIndex, specializedProgram);
     if (family == 1u) {
         var program = makeSceneSlabMaterialProgram<SceneSingleSlabModel>(hit, push, cone, ray.direction, seed, true, false, specializedProgram);
-        return shadeSceneDirectSurface(program, ray, hit, samplePixel, push, seed, sampledEnvironment);
+        return shadeSceneDirectSurface(program, ray, hit, samplePixel, push, seed, sampledEnvironment, false);
     }
     if (family == 2u) {
         var program = makeSceneSlabMaterialProgram<SceneDualSlabModel>(hit, push, cone, ray.direction, seed, true, false, specializedProgram);
-        return shadeSceneDirectSurface(program, ray, hit, samplePixel, push, seed, sampledEnvironment);
+        return shadeSceneDirectSurface(program, ray, hit, samplePixel, push, seed, sampledEnvironment, false);
     }
 #endif
     var program = makeOpenPBRMaterialProgram(hit, push, cone, ray.direction, seed, true, false);
     program.program.fixedMetalness = fixedMetalness;
     program.program.opaquePrimary = opaquePrimary;
-    return shadeSceneDirectSurface(program, ray, hit, samplePixel, push, seed, sampledEnvironment);
+    return shadeSceneDirectSurface(program, ray, hit, samplePixel, push, seed, sampledEnvironment, true);
 }
 }

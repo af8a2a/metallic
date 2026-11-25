@@ -78,6 +78,8 @@ scene::LightingSettings resolveSceneLighting(const scene::Scene* actualScene, co
         for (const auto& light : world->lighting().lights) {
             if (!light.imported) { settings.lights.push_back(light); }
         }
+        const auto& worldRectLights = world->lighting().rectLights;
+        settings.rectLights.insert(settings.rectLights.end(), worldRectLights.begin(), worldRectLights.end());
     }
     return settings;
 }
@@ -307,6 +309,77 @@ std::vector<GPUPunctualLight> buildPunctualLightRecords(
     return records;
 }
 
+namespace {
+
+Result<std::unique_ptr<Buffer>> createLightBuffer(Device& device, std::span<const std::byte> records)
+{
+    const uint64_t bytes = records.size();
+    auto buffer = device.createBuffer(BufferDesc{
+        .size = bytes, .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload,
+    });
+    if (!buffer) { return makeError(buffer.error()); }
+    if (*buffer == nullptr) { return makeError(Error::Failure); }
+    void* mapped = (*buffer)->map();
+    if (mapped == nullptr) { return makeError(Error::Failure); }
+    std::memcpy(mapped, records.data(), records.size());
+    (*buffer)->flush({0, bytes});
+    (*buffer)->unmap();
+    return buffer;
+}
+
+} // namespace
+
+Result<> SceneRectLightResources::update(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
+    std::span<const scene::RectLight> lights)
+{
+    std::vector<GPURectLight> records;
+    records.reserve(lights.size());
+    for (const auto& light : lights) {
+        if (!light.enabled || light.luminance == 0.0f) { continue; }
+        const auto& d = light.direction;
+        const double length = std::sqrt(double(d.x) * d.x + double(d.y) * d.y + double(d.z) * d.z);
+        const float3 forward{float(d.x / length), float(d.y / length), float(d.z / length)};
+        const float3 referenceUp = std::abs(forward.y) < 0.999f ? float3(0, 1, 0) : float3(0, 0, -1);
+        // The LTC corners wind towards the light, opposite its emission axis.
+        const float3 right = normalize(cross(forward, referenceUp));
+        const float3 up = cross(right, forward);
+        const double roll = double(light.rollDegrees) * 0.017453292519943295;
+        const float c = static_cast<float>(std::cos(roll));
+        const float s = static_cast<float>(std::sin(roll));
+        const float3 halfWidth = (right * c - up * s) * (light.width * 0.5f);
+        const float3 halfHeight = (up * c + right * s) * (light.height * 0.5f);
+        const auto color = color::fromLinearRec709({light.color.x, light.color.y, light.color.z});
+        GPURectLight record{
+            .positionRange = {light.position.x, light.position.y, light.position.z, light.range},
+            .direction = {forward.x, forward.y, forward.z, 0.0f},
+            .halfWidth = {halfWidth.x, halfWidth.y, halfWidth.z, 0.0f},
+            .halfHeight = {halfHeight.x, halfHeight.y, halfHeight.z, 0.0f},
+            .radiance = {color[0] * light.luminance, color[1] * light.luminance, color[2] * light.luminance, 0.0f},
+        };
+        if (!std::isfinite(record.radiance[0]) || !std::isfinite(record.radiance[1]) ||
+            !std::isfinite(record.radiance[2])) { return makeError(Error::InvalidArgument); }
+        records.push_back(record);
+    }
+
+    if (records.size() != records_.size() || (!records.empty() &&
+        std::memcmp(records.data(), records_.data(), records.size() * sizeof(GPURectLight)) != 0)) {
+        std::unique_ptr<Buffer> next;
+        if (!records.empty()) {
+            auto result = createLightBuffer(device, std::as_bytes(std::span{records}));
+            if (!result) { return makeError(result.error()); }
+            next = std::move(*result);
+        }
+        host.retire(buffer_);
+        buffer_ = std::move(next);
+        records_ = std::move(records);
+    }
+    if (buffer_) {
+        if (auto* frame = RenderFrameContext::from(commands)) { frame->retain(buffer_); }
+        commands.hostWriteBarrier();
+    }
+    return {};
+}
+
 Result<> SceneLightResources::update(Device& device, CommandBuffer& commands,
     RenderSubsystemHost& host, const scene::Scene* scene, const scene::LightingSettings& settings)
 {
@@ -315,20 +388,10 @@ Result<> SceneLightResources::update(Device& device, CommandBuffer& commands,
     const uint64_t bytes = records.size() * sizeof(GPUPunctualLight);
     if (records.size() != records_.size() ||
         std::memcmp(records.data(), records_.data(), static_cast<size_t>(bytes)) != 0) {
-        std::unique_ptr<Buffer> next;
-        Result<> result = device.createBuffer(BufferDesc{
-            .size = bytes, .usage = BufferUsageBits::Storage,
-            .memoryLocation = MemoryLocation::HostUpload,
-        }).transform([&](auto rhiValue) { next = std::move(rhiValue); });
-        if (!result) { return result; }
-        if (next == nullptr) { return makeError(Error::Failure); }
-        void* mapped = next->map();
-        if (mapped == nullptr) { return makeError(Error::Failure); }
-        std::memcpy(mapped, records.data(), static_cast<size_t>(bytes));
-        next->flush({0, bytes});
-        next->unmap();
+        auto result = createLightBuffer(device, std::as_bytes(std::span{records}));
+        if (!result) { return makeError(result.error()); }
         host.retire(buffer_);
-        buffer_ = std::move(next);
+        buffer_ = std::move(*result);
         records_ = std::move(records);
         ++revision_;
     }

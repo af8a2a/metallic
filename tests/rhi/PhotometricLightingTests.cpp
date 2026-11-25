@@ -8,12 +8,14 @@
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
+#include "Runtime/Scene/SceneDocument.h"
 #include "stb/stb_image_write.h"
 
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <thread>
 
 namespace metallic::tests {
@@ -349,7 +351,109 @@ public:
     }
 };
 
+class RectLightRenderTest final : public RHITest {
+public:
+    RectLightRenderTest() { type = RHITestType::Rendering; name = "rect_light_ltc_realtime_render"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto root = std::filesystem::absolute(context.outputDirectory / "rect-light-ltc");
+        std::filesystem::create_directories(root);
+        const auto path = root / "Receivers.gltf";
+        const std::array<float, 36> vertices{
+            -2,-2,0, 0,-2,0, 0,2,0, -2,-2,0, 0,2,0, -2,2,0,
+             0,-2,0, 2,-2,0, 2,2,0,  0,-2,0, 2,2,0,  0,2,0};
+        {
+            std::ofstream buffer(root / "Receivers.bin", std::ios::binary);
+            buffer.write(reinterpret_cast<const char*>(vertices.data()), sizeof(vertices));
+            std::ofstream gltf(path);
+            gltf << R"({
+                "asset":{"version":"2.0"},
+                "buffers":[{"uri":"Receivers.bin","byteLength":144}],
+                "bufferViews":[{"buffer":0,"byteLength":144,"target":34962}],
+                "accessors":[
+                    {"bufferView":0,"componentType":5126,"count":6,"type":"VEC3","min":[-2,-2,0],"max":[0,2,0]},
+                    {"bufferView":0,"byteOffset":72,"componentType":5126,"count":6,"type":"VEC3","min":[0,-2,0],"max":[2,2,0]}],
+                "materials":[
+                    {"pbrMetallicRoughness":{"baseColorFactor":[0.7,0.7,0.7,1],"metallicFactor":0,"roughnessFactor":0.7}},
+                    {"pbrMetallicRoughness":{"baseColorFactor":[0.8,0.8,0.8,1],"metallicFactor":1,"roughnessFactor":0.15}}],
+                "meshes":[{"primitives":[
+                    {"attributes":{"POSITION":0},"material":0},{"attributes":{"POSITION":1},"material":1}]}],
+                "nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0
+            })";
+            if (!buffer || !gltf) { return RHITestResult::fail("Rect Light fixture write failed"); }
+        }
+        scene::SceneDocument document;
+        if (!document.load(path)) { return RHITestResult::fail(document.lastLoadResult().error); }
+        render::RenderGraphPreviewRenderer preview;
+        const auto supported = preview.initialize(context.enableValidation, true, false);
+        if (render::hasError(supported, render::Error::Unsupported)) { return RHITestResult::skip("requires ray query"); }
+        if (!supported) { return RHITestResult::fail("Rect Light preview initialization failed"); }
+        preview.bindRuntimeScene(&document);
+        preview.setEnvironment({.enabled = false});
+        preview.setRawReadbackEnabled(true);
+        render::RenderGraph graph;
+        const nlohmann::json properties{{"path", path.string()}, {"outputLinear", true}, {"bsdf", "openpbr"},
+            {"camera", {{"eye", {0, 0, 4}}, {"center", {0, 0, 0}}, {"fovDegrees", 45}}}};
+        graph.addNode("SceneRealtimeLightingPass", "RayQuery", properties);
+        graph.addNode("VisibilityBufferPass", "VBuffer", properties);
+        graph.addNode("VisibilityBufferDeferredPass", "Deferred", properties);
+        graph.addEdge("VBuffer.visibility", "Deferred.visibility");
+        graph.addEdge("VBuffer.depth", "Deferred.depth");
+        graph.addEdge("VBuffer.rasterInfo", "Deferred.rasterInfo");
+        graph.addEdge("VBuffer.domain", "Deferred.domain");
+        graph.markOutput("RayQuery.color");
+        graph.markOutput("Deferred.color");
+
+        constexpr uint32_t kSize = 129;
+        scene::LightingSettings settings;
+        auto& light = settings.rectLights.emplace_back();
+        light.position = float3(0, 0, 2);
+        light.direction = float3(0, 0, -1);
+        light.luminance = 2.0f;
+        light.width = 2.0f;
+        light.height = 0.6f;
+        for (const char* output : {"RayQuery.color", "Deferred.color"}) {
+            light.enabled = true;
+            light.width = 2.0f;
+            light.direction = float3(0, 0, -1);
+            if (!preview.setLighting(settings)) { return RHITestResult::fail("Rect Light settings rejected"); }
+            const auto capture = [&]() {
+                return preview.render(graph, kSize, kSize, output) &&
+                    preview.readbackFormat() == render::Format::RGBA32Sfloat &&
+                    preview.readbackBytes().size() == kSize * kSize * 4 * sizeof(float);
+            };
+            if (!capture()) { return RHITestResult::fail(preview.lastLog()); }
+            const auto lit = preview.readbackBytes();
+            std::vector<float> pixels(lit.size() / sizeof(float));
+            std::memcpy(pixels.data(), lit.data(), lit.size());
+            const auto red = [&](uint32_t x, uint32_t y) { return pixels[(y * kSize + x) * 4]; };
+            if (!std::all_of(pixels.begin(), pixels.end(), [](float value) { return std::isfinite(value); }) ||
+                red(42, 64) < 0.03f || red(75, 64) < 0.3f || red(75, 32) >= red(75, 64) * 0.5f) {
+                return RHITestResult::fail(std::string(output) + " missing Lambert/GGX light or horizontal highlight");
+            }
+            std::string log;
+            if (!saveRgba8Png(root / (std::string(output) + ".png"),
+                reinterpret_cast<const uint8_t*>(preview.pixels().data()), kSize, kSize, log)) {
+                return RHITestResult::fail(log);
+            }
+            light.width = 0.2f;
+            if (!preview.setLighting(settings) || !capture() || lit == preview.readbackBytes()) {
+                return RHITestResult::fail(std::string(output) + " width edit did not reach shading " + preview.lastLog());
+            }
+            light.direction = float3(0, 0, 1);
+            if (!preview.setLighting(settings) || !capture()) { return RHITestResult::fail(preview.lastLog()); }
+            const auto back = preview.readbackBytes();
+            light.enabled = false;
+            if (!preview.setLighting(settings) || !capture() || back != preview.readbackBytes() || back == lit) {
+                return RHITestResult::fail(std::string(output) + " back side and disabled light disagree");
+            }
+        }
+        return RHITestResult::pass("LTC rectangle lights diffuse and metallic receivers in ray-query and raster deferred shading");
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(PhotometricGPUTest);
 METALLIC_REGISTER_RHI_TEST(RealtimeLightingRenderTest);
+METALLIC_REGISTER_RHI_TEST(RectLightRenderTest);
 } // namespace
 } // namespace metallic::tests

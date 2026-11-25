@@ -5573,6 +5573,16 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
         .compensation = 1.5f, .lowPercent = 60.0f, .highPercent = 95.0f,
         .histogramMinEV100 = -12.0f, .histogramMaxEV100 = 22.0f,
         .speedUp = 4.0f, .speedDown = 0.5f, .transitionDistance = 2.0f};
+    ASSERT_TRUE(lighting.rectLights.empty());
+    lighting.rectLights.push_back({.name = "Key", .position = {1, 3, -2},
+        .direction = {0, -2, 1}, .color = {0.5f, 0.75f, 1.0f}, .width = 2.0f, .height = 0.5f,
+        .rollDegrees = 35.0f, .luminance = 1200.0f, .range = 12.0f, .enabled = false});
+    auto invalid = lighting;
+    invalid.rectLights.front().height = 0.0f;
+    EXPECT_FALSE(document.setLighting(invalid));
+    invalid = lighting;
+    invalid.rectLights.front().direction = float3(0.0f);
+    EXPECT_FALSE(document.setLighting(invalid));
     for (const char* type : {"point", "spot"}) {
         PunctualLight light;
         light.name = type;
@@ -5597,6 +5607,18 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
     SceneDocument restored;
     ASSERT_TRUE(restored.load(document.documentPath())) << restored.lastLoadResult().error;
     ASSERT_EQ(restored.lighting().lights.size(), 3u);
+    ASSERT_EQ(restored.lighting().rectLights.size(), 1u);
+    const auto& area = restored.lighting().rectLights.front();
+    EXPECT_EQ(area.name, "Key");
+    EXPECT_FALSE(area.enabled);
+    EXPECT_FLOAT_EQ(area.position.z, -2.0f);
+    EXPECT_FLOAT_EQ(area.direction.y, -2.0f);
+    EXPECT_FLOAT_EQ(area.color.y, 0.75f);
+    EXPECT_FLOAT_EQ(area.width, 2.0f);
+    EXPECT_FLOAT_EQ(area.height, 0.5f);
+    EXPECT_FLOAT_EQ(area.rollDegrees, 35.0f);
+    EXPECT_FLOAT_EQ(area.luminance, 1200.0f);
+    EXPECT_FLOAT_EQ(area.range, 12.0f);
     EXPECT_FLOAT_EQ(restored.lighting().exposureEV100, 12.0f);
     const auto& exposure = restored.lighting().autoExposure;
     EXPECT_TRUE(exposure.enabled);

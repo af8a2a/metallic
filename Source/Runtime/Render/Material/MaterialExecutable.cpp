@@ -79,11 +79,21 @@ Result<> validateTrustedSceneResourceContract(const SlangShaderDesc& source,
     if (!trusted) { return {}; }
     const std::string_view value = trusted->value ? trusted->value : "1";
     if (value == "0") { return {}; }
+    bool validPacket = layout.resourceParameterSize == sizeof(SceneResourceParameters);
+    if (layout.resourceParameterSize == sizeof(SceneRealtimeResourceParameters) &&
+        source.moduleName && source.entryPointName) {
+        // Deferred retains the trusted Scene prefix. Its LTC tail uses the checked getter.
+        for (const auto program : {SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned}) {
+            const auto identity = sceneShaderIdentity(program);
+            validPacket |= std::string_view(source.moduleName) == identity.module &&
+                std::string_view(source.entryPointName) == identity.entry;
+        }
+    }
     if (value != std::to_string(sizeof(SceneResourceParameters)) ||
-        layout.resourceParameterSize != sizeof(SceneResourceParameters) ||
+        !validPacket ||
         layout.rootTransport != ParameterTransport::InlinePush ||
         inlineRootCount != 1 || !inlineRoot->value || std::string_view(inlineRoot->value) != "1") {
-        log += "Trusted Scene parameters require the shared SceneResourceParameters byte size and unique METALLIC_INLINE_COMPUTE_ROOT=1 with InlinePush transport\n";
+        log += "Trusted Scene parameters require a recognized Scene packet and unique METALLIC_INLINE_COMPUTE_ROOT=1 with InlinePush transport\n";
         return makeError(Error::InvalidArgument);
     }
     return {};
