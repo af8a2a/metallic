@@ -6,7 +6,6 @@ module RectLightLTC;
 // Horizon-clipped quad from selfshadow/ltc_code, webgl/shaders/ltc/ltc_quad.fs.
 // See Shaders/Licenses/PolygonalLightLTC.txt.
 
-import Core;
 import OpenPBR;
 
 namespace Metallic.Lighting
@@ -151,57 +150,61 @@ float evaluateLTC(float3x3 basis, float3x3 Minv, float3 points[4])
     return max(0.0, sum);
 }
 
-public float3 evaluateRectLights(float3 position, float3 N, float3 V,
-    float3 diffuseColor, float3 specularColor, float roughness)
+public struct RectLightLTCReceiver
 {
-    let rect = getResourceParameterField<SceneRealtimeResourceParameters, RectLightResourceParameters>(
-        kSceneRectLightsOffset);
-    if (rect.lights.resource.index == 0xffffffffu || rect.lights.count == 0u) { return float3(0.0); }
-    // The named resource encoder stores span counts in 32-bit words.
-    uint lightCount = rect.lights.count / (sizeof(GPURectLight) / 4u);
+    public float3x3 basis;
+    public float3x3 inverseTransform;
+    public float3 specularScale;
+    public float3 diffuseColor;
+};
 
+public RectLightLTCReceiver prepareRectLightLTC(float3 N, float3 V, float3 diffuseColor,
+    float3 specularColor, float roughness, Texture2D<float4> matrixLUT,
+    Texture2D<float4> amplitudeLUT, SamplerState samplerState)
+{
     float ndotv = saturate(dot(N, V));
     float2 uv = float2(roughness, sqrt(1.0 - ndotv));
     uv = uv * (63.0 / 64.0) + (0.5 / 64.0);
-    let samplerState = resolveUniform(getSceneResourceParameterField<SamplerHandle>(kSceneOpenPBRLUTSamplerOffset));
-    float4 t1 = resolveUniform(rect.matrixLUT).SampleLevel(samplerState, uv, 0);
-    float4 t2 = resolveUniform(rect.amplitudeLUT).SampleLevel(samplerState, uv, 0);
+    float4 t1 = matrixLUT.SampleLevel(samplerState, uv, 0);
+    float4 t2 = amplitudeLUT.SampleLevel(samplerState, uv, 0);
 
+    RectLightLTCReceiver result;
     // Transpose the constructor's column arrangement from the GLSL reference.
-    float3x3 Minv = float3x3(
+    result.inverseTransform = float3x3(
         float3(t1.x, 0, t1.z),
         float3(   0, 1,    0),
         float3(t1.y, 0, t1.w));
-    float3 specularScale = specularColor * t2.x + (1.0 - specularColor) * t2.y;
+    result.specularScale = specularColor * t2.x + (1.0 - specularColor) * t2.y;
+    result.diffuseColor = diffuseColor;
 
     float3 T1 = V - N * dot(V, N);
     T1 = dot(T1, T1) > 1e-12 ? normalize(T1) : openPBRMakeBasis(N).t;
     float3 T2 = cross(N, T1);
-    float3x3 basis = float3x3(T1, T2, N);
-    float3x3 identity = float3x3(1, 0, 0, 0, 1, 0, 0, 0, 1);
+    result.basis = float3x3(T1, T2, N);
+    return result;
+}
 
-    float3 radiance = float3(0.0);
-    let buffer = resolveUniform(rect.lights.resource);
-    for (uint index = 0u; index < lightCount; ++index) {
-        let light = buffer.Load<GPURectLight>(rect.lights.byteOffset + index * sizeof(GPURectLight));
-        float3 center = light.positionRange.xyz - position;
-        // Convention: the emitter faces away from the normal of its LTC winding.
-        if (dot(center, light.direction.xyz) >= 0.0) { continue; }
-        float attenuation = 1.0;
-        if (light.positionRange.w > 0.0) {
-            float ratio = length(center) / light.positionRange.w;
-            attenuation = saturate(1.0 - ratio * ratio * ratio * ratio);
-            if (attenuation == 0.0) { continue; }
-        }
-        float3 ex = light.halfWidth.xyz;
-        float3 ey = light.halfHeight.xyz;
-        float3 points[4] = {center - ex - ey, center + ex - ey, center + ex + ey, center - ex + ey};
-
-        float3 spec = evaluateLTC(basis, Minv, points) * specularScale;
-        float diff = evaluateLTC(basis, identity, points);
-        radiance += light.radiance.rgb * (spec + diffuseColor * diff) * attenuation;
+public float rectLightAttenuation(GPURectLight light, float3 center)
+{
+    // The emitter faces away from the normal of its LTC winding.
+    if (dot(center, light.direction.xyz) >= 0.0) { return 0.0; }
+    if (light.positionRange.w > 0.0) {
+        float ratio = length(center) / light.positionRange.w;
+        return saturate(1.0 - ratio * ratio * ratio * ratio);
     }
-    return radiance;
+    return 1.0;
+}
+
+public float3 evaluateRectLightLTC(RectLightLTCReceiver receiver, GPURectLight light,
+    float3 center, float attenuation)
+{
+    float3 ex = light.halfWidth.xyz;
+    float3 ey = light.halfHeight.xyz;
+    float3 points[4] = {center - ex - ey, center + ex - ey, center + ex + ey, center - ex + ey};
+    float3x3 identity = float3x3(1, 0, 0, 0, 1, 0, 0, 0, 1);
+    float3 spec = evaluateLTC(receiver.basis, receiver.inverseTransform, points) * receiver.specularScale;
+    float diff = evaluateLTC(receiver.basis, identity, points);
+    return light.radiance.rgb * (spec + receiver.diffuseColor * diff) * attenuation;
 }
 
 } // namespace Metallic.Lighting

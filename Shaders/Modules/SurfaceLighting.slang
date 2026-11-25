@@ -40,6 +40,9 @@ public struct SurfaceLightSample
     public float distance;
     public float inverseSourcePdf;
     public uint source;
+    // Analytic area samples already include the material response and cosine.
+    public bool integrated;
+    public float3 integratedRadiance;
 };
 
 // Providers select/sample lights and trace visibility. They cannot access the
@@ -58,6 +61,10 @@ public float3 integrateDirectLighting<TPrepared : IPreparedSurfaceClosure, TLigh
     uint count = lights.count();
     for (uint index = 0u; index < count; ++index) {
         SurfaceLightSample light = lights.sample(index);
+        if (light.integrated) {
+            radiance += throughput * light.integratedRadiance;
+            continue;
+        }
         if (light.inverseSourcePdf <= 0.0) { continue; }
         float3 weight = max(prepared.evalProjected(light.direction), float3(0));
         float3 contribution = weight * light.illuminance;

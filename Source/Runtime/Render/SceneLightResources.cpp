@@ -329,8 +329,7 @@ Result<std::unique_ptr<Buffer>> createLightBuffer(Device& device, std::span<cons
 
 } // namespace
 
-Result<> SceneRectLightResources::update(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
-    std::span<const scene::RectLight> lights)
+Result<std::vector<GPURectLight>> buildRectLightRecords(std::span<const scene::RectLight> lights)
 {
     std::vector<GPURectLight> records;
     records.reserve(lights.size());
@@ -360,24 +359,7 @@ Result<> SceneRectLightResources::update(Device& device, CommandBuffer& commands
             !std::isfinite(record.radiance[2])) { return makeError(Error::InvalidArgument); }
         records.push_back(record);
     }
-
-    if (records.size() != records_.size() || (!records.empty() &&
-        std::memcmp(records.data(), records_.data(), records.size() * sizeof(GPURectLight)) != 0)) {
-        std::unique_ptr<Buffer> next;
-        if (!records.empty()) {
-            auto result = createLightBuffer(device, std::as_bytes(std::span{records}));
-            if (!result) { return makeError(result.error()); }
-            next = std::move(*result);
-        }
-        host.retire(buffer_);
-        buffer_ = std::move(next);
-        records_ = std::move(records);
-    }
-    if (buffer_) {
-        if (auto* frame = RenderFrameContext::from(commands)) { frame->retain(buffer_); }
-        commands.hostWriteBarrier();
-    }
-    return {};
+    return records;
 }
 
 Result<> SceneLightResources::update(Device& device, CommandBuffer& commands,

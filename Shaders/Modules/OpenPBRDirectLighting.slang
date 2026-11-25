@@ -1,7 +1,7 @@
 #language slang 2026
 module OpenPBRDirectLighting;
 import Core;
-import RectLightLTC;
+import ClusteredSurfaceLighting;
 import Lighting;
 import Material;
 import MaterialProgram;
@@ -38,19 +38,8 @@ using Metallic.OpenPBRPathTracing;
 
 #define gEnvironmentIrradianceSH resolveBuffer<StructuredBuffer<float4>>(getResourceParameters<SceneResourceParameters>().environmentIrradianceSH)
 
-#if METALLIC_DEFERRED_LIGHT_GRID
-
-#define gDeferredGridParams resolveBuffer<StructuredBuffer<ClusterLightGridParams>>(getResourceParameters<SceneResourceParameters>().lightGridParams)
-#define gDeferredGridLights resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lightGridLights)
-#define gDeferredGridCandidates resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().lightGridCandidates)
-#define gDeferredGridCells resolveBuffer<StructuredBuffer<ClusterLightGridCell>>(getResourceParameters<SceneResourceParameters>().lightGridCells)
-#define gDeferredGridIndices resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().lightGridIndices)
-#endif
-
 #if METALLIC_REALTIME_DEFERRED
 
-#define gRealtimeShadow resolveUniform(getResourceParameters<SceneResourceParameters>().shadowVisibility)
-#define gRealtimeShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getResourceParameters<SceneResourceParameters>().shadowParameters)
 #define gEnvironmentSpecular resolveBuffer<StructuredBuffer<float4>>(getResourceParameters<SceneResourceParameters>().previousEnvironmentIrradianceSH)
 
 public float3 realtimeEnvironmentSpecular(float3 direction, float roughness, ScenePathTracePush push)
@@ -96,51 +85,12 @@ public float3 openPbrDirectVisibility(float3 origin, float3 direction, float dis
     return openPbrShadowTransmittance(origin, direction, distance, makeOpenPBRInteriorStack(), push);
 }
 
-public struct RealtimeSurfaceLights : ISurfaceLightProvider
+public struct RayQueryLightVisibility : IClusteredLightVisibility
 {
     public ScenePathTracePush push;
     public HitInfo hit;
-    public float2 pixel;
-#if METALLIC_DEFERRED_LIGHT_GRID
-    public ClusterLightGridParams grid;
-    public ClusterLightGridLookup lookup;
-#endif
-    public uint count()
-    {
-        if (openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)) { return 0u; }
-#if METALLIC_DEFERRED_LIGHT_GRID
-        return kCelestialLightCount + lookup.count + clusterLightGridGlobalLightCount(grid);
-#else
-        return kCelestialLightCount + punctualLightCount(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
-#endif
-    }
-    public SurfaceLightSample sample(uint index)
-    {
-        SurfaceLightSample result;
-        PunctualLightSample light;
-        if (index < kCelestialLightCount) {
-            result.source = celestialSourceIdentity(index);
-            light = sampleCelestialLightAtPosition(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
-                getResourceParameters<SceneResourceParameters>().environment.celestialLights), index, hit.position);
-        } else {
-            index -= kCelestialLightCount;
-#if METALLIC_DEFERRED_LIGHT_GRID
-            result.source = index < lookup.count
-                ? clusterLightGridLocalLightIndex(lookup, gDeferredGridIndices, gDeferredGridCandidates, index)
-                : clusterLightGridGlobalLightIndex(grid, gDeferredGridCandidates, index - lookup.count);
-            light = samplePunctualLightData(gDeferredGridLights[result.source], hit.position);
-#else
-            result.source = index;
-            light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), index, hit.position);
-#endif
-        }
-        result.direction = light.direction;
-        result.illuminance = light.illuminance;
-        result.distance = light.distance;
-        result.inverseSourcePdf = any(light.illuminance > 0.0) ? 1.0 : 0.0;
-        return result;
-    }
-    public float3 visibility(SurfaceLightSample light)
+
+    public float3 evaluate(SurfaceLightSample light)
     {
         if ((light.source & kCelestialSourceBit) != 0u &&
             !celestialLightCastsShadow(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
@@ -148,15 +98,6 @@ public struct RealtimeSurfaceLights : ISurfaceLightProvider
                 light.source & ~kCelestialSourceBit)) { return float3(1.0); }
         float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
         float distance = max(light.distance - length(origin - hit.position), 0.0);
-#if METALLIC_REALTIME_DEFERRED
-        ShadowParameters shadow = gRealtimeShadowParameters[0];
-        // SIGMA attenuation is applied only to its selected source.
-        float encoded = gRealtimeShadow.Load(int3(uint2(pixel), 0));
-        if (!openPbrDebugFlag(push, kOpenPBRDebugDisableShadows) &&
-            shadow.control.x != 0u && light.source == shadow.control.z) {
-            return float3(encoded * encoded);
-        }
-#endif
         return openPbrDirectVisibility(origin, light.direction, distance, push);
     }
 };
@@ -180,15 +121,10 @@ internal float3 shadeSceneDirectSurfaceRadiance<TProgram : ISceneSurfaceMaterial
     }
     if (summary.unlit) { return summary.baseColor; }
     float3 viewDirection = -ray.direction;
-    RealtimeSurfaceLights lights;
-    lights.push = push;
-    lights.hit = hit;
-    lights.pixel = samplePixel;
-#if METALLIC_DEFERRED_LIGHT_GRID
-    lights.grid = gDeferredGridParams[0];
-    lights.lookup = clusterLightGridLookup(lights.grid, gDeferredGridCells,
-        uint2(samplePixel), cameraLinearDepth(hit.position, push));
-#endif
+    RayQueryLightVisibility visibility;
+    visibility.push = push;
+    visibility.hit = hit;
+    var lights = makeClusteredSurfaceLights(visibility, hit, viewDirection, samplePixel, push, summary, useRectLights);
     SurfaceSamplingContext sampling;
     sampling.throughput = float3(1);
     sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;
@@ -196,10 +132,6 @@ internal float3 shadeSceneDirectSurfaceRadiance<TProgram : ISceneSurfaceMaterial
     let shaded = shadeEvaluatedSurface(evaluated, viewDirection, TransportMode.Radiance, sampling, lights);
     let prepared = shaded.prepared;
     float3 radiance = shaded.radiance;
-    if (useRectLights && (push.debugFlags & kOpenPBRDebugDisableDirectLighting) == 0u) {
-        radiance += evaluateRectLights(hit.position, hit.normal, viewDirection, summary.diffuseColor,
-            summary.specularReflectance, summary.roughness);
-    }
 #if METALLIC_REALTIME_DEFERRED
     if (push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
 #if METALLIC_CUSTOM_MATERIALS

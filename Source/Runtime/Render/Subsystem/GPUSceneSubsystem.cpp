@@ -982,6 +982,12 @@ Result<> GPUSceneSubsystem::beginFrame(
         ? sourceOverrideRevision_
         : (world_ != nullptr ? world_->sceneContentRevision() : 0);
     const auto resolvedLighting = resolveSceneLighting(currentScene, world_);
+    auto packedRectLights = buildRectLightRecords(resolvedLighting.rectLights);
+    if (!packedRectLights) {
+        log = "GPUScene could not pack rectangular lights";
+        return makeError(packedRectLights.error());
+    }
+    rectLights_ = std::move(*packedRectLights);
     const auto virtualLights = std::span<const scene::PunctualLight>(resolvedLighting.lights);
     const uint64_t previousLightRevision = scene_.drawSet().lightRevision;
     const auto publishLightChanges = [&]() {
@@ -1537,6 +1543,7 @@ void GPUSceneSubsystem::shutdown()
     pendingPublication_.reset();
     scene_.invalidateGpuResources();
     lightGrids_.clear();
+    rectLights_.clear();
     viewGpuResources_.clear();
     gpuResources_.reset();
     scene_.shutdown();
@@ -1569,7 +1576,7 @@ Result<> GPUSceneSubsystem::recordLightGrid(CommandBuffer& commandBuffer, GPUSce
     auto& grids = lightGrids_[viewResourceKey(view)];
     grids.resize(slots);
     if (grids[frameSlot] == nullptr) { grids[frameSlot] = std::make_shared<ClusterLightGrid>(); }
-    return grids[frameSlot]->record(*device_, commandBuffer, *host_, scene_, view, frameSlot, desc, log);
+    return grids[frameSlot]->record(*device_, commandBuffer, *host_, scene_, view, frameSlot, desc, log, rectLights_);
 }
 
 const ClusterLightGridSnapshot* GPUSceneSubsystem::lightGrid(GPUSceneViewId view, uint32_t frameSlot) const

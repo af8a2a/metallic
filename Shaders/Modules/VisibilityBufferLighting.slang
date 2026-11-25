@@ -18,7 +18,7 @@ import OpenPBRClosure;
 import OpenPBRMaterialParameters;
 import SurfaceLighting;
 import VirtualShadowMapCommon;
-import RectLightLTC;
+import ClusteredSurfaceLighting;
 #include "../../Source/Runtime/Render/Shadow/VirtualShadowMapLights.h"
 using Metallic.SceneOpenPBR;
 using Metallic.SceneSurface;
@@ -105,13 +105,6 @@ float deferredPrecisionRoundTrip(float x, bool useFP16Precision)
 #define gEnvironmentIrradianceSH resolveBuffer<StructuredBuffer<float4>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneEnvironmentIrradianceSHOffset))
 
 
-#define gDeferredGridParams resolveBuffer<StructuredBuffer<ClusterLightGridParams>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneLightGridParamsOffset))
-#define gDeferredGridLights resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneLightGridLightsOffset))
-#define gDeferredGridCandidates resolveBuffer<StructuredBuffer<uint>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneLightGridCandidatesOffset))
-#define gDeferredGridCells resolveBuffer<StructuredBuffer<ClusterLightGridCell>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneLightGridCellsOffset))
-#define gDeferredGridIndices resolveBuffer<StructuredBuffer<uint>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneLightGridIndicesOffset))
-
-
 #define gRealtimeShadow resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float>>>(kSceneShadowVisibilityOffset))
 #define gRealtimeShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneShadowParametersOffset))
 #define gRealtimeMoonShadow resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float>>>(kSceneMoonShadowVisibilityOffset))
@@ -151,41 +144,13 @@ public float3 environmentDiffuseIrradiance(float3 normal, ScenePathTracePush pus
     return max(irradiance, float3(0.0)) * push.environmentIntensity;
 }
 
-public struct VisibilitySurfaceLights : ISurfaceLightProvider
+public struct RasterLightVisibility : IClusteredLightVisibility
 {
     public uint debugFlags;
     public float3 position;
     public float2 pixel;
-    public uint globalLightCount;
-    public uint globalLightCandidateOffset;
-    public ClusterLightGridLookup lookup;
-    public uint count()
-    {
-        return (debugFlags & kOpenPBRDebugDisableDirectLighting) != 0u
-            ? 0u : kCelestialLightCount + lookup.count + globalLightCount;
-    }
-    public SurfaceLightSample sample(uint index)
-    {
-        SurfaceLightSample result;
-        PunctualLightSample light;
-        if (index < kCelestialLightCount) {
-            result.source = celestialSourceIdentity(index);
-            light = sampleCelestialLightAtPosition(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
-                getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneEnvironmentOffset)), index, position);
-        } else {
-            index -= kCelestialLightCount;
-            result.source = index < lookup.count
-                ? clusterLightGridLocalLightIndex(lookup, gDeferredGridIndices, gDeferredGridCandidates, index)
-                : (index - lookup.count < globalLightCount ? gDeferredGridCandidates[globalLightCandidateOffset + (index - lookup.count)] : kClusterLightGridInvalidIndex);
-            light = samplePunctualLightData(gDeferredGridLights[result.source], position);
-        }
-        result.direction = light.direction;
-        result.illuminance = light.illuminance;
-        result.distance = light.distance;
-        result.inverseSourcePdf = any(light.illuminance > 0.0) ? 1.0 : 0.0;
-        return result;
-    }
-    public float3 visibility(SurfaceLightSample light)
+
+    public float3 evaluate(SurfaceLightSample light)
     {
         if ((debugFlags & kOpenPBRDebugDisableShadows) != 0u) { return float3(1); }
         let tableHandle = getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneVirtualShadowLightsOffset);
@@ -248,35 +213,25 @@ internal float3 shadeSceneVisibilitySurfaceRadiance<TProgram : ISceneSurfaceMate
     }
     if (summary.unlit) { return summary.baseColor; }
     float3 viewDirection = -ray.direction;
-    float3 areaLighting = float3(0.0);
-    if (useRectLights && (push.debugFlags & kOpenPBRDebugDisableDirectLighting) == 0u) {
-        areaLighting = evaluateRectLights(hit.position, hit.normal, viewDirection, summary.diffuseColor,
-            summary.specularReflectance, summary.roughness);
-    }
-    ClusterLightGridParams gridParams = gDeferredGridParams[0];
-    VisibilitySurfaceLights lights;
-    lights.debugFlags = push.debugFlags;
-    lights.position = hit.position;
-    lights.pixel = samplePixel;
-    lights.globalLightCount = clusterLightGridGlobalLightCount(gridParams);
-    lights.globalLightCandidateOffset = gridParams.counts.x;
-    lights.lookup = gridParams.counts.x > 0u
-        ? clusterLightGridLookup(gridParams, gDeferredGridCells, uint2(samplePixel), cameraLinearDepth(hit.position, push))
-        : (ClusterLightGridLookup)0;
+    RasterLightVisibility visibility;
+    visibility.debugFlags = push.debugFlags;
+    visibility.position = hit.position;
+    visibility.pixel = samplePixel;
+    var lights = makeClusteredSurfaceLights(visibility, hit, viewDirection, samplePixel, push, summary, useRectLights);
     SurfaceSamplingContext sampling;
     sampling.throughput = float3(1);
     sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;
     sampling.exteriorIor = OpenPBRVacuumIor;
 #if METALLIC_CUSTOM_MATERIALS
     let shaded = shadeEvaluatedSurface(evaluated, viewDirection, TransportMode.Radiance, sampling, lights);
-    float3 radiance = shaded.radiance + areaLighting;
+    float3 radiance = shaded.radiance;
     if (summary.numericalEnvironment) {
         return radiance + sceneSurfaceEnvironment(shaded.prepared, push) * summary.occlusion;
     }
 #else
     let prepared = evaluated.closure.prepare(viewDirection, TransportMode.Radiance, sampling);
     float3 emission = max(prepared.surfaceEmission(evaluated.emission), float3(0));
-    float3 radiance = integrateDirectLighting(prepared, lights, emission) + areaLighting;
+    float3 radiance = integrateDirectLighting(prepared, lights, emission);
 #endif
     const bool hasEnvironment = push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0;
     const bool isOpaque = (MATERIAL_CLASS >= 1 && MATERIAL_CLASS <= 3) || opaquePrimary || (summary.transmissionWeight <= 0.0);

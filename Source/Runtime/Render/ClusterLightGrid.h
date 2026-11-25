@@ -6,6 +6,7 @@
 
 #include <array>
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace metallic::render {
@@ -29,7 +30,7 @@ struct ClusterLightGridDesc {
 };
 
 // Shared with ClusterLightGridCommon.slang. No exposure or metadata element is
-// prepended to the grid-owned light buffer: every index is a GPUScene source slot.
+// prepended to the grid light buffer. Punctual GPUScene slots come first, then rectangles.
 struct alignas(16) ClusterLightGridParams {
     std::array<uint32_t, 4> grid{}; // x, y, z, tile pixels
     std::array<uint32_t, 4> viewport{}; // width, height, cell capacity, orthographic
@@ -39,7 +40,7 @@ struct alignas(16) ClusterLightGridParams {
     std::array<float, 4> forwardExtent{}; // forward.xyz, horizontal extent
     // Perspective: log2(depth * B + O) * S. Orthographic: (depth-near)*S.
     std::array<float, 4> zParams{}; // B, O, S, pixel guard band for temporal jitter
-    std::array<uint32_t, 4> counts{}; // bounded local, reserved zero, unbounded local, source slots
+    std::array<uint32_t, 4> counts{}; // clustered local, punctual source slots, unbounded punctual, total source slots
 };
 static_assert(sizeof(ClusterLightGridParams) == 128);
 
@@ -63,7 +64,9 @@ bool clusterLightGridCellIndex(const ClusterLightGridParams& params,
 struct ClusterLightGridSnapshot {
     Buffer* parameters = nullptr;
     Buffer* lights = nullptr;
-    // Bounded locals first, followed by unbounded locals.
+    // Rect payloads share the light and candidate publication lifetime.
+    Buffer* rectLights = nullptr;
+    // Clustered locals first, followed by unbounded punctual lights.
     Buffer* candidates = nullptr;
     Buffer* cells = nullptr;
     Buffer* lightIndices = nullptr;
@@ -75,6 +78,7 @@ struct ClusterLightGridSnapshot {
     uint64_t sourcePrepareCount = 0;
     uint64_t buildRevision = 0;
     uint64_t cellCount() const;
+    uint32_t rectLightCount() const { return params.counts[3] - params.counts[1]; }
     bool valid() const;
 };
 
@@ -85,7 +89,7 @@ public:
     // before resetting the command pool, as required by the underlying RHI.
     Result<> record(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
         const GPUScene& scene, GPUSceneViewId view, uint32_t frameSlot,
-        const ClusterLightGridDesc& desc, std::string& log);
+        const ClusterLightGridDesc& desc, std::string& log, std::span<const GPURectLight> rectLights = {});
     const ClusterLightGridSnapshot* snapshot(const GPUScene& scene) const;
     // The owner must outlive the staged reload. Preparation leaves its current
     // program and snapshot intact; commit invalidates the snapshot, not buffers.

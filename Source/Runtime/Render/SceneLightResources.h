@@ -56,16 +56,7 @@ struct GPURectLight {
 };
 static_assert(sizeof(GPURectLight) == 80);
 
-class SceneRectLightResources {
-public:
-    Result<> update(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
-        std::span<const scene::RectLight> lights);
-    Buffer* buffer() const { return buffer_.get(); }
-
-private:
-    std::vector<GPURectLight> records_;
-    std::shared_ptr<Buffer> buffer_;
-};
+Result<std::vector<GPURectLight>> buildRectLightRecords(std::span<const scene::RectLight> lights);
 
 class SceneLightResources {
 public:

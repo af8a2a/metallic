@@ -1,6 +1,7 @@
 #include "Runtime/Render/Core/MaterialCoverageShader.h"
 #include "StreamRayTracingBindings.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
+#include "Runtime/Render/Subsystem/GPUSceneLightFrustum.h"
 #include "Runtime/Render/Core/ShaderRequests.h"
 #include "Runtime/Render/Core/PathTraceShaderPolicy.h"
 #include "Runtime/Render/Core/ResourceState.h"
@@ -1007,23 +1008,22 @@ public:
                 .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentIrradianceSH), .kind = ComputeResourceBindingKind::StorageBuffer,
             });
             baseBindings.push_back({
-                .binding = METALLIC_DATA_MEMBER(SceneRealtimeResourceParameters, rectLights.lights),
-                .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = sizeof(GPURectLight),
-                .dataAlignment = 16, .optional = true,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, rectLights.lights),
+                .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true,
             });
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, rectLights.matrixLUT),
                 .kind = ComputeResourceBindingKind::SampledImage, .optional = true});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, rectLights.amplitudeLUT),
                 .kind = ComputeResourceBindingKind::SampledImage, .optional = true});
+            for (const auto binding : kLightGridMembers) {
+                baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
+            }
         }
         if (!realtime_) {
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, regirGrid), .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightsPdf), .kind = ComputeResourceBindingKind::SampledImage});
         }
         if (visibilityDeferred_) {
-            for (const auto binding : kLightGridMembers) {
-                baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
-            }
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, view), .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, previousEnvironmentIrradianceSH), .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentSpecularTexture), .kind = ComputeResourceBindingKind::SampledImage, .optional = true});
@@ -1609,11 +1609,6 @@ public:
         Result<> lightResult = lights_.update(*device_, context.commandBuffer(), *context.subsystems(),
             lightScene, resolvedLighting);
         if (!lightResult) { return lightResult; }
-        if (realtime_) {
-            lightResult = rectLights_.update(*device_, context.commandBuffer(), *context.subsystems(),
-                resolvedLighting.rectLights);
-            if (!lightResult) { return lightResult; }
-        }
         if (previousLightRevision != lights_.revision()) {
             resetAccumulation_ = true;
             // Invalidate radiance caches as well as the displayed accumulation.
@@ -1731,7 +1726,7 @@ public:
         TextureView* visibilityDepthView = nullptr;
         TextureView* domainView = nullptr;
         const GPUSceneGlobalBufferViews* deferredViews = nullptr;
-        const ClusterLightGridSnapshot* deferredGrid = nullptr;
+        const ClusterLightGridSnapshot* lightGrid = nullptr;
         const MeshletStreamDeferredGPUResourcesView* deferredStream = nullptr;
         Buffer* deferredFrameInfo = nullptr;
         VisibilityBufferFrameInfo info;
@@ -1788,8 +1783,8 @@ public:
                     lightScene != nullptr ? lightScene->resourceIdentity() : 0);
                 return makeError(Error::InvalidArgument);
             }
-            deferredGrid = gpuScene->lightGrid({info.lightGridViewIndex, info.lightGridViewGeneration}, info.lightGridFrameSlot);
-            if (deferredGrid == nullptr || !deferredGrid->valid()) {
+            lightGrid = gpuScene->lightGrid({info.lightGridViewIndex, info.lightGridViewGeneration}, info.lightGridFrameSlot);
+            if (lightGrid == nullptr || !lightGrid->valid()) {
                 spdlog::error("Deferred lighting requires the current raster view LightGrid");
                 return makeError(Error::InvalidArgument);
             }
@@ -1847,6 +1842,12 @@ public:
             push.jitterOffsetX = diagnosticInfo.jitter[0];
             push.jitterOffsetY = diagnosticInfo.jitter[1];
         }
+        if (realtime_ && !visibilityDeferred_) {
+            profile.next("Build ray-query light grid");
+            auto grid = buildRayQueryLightGrid(context, *lightScene, resolvedLighting, push);
+            if (!grid) { return makeError(grid.error()); }
+            lightGrid = *grid;
+        }
         const ScenePathTraceCameraSnapshot currentCamera = cameraSnapshotFromPush(push);
         const bool previousCameraValid =
             hasPreviousCamera_ &&
@@ -1883,7 +1884,7 @@ public:
                 return result;
             }
         }
-        if (rectLights_.buffer() != nullptr) {
+        if (lightGrid && lightGrid->rectLightCount() != 0) {
             result = rectLTCs_.prepare(*device_, kRectLTCTextures, syncLog);
             if (!result) {
                 spdlog::error("[ScenePathTracePass] Rect Light LTC: {}", syncLog);
@@ -1974,6 +1975,11 @@ public:
             bindings.push_back(ComputeDispatchBinding{
                 .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentIrradianceSH), .buffer = environment.sphericalHarmonicsBuffer,
             });
+            const std::array gridBuffers{lightGrid->parameters, lightGrid->lights, lightGrid->candidates,
+                lightGrid->cells, lightGrid->lightIndices};
+            for (uint32_t i = 0; i < gridBuffers.size(); ++i) {
+                bindings.push_back({.binding = kLightGridMembers[i], .buffer = gridBuffers[i]});
+            }
         }
         if (!realtime_) {
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, regirGrid), .buffer = lights_.reGIRBuffer()});
@@ -2015,11 +2021,6 @@ public:
                 }
                 bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, view), .buffer = context.viewConstantsBuffer()});
                 push.deferredSettings |= kScenePathTraceUseGlobalView;
-            }
-            const std::array<Buffer*, 5> gridBuffers{deferredGrid->parameters, deferredGrid->lights,
-                deferredGrid->candidates, deferredGrid->cells, deferredGrid->lightIndices};
-            for (uint32_t i = 0; i < gridBuffers.size(); ++i) {
-                bindings.push_back({.binding = kLightGridMembers[i], .buffer = gridBuffers[i]});
             }
             {
                 bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, previousEnvironmentIrradianceSH), .buffer = environment.prefilteredSpecularBuffer});
@@ -2136,10 +2137,10 @@ public:
         if (useOpenPBR || realtime_) {
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, openPBRLutSampler), .sampler = &openPBRLutSampler_});
         }
-        if (rectLights_.buffer() != nullptr) {
+        if (lightGrid && lightGrid->rectLightCount() != 0) {
             const auto& ltcViews = rectLTCs_.lut2DViews();
-            bindings.push_back({.binding = METALLIC_DATA_MEMBER(SceneRealtimeResourceParameters, rectLights.lights),
-                .buffer = rectLights_.buffer()});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, rectLights.lights),
+                .buffer = lightGrid->rectLights});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, rectLights.matrixLUT),
                 .textureView = ltcViews[0]});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, rectLights.amplitudeLUT),
@@ -2332,6 +2333,46 @@ public:
     }
 
 private:
+    Result<const ClusterLightGridSnapshot*> buildRayQueryLightGrid(RenderGraphExecutionContext& context,
+        const scene::Scene& scene, const scene::LightingSettings& lighting, const ScenePathTracePush& push)
+    {
+        const auto rectLights = buildRectLightRecords(lighting.rectLights);
+        if (!rectLights) { return makeError(rectLights.error()); }
+        // This pass owns its camera and source. Its view has no geometry DrawSet.
+        rayLightScene_.syncLights(scene.lights(), lighting.lights);
+        if (!rayLightView_.valid()) { rayLightView_ = rayLightScene_.createView(); }
+        const ClusterLightGridDesc desc{
+            .width = push.width,
+            .height = push.height,
+            .eye = {push.eye[0], push.eye[1], push.eye[2]},
+            .center = {push.center[0], push.center[1], push.center[2]},
+            .up = {push.upProjection[0], push.upProjection[1], push.upProjection[2]},
+            .aspect = push.viewport[0],
+            .fovRadians = push.viewport[3],
+            .zNear = push.clipOrtho[0],
+            .zFar = push.clipOrtho[1],
+            .orthoHeight = push.upProjection[3] > 0.5f ? push.clipOrtho[2] : 0.0f,
+            .jitterGuardPixels = push.temporalJitter != 0 ? 1.0f : 0.0f,
+        };
+        const float guardX = 1.0f + 2.0f * desc.jitterGuardPixels / desc.width;
+        const float guardY = 1.0f + 2.0f * desc.jitterGuardPixels / desc.height;
+        if (!rayLightScene_.prepareView(rayLightView_, 0, {
+            .width = desc.width, .height = desc.height,
+            .lightFrustumPlanes = gpuSceneLightFrustumPlanes(desc.eye, desc.center, desc.up,
+                desc.aspect * guardX / guardY, 2.0f * std::atan(std::tan(desc.fovRadians * 0.5f) * guardY),
+                desc.zNear, desc.zFar, desc.orthoHeight * guardY)})) {
+            return makeError(Error::Failure);
+        }
+        std::string log;
+        auto result = rayLightGrid_.record(*device_, context.commandBuffer(), *context.subsystems(),
+            rayLightScene_, rayLightView_, 0, desc, log, *rectLights);
+        if (!result) {
+            spdlog::error("[SceneRealtimeLightingPass] {}", log);
+            return makeError(result.error());
+        }
+        return rayLightGrid_.snapshot(rayLightScene_);
+    }
+
     bool supportsInlineComputeRoot(const RenderGraphProperties& properties) const
     {
         return (visibilityDeferred_ || !realtime_) && !rayPipelineEnabled(properties) &&
@@ -3345,7 +3386,9 @@ private:
     };
     LutResources<kOpenPBRLut2DCount, kOpenPBRLut3DCount> openPBRLuts_;
     LutResources<2, 0> rectLTCs_;
-    SceneRectLightResources rectLights_;
+    GPUScene rayLightScene_;
+    GPUSceneViewId rayLightView_;
+    ClusterLightGrid rayLightGrid_;
     std::array<ComputeKernel, static_cast<size_t>(PathTracePermutation::Count)> programs_;
     ComputeKernel primaryGuidesProgram_;
     RayTracingKernel rayProgram_;

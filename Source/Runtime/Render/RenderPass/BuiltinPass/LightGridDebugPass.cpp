@@ -175,6 +175,7 @@ public:
         // A light-only view runs the production DrawSet coarse collection and
         // ClusterLightGrid GPU builder without replacing the renderer's view or
         // mutating RenderWorld. Bench fixtures cannot leak into scene lighting.
+        std::vector<GPURectLight> rectLights;
         if (stringProperty(props, "source", "world") == "bench") {
             buildBenchLights(props, context.frameIndex());
             gpuScene_.syncLights({}, benchLights_);
@@ -184,6 +185,9 @@ public:
             const auto resolvedLighting = resolveSceneLighting(scene, context.world());
             gpuScene_.syncLights(scene != nullptr ? std::span<const scene::RenderLight>(scene->lights())
                 : std::span<const scene::RenderLight>{}, resolvedLighting.lights);
+            auto packed = buildRectLightRecords(resolvedLighting.rectLights);
+            if (!packed) { return makeError(packed.error()); }
+            rectLights = std::move(*packed);
         }
         RenderFrameContext* frame = metallic::render::RenderFrameContext::from(context.commandBuffer());
         const uint32_t slot = frame != nullptr ? frame->slotIndex() : 0u;
@@ -194,7 +198,7 @@ public:
             return makeError(Error::InvalidArgument);
         }
         result = grids_[slot]->record(*device_, context.commandBuffer(), *context.subsystems(),
-            gpuScene_, view_, slot, desc, log);
+            gpuScene_, view_, slot, desc, log, rectLights);
         if (!result) {
             spdlog::error("[LightGridDebugPass] {}", log);
             return result;

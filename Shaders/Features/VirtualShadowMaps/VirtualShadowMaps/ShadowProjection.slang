@@ -355,11 +355,13 @@ uint2 vsmGridLocalLightMask(uint2 pixel, float linearDepth, bool valid,
     StructuredBuffer<uint> candidates = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(context.candidates));
     ClusterLightGridLookup lookup = clusterLightGridLookup(grid, cells, pixel, linearDepth);
     fallback = lookup.fallback;
-    candidatesCount = lookup.count + clusterLightGridGlobalLightCount(grid);
-    for (uint i = 0u; i < candidatesCount; ++i) {
+    uint count = lookup.count + clusterLightGridGlobalLightCount(grid);
+    for (uint i = 0u; i < count; ++i) {
         uint source = i < lookup.count ? clusterLightGridLocalLightIndex(lookup, indices, candidates, i) :
             clusterLightGridGlobalLightIndex(grid, candidates, i - lookup.count);
-        // The producer bounds this source domain to 62 local lights plus Sun/Moon.
+        // Only punctual source slots map to VSM jobs (up to 62 plus Sun/Moon).
+        if (source >= grid.counts.y) { continue; }
+        ++candidatesCount;
         mask[source >> 5u] |= 1u << (source & 31u);
     }
     return mask & uint2(context.admittedLow, context.admittedHigh);

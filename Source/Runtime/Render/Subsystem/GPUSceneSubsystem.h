@@ -347,6 +347,7 @@ private:
     };
     std::unordered_map<uint64_t, ShadowGeometrySnapshot> shadowGeometry_;
     std::unordered_map<uint64_t, std::vector<std::shared_ptr<ClusterLightGrid>>> lightGrids_;
+    std::vector<GPURectLight> rectLights_;
     uint64_t nextViewGpuResourceAllocationId_ = 1;
     GPUSceneGPUUploadStats gpuUploadStats_;
     PendingUpload pendingUpload_ = PendingUpload::Full;

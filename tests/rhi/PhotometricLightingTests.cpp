@@ -412,10 +412,16 @@ public:
         light.luminance = 2.0f;
         light.width = 2.0f;
         light.height = 0.6f;
+        auto& point = settings.lights.emplace_back();
+        point.position = float3(-0.5f, 0.0f, 1.5f);
+        point.properties.intensity = 0.2;
+        point.properties.range = 6.0;
         for (const char* output : {"RayQuery.color", "Deferred.color"}) {
             light.enabled = true;
             light.width = 2.0f;
             light.direction = float3(0, 0, -1);
+            light.range = 0.0f;
+            point.enabled = false;
             if (!preview.setLighting(settings)) { return RHITestResult::fail("Rect Light settings rejected"); }
             const auto capture = [&]() {
                 return preview.render(graph, kSize, kSize, output) &&
@@ -436,19 +442,29 @@ public:
                 reinterpret_cast<const uint8_t*>(preview.pixels().data()), kSize, kSize, log)) {
                 return RHITestResult::fail(log);
             }
-            light.width = 0.2f;
+            point.enabled = true;
             if (!preview.setLighting(settings) || !capture() || lit == preview.readbackBytes()) {
+                return RHITestResult::fail(std::string(output) + " missing point contribution with Rect Light active");
+            }
+            const auto mixed = preview.readbackBytes();
+            light.width = 0.2f;
+            if (!preview.setLighting(settings) || !capture() || mixed == preview.readbackBytes()) {
                 return RHITestResult::fail(std::string(output) + " width edit did not reach shading " + preview.lastLog());
             }
             light.direction = float3(0, 0, 1);
             if (!preview.setLighting(settings) || !capture()) { return RHITestResult::fail(preview.lastLog()); }
             const auto back = preview.readbackBytes();
+            light.direction = float3(0, 0, -1);
+            light.range = 1.0f;
+            if (!preview.setLighting(settings) || !capture() || back != preview.readbackBytes()) {
+                return RHITestResult::fail(std::string(output) + " Rect Light extends beyond its range");
+            }
             light.enabled = false;
-            if (!preview.setLighting(settings) || !capture() || back != preview.readbackBytes() || back == lit) {
+            if (!preview.setLighting(settings) || !capture() || back != preview.readbackBytes() || back == mixed) {
                 return RHITestResult::fail(std::string(output) + " back side and disabled light disagree");
             }
         }
-        return RHITestResult::pass("LTC rectangle lights diffuse and metallic receivers in ray-query and raster deferred shading");
+        return RHITestResult::pass("LTC and punctual grid lighting with live Rect Light edits in ray-query and raster deferred shading");
     }
 };
 

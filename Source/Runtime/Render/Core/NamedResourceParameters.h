@@ -309,7 +309,7 @@ DR_SCENE_OFFSET(kSceneOutputOffset, output, 200);
 
 DR_PUBLIC struct RectLightResourceParameters
 {
-    DR_PUBLIC DR_SPAN lights;
+    DR_PUBLIC DR_BUFFER lights;
     DR_PUBLIC DR_SAMPLED(2D<float4>) matrixLUT;
     DR_PUBLIC DR_SAMPLED(2D<float4>) amplitudeLUT;
 };
@@ -323,8 +323,8 @@ DR_PUBLIC struct SceneRealtimeResourceParameters
 inline constexpr uint32_t kSceneRectLightsOffset = 416;
 static_assert(offsetof(SceneRealtimeResourceParameters, scene) == 0);
 static_assert(offsetof(SceneRealtimeResourceParameters, rectLights) == kSceneRectLightsOffset);
-static_assert(sizeof(RectLightResourceParameters) == 20);
-static_assert(sizeof(SceneRealtimeResourceParameters) == 440);
+static_assert(sizeof(RectLightResourceParameters) == 12);
+static_assert(sizeof(SceneRealtimeResourceParameters) == 432);
 #else
 public static const uint kSceneRectLightsOffset = 416;
 #endif

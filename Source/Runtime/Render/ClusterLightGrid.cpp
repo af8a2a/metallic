@@ -16,6 +16,7 @@ namespace metallic::render {
 namespace {
 
 constexpr uint64_t kMaxGridBytes = 256ull * 1024 * 1024;
+constexpr float kClusterLightKindRect = 3.0f;
 
 bool finiteVector(const float3& value)
 {
@@ -163,14 +164,15 @@ uint64_t ClusterLightGridSnapshot::cellCount() const
 
 bool ClusterLightGridSnapshot::valid() const
 {
-    return parameters != nullptr && lights != nullptr && candidates != nullptr &&
+    return parameters != nullptr && lights != nullptr && (rectLightCount() == 0 || rectLights != nullptr) &&
+        candidates != nullptr &&
         cells != nullptr && lightIndices != nullptr && sourceView.valid() &&
         sourceLightGeneration != 0 && sourceLightRevision != 0 && sourcePrepareCount != 0 &&
         buildRevision != 0 && cellCount() != 0;
 }
 
 struct ClusterLightGrid::Resources {
-    std::array<std::shared_ptr<Buffer>, 5> buffers;
+    std::array<std::shared_ptr<Buffer>, 6> buffers;
     GPUCompletionPoint completion;
     bool cancelled = false;
 };
@@ -217,7 +219,7 @@ private:
 
 Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
     const GPUScene& scene, GPUSceneViewId view, uint32_t frameSlot,
-    const ClusterLightGridDesc& desc, std::string& log)
+    const ClusterLightGridDesc& desc, std::string& log, std::span<const GPURectLight> rectLights)
 {
     RenderFrameContext* frame = metallic::render::RenderFrameContext::from(commands);
     if (frame != nullptr && !frame->recording()) {
@@ -238,25 +240,36 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
     ClusterLightGridParams params;
     Result<> result = buildClusterLightGridParams(desc, log).transform([&](auto value) { params = std::move(value); });
     if (!result) { return result; }
-    if (scene.lights().size() > UINT32_MAX ||
-        scene.lights().size() * sizeof(GPUPunctualLight) > kMaxGridBytes) {
+    const size_t punctualSlotCount = scene.lights().size();
+    const size_t gridSlotCount = punctualSlotCount + rectLights.size();
+    if (gridSlotCount * sizeof(GPUPunctualLight) + rectLights.size_bytes() > kMaxGridBytes) {
         log = "ClusterLightGrid source light upload exceeds its buffer budget";
         return makeError(Error::InvalidArgument);
     }
-    params.counts = {static_cast<uint32_t>(visibleLights->localLights.size()),
-        0u,
+    params.counts = {static_cast<uint32_t>(visibleLights->localLights.size() + rectLights.size()),
+        static_cast<uint32_t>(punctualSlotCount),
         static_cast<uint32_t>(visibleLights->unboundedLocalLights.size()),
-        static_cast<uint32_t>(scene.lights().size())};
+        static_cast<uint32_t>(gridSlotCount)};
     std::vector<GPUPunctualLight> lightData;
-    lightData.reserve(std::max(scene.lights().size(), size_t(1)));
+    lightData.reserve(std::max(gridSlotCount, size_t(1)));
     for (const auto& record : scene.lights()) { lightData.push_back(record.source.gpu); }
-    if (lightData.empty()) { lightData.emplace_back(); }
     std::vector<uint32_t> candidates;
+    candidates.reserve(std::max(size_t(params.counts[0]) + params.counts[2], size_t(1)));
     const auto append = [&](std::span<const GPUSceneLightId> ids) {
         for (auto id : ids) { candidates.push_back(id.index); }
     };
     append(visibleLights->localLights);
+    // Rect sources use the common position/range and direction/type fields for culling.
+    // Infinite-range rects still have an emission half-space to test per cell.
+    for (const auto& rect : rectLights) {
+        candidates.push_back(static_cast<uint32_t>(lightData.size()));
+        lightData.push_back({
+            .positionRange = {rect.positionRange[0], rect.positionRange[1], rect.positionRange[2], rect.positionRange[3]},
+            .directionType = {rect.direction[0], rect.direction[1], rect.direction[2], kClusterLightKindRect},
+        });
+    }
     append(visibleLights->unboundedLocalLights);
+    if (lightData.empty()) { lightData.emplace_back(); }
     if (candidates.empty()) { candidates.push_back(0); }
 
     if (programSpirv_.empty()) {
@@ -268,16 +281,19 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
         if (!result) { return result; }
     }
     const uint64_t cellCount = uint64_t(params.grid[0]) * params.grid[1] * params.grid[2];
-    const std::array<uint64_t, 5> sizes{sizeof(params), lightData.size() * sizeof(GPUPunctualLight),
+    const std::array<uint64_t, 6> sizes{sizeof(params), lightData.size() * sizeof(GPUPunctualLight),
         candidates.size() * sizeof(uint32_t), cellCount * sizeof(ClusterLightGridCell),
-        cellCount * desc.maxLightsPerCell * sizeof(uint32_t)};
+        cellCount * desc.maxLightsPerCell * sizeof(uint32_t), rectLights.size_bytes()};
+    const std::array<const void*, 6> uploads{&params, lightData.data(), candidates.data(),
+        nullptr, nullptr, rectLights.data()};
     // In overlapped recording the newest snapshot is normally still in flight.
     // Reuse an older completed slot instead of allocating a whole grid per frame.
     const auto reusable = [&](const std::shared_ptr<Resources>& candidate) {
         if (!frame || !candidate || candidate->cancelled || !candidate->completion.valid() ||
             !candidate->completion.isComplete()) { return false; }
         for (size_t index = 0; index < sizes.size(); ++index) {
-            if (candidate->buffers[index]->desc().size < sizes[index]) { return false; }
+            if (sizes[index] != 0 && (!candidate->buffers[index] ||
+                candidate->buffers[index]->desc().size < sizes[index])) { return false; }
         }
         return true;
     };
@@ -289,19 +305,19 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
     const bool reuse = next != nullptr;
     if (!next) { next = std::make_shared<Resources>(); }
     for (size_t index = 0; index < sizes.size(); ++index) {
+        if (sizes[index] == 0) { continue; }
+        const void* data = uploads[index];
         if (!reuse) {
             std::unique_ptr<Buffer> buffer;
             result = device.createBuffer({.size = sizes[index],
                 .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
-                .memoryLocation = index < 3 ? MemoryLocation::HostUpload : MemoryLocation::Device}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
+                .memoryLocation = data != nullptr ? MemoryLocation::HostUpload : MemoryLocation::Device}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
             if (!result) { log = "ClusterLightGrid buffer allocation failed"; return result; }
             next->buffers[index] = std::move(buffer);
         }
-        if (index < 3) {
+        if (data != nullptr) {
             void* mapped = next->buffers[index]->map();
             if (mapped == nullptr) { log = "ClusterLightGrid upload mapping failed"; return makeError(Error::Failure); }
-            const void* data = index == 0 ? static_cast<const void*>(&params)
-                : index == 1 ? static_cast<const void*>(lightData.data()) : static_cast<const void*>(candidates.data());
             std::memcpy(mapped, data, static_cast<size_t>(sizes[index]));
             next->buffers[index]->flush({0, sizes[index]});
             next->buffers[index]->unmap();
@@ -369,6 +385,7 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
     resources_ = std::move(next);
     publication_ = std::move(publication);
     snapshot_ = {.parameters = resources_->buffers[0].get(), .lights = resources_->buffers[1].get(),
+        .rectLights = rectLights.empty() ? nullptr : resources_->buffers[5].get(),
         .candidates = resources_->buffers[2].get(), .cells = resources_->buffers[3].get(),
         .lightIndices = resources_->buffers[4].get(), .params = params, .sourceView = view, .frameSlot = frameSlot,
         .sourceLightGeneration = scene.drawSet().lightGeneration,

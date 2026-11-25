@@ -103,7 +103,8 @@ public:
     }
 
     RHITestResult record(render::ClusterLightGrid& grid, render::GPUScene& scene,
-        render::GPUSceneViewId view, uint32_t slot, const render::ClusterLightGridDesc& desc)
+        render::GPUSceneViewId view, uint32_t slot, const render::ClusterLightGridDesc& desc,
+        std::span<const render::GPURectLight> rectLights = {})
     {
         GRID_CHECK(slot < frames_.size());
         GRID_CHECK(scene.prepareView(view, slot, {.width = desc.width, .height = desc.height}));
@@ -114,7 +115,7 @@ public:
         auto registry = metallic::render::ResourceRegistry::forDevice(*device_);
         GRID_CHECK(registry);
         const auto before = (*registry)->stats();
-        const auto result = grid.record(*device_, *commands_, host_, scene, view, slot, desc, log_);
+        const auto result = grid.record(*device_, *commands_, host_, scene, view, slot, desc, log_, rectLights);
         const auto after = (*registry)->stats();
         // Five full-allocation DR views are registered or reused; values stay inline.
         GRID_CHECK((after.descriptorWrites - before.descriptorWrites) +
@@ -130,9 +131,10 @@ public:
 
     RHITestResult run(render::ClusterLightGrid& grid, render::GPUScene& scene,
         render::GPUSceneViewId view, uint32_t slot,
-        const render::ClusterLightGridDesc& desc, GridReadback& output)
+        const render::ClusterLightGridDesc& desc, GridReadback& output,
+        std::span<const render::GPURectLight> rectLights = {})
     {
-        auto result = record(grid, scene, view, slot, desc);
+        auto result = record(grid, scene, view, slot, desc, rectLights);
         if (!result.passed) { return result; }
         output.snapshot = *grid.snapshot(scene);
         const uint64_t cellBytes = output.snapshot.cellCount() * sizeof(render::ClusterLightGridCell);
@@ -278,6 +280,11 @@ public:
             if (fallback) {
                 for (const auto id : visible->localLights) { expectedMask |= 1u << id.index; }
                 expectedCount = static_cast<uint32_t>(visible->localLights.size());
+                for (uint32_t id = static_cast<uint32_t>(scene.lights().size());
+                    id < scene.lights().size() + rectLights.size(); ++id) {
+                    expectedMask |= 1u << id;
+                    ++expectedCount;
+                }
             } else {
                 for (const auto id : output.cellLights(cell)) { expectedMask |= 1u << id; }
                 expectedCount = output.cells[cell].count;
@@ -484,7 +491,7 @@ public:
         GridReadback data;
         result = harness.run(grid, scene, view, 0, desc, data);
         if (!result.passed) { return result; }
-        GRID_CHECK((data.snapshot.params.counts == std::array<uint32_t, 4>{3, 0, 2, 6}));
+        GRID_CHECK((data.snapshot.params.counts == std::array<uint32_t, 4>{3, 6, 2, 6}));
         GRID_CHECK(data.cells.size() == 16);
         for (uint32_t index = 0; index < 16; ++index) {
             const std::vector<uint32_t> expected = index == 8 ? std::vector<uint32_t>{3}
@@ -515,7 +522,7 @@ public:
         desc.zFar = 17.0f;
         result = harness.run(grid, scene, view, 0, desc, data);
         if (!result.passed) { return result; }
-        GRID_CHECK((data.snapshot.params.counts == std::array<uint32_t, 4>{3, 0, 0, 4}));
+        GRID_CHECK((data.snapshot.params.counts == std::array<uint32_t, 4>{3, 4, 0, 4}));
         GRID_CHECK(data.cellLights(5) == std::vector<uint32_t>({1, 3}));
         GRID_CHECK(scene.prepareView(view, 0, {.width = desc.width, .height = desc.height}));
         GRID_CHECK(grid.snapshot(scene) == nullptr);
@@ -533,6 +540,72 @@ public:
         if (!result.passed) { return result; }
         GRID_CHECK(data.cells[0].count == 1);
         return RHITestResult::pass("GPU light intersections, stable source slots, globals, camera invalidation and temporal jitter guard bands");
+    }
+};
+
+class ClusterLightGridRectCullTest final : public RHITest {
+public:
+    ClusterLightGridRectCullTest()
+    {
+        type = RHITestType::Command;
+        name = "cluster_light_grid_rect_culling";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        GridHarness harness(context);
+        auto result = harness.initialize();
+        if (!result.passed) { return result; }
+        render::GPUScene scene;
+        const auto view = scene.createView();
+        render::ClusterLightGrid grid;
+        auto desc = gridDesc();
+        desc.width = desc.height = 64;
+        desc.orthoHeight = 8.0f;
+        desc.zFar = 17.0f;
+        std::array lights{
+            makeGridLight("point", float3(0, 0, -10), 0.25),
+            makeGridLight("point", float3(0, 0, -10), 0.25),
+            makeGridLight("point", float3(0, 0, -10), 0.0),
+        };
+        lights[0].enabled = false;
+        GRID_CHECK(scene.syncLights({}, lights));
+        std::array<scene::RectLight, 3> rects{
+            scene::RectLight{.position = {0, 0, -6}, .direction = {0, 0, -1}},
+            scene::RectLight{.position = {0, 0, -6}, .direction = {0, 0, 1}, .range = 0.25f},
+            scene::RectLight{.position = {20, 0, -6}, .direction = {0, 0, -1}, .width = 100.0f, .range = 0.25f},
+        };
+        const auto rectRecords = render::buildRectLightRecords(rects);
+        GRID_CHECK(rectRecords);
+        GridReadback data;
+        result = harness.run(grid, scene, view, 0, desc, data, *rectRecords);
+        if (!result.passed) { return result; }
+        GRID_CHECK((data.snapshot.params.counts == std::array<uint32_t, 4>{4, 3, 1, 6}));
+        GRID_CHECK(data.snapshot.rectLights != nullptr && data.snapshot.rectLightCount() == 3);
+        GRID_CHECK(data.cellLights(0).empty());
+        GRID_CHECK(data.cellLights(1) == std::vector<uint32_t>({3, 4}));
+        GRID_CHECK(data.cellLights(2) == std::vector<uint32_t>({1, 3}));
+        GRID_CHECK(data.cellLights(3) == std::vector<uint32_t>{3});
+
+        desc.maxLightsPerCell = 1;
+        result = harness.run(grid, scene, view, 0, desc, data, *rectRecords);
+        if (!result.passed) { return result; }
+        GRID_CHECK(data.cells[2].overflow == 1u);
+        GRID_CHECK(data.lookup[2][0] == 1u && data.lookup[2][2] == 0x3au);
+        GRID_CHECK(data.lookup[8][0] == 1u && data.lookup[8][1] == (1u << 2u));
+
+        rects[0].direction = float3(0, 0, 1);
+        rects[1].enabled = false;
+        const auto editedRects = render::buildRectLightRecords(rects);
+        GRID_CHECK(editedRects);
+        result = harness.run(grid, scene, view, 0, desc, data, *editedRects);
+        if (!result.passed) { return result; }
+        GRID_CHECK(data.snapshot.rectLightCount() == 2);
+        GRID_CHECK(data.cellLights(0) == std::vector<uint32_t>{3});
+        GRID_CHECK(data.cellLights(1) == std::vector<uint32_t>{3});
+        GRID_CHECK(data.cellLights(2) == std::vector<uint32_t>{1});
+        GRID_CHECK(data.cellLights(3).empty());
+        return RHITestResult::pass("Mixed punctual and Rect Lights preserve source slots, half-space and range culling, and overflow fallback");
     }
 };
 
@@ -570,7 +643,7 @@ public:
         GridReadback firstData, slotData, viewData;
         result = harness.run(first, scene, view, 0, desc, firstData);
         if (!result.passed) { return result; }
-        GRID_CHECK((firstData.snapshot.params.counts == std::array<uint32_t, 4>{5, 0, 2, 7}));
+        GRID_CHECK((firstData.snapshot.params.counts == std::array<uint32_t, 4>{5, 7, 2, 7}));
         GRID_CHECK(firstData.cells[0].count == 2 && firstData.cells[0].totalCount == 5 && firstData.cells[0].overflow == 1);
         const auto stored = firstData.cellLights(0);
         GRID_CHECK(stored.size() == 2 && stored[0] < stored[1] && stored[1] < 5);
@@ -631,6 +704,7 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(ClusterLightGridLayoutTest);
 METALLIC_REGISTER_RHI_TEST(ClusterLightGridGPUCullTest);
+METALLIC_REGISTER_RHI_TEST(ClusterLightGridRectCullTest);
 METALLIC_REGISTER_RHI_TEST(ClusterLightGridGPULifecycleTest);
 
 #undef GRID_CHECK

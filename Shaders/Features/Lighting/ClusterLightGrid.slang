@@ -80,10 +80,20 @@ bool clusterLightGridOverlaps(
     float tolerance = 1e-5 * max(1.0, max(range,
         max(max(abs(delta.x), abs(delta.y)), max(abs(delta.z), max(bounds.extent.x,
             max(bounds.extent.y, bounds.extent.z))))));
-    float3 distance = max(abs(delta) - bounds.extent, 0.0);
-    float expandedRange = range + tolerance;
-    if (dot(distance, distance) > expandedRange * expandedRange) {
-        return false;
+    if (range > 0.0) {
+        float3 distance = max(abs(delta) - bounds.extent, 0.0);
+        float expandedRange = range + tolerance;
+        if (dot(distance, distance) > expandedRange * expandedRange) {
+            return false;
+        }
+    }
+
+    if (light.directionType.w == kClusterLightKindRect) {
+        // The center-range sphere and emission half-space bound all receivers,
+        // independent of the emitting rectangle's dimensions and roll.
+        float3 axis = clusterLightGridToViewVector(params, light.directionType.xyz);
+        float planeMaximum = dot(delta, axis) + dot(abs(axis), bounds.extent);
+        return !(planeMaximum < -tolerance);
     }
 
     // Unreal's conservative cone/AABB separating-plane refinement. The range
@@ -134,7 +144,7 @@ void clusterLightGridMain(uint3 groupId : SV_GroupID, uint threadIndex : SV_Grou
     ClusterCellBounds bounds;
     bounds.center = gClusterCellCenter;
     bounds.extent = gClusterCellExtent;
-    // Candidates are current source slots from GPUScene::visibleLights.
+    // Candidates combine current punctual source slots and active rects.
     for (uint index = threadIndex; index < params.counts.x; index += kClusterLightGridThreadCount) {
         uint sourceIndex = gClusterCandidates[index];
         if (clusterLightGridOverlaps(params, bounds, gClusterLights[sourceIndex])) {

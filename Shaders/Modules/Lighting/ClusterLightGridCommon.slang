@@ -14,11 +14,11 @@ public struct ClusterLightGridParams
     public float4 upExtent;
     public float4 forwardExtent;
     public float4 zParams;
-    public uint4 counts;
+    public uint4 counts; // clustered local, punctual source slots, unbounded punctual, total source slots
 };
 
-// Same 64-byte physical-light ABI as GPUPunctualLight. The grid's light buffer is
-// indexed by stable source slot and does not contain a metadata element at zero.
+// The common 64-byte record retains punctual GPUScene slots at the start.
+// Rectangular lights append culling records in their payload order.
 public struct ClusterLightData
 {
     public float4 positionRange;
@@ -36,6 +36,7 @@ public struct ClusterLightGridCell
 };
 
 public static const uint kClusterLightGridInvalidIndex = 0xffffffffu;
+public static const float kClusterLightKindRect = 3.0;
 
 public float clusterLightGridSliceDepth(ClusterLightGridParams params, uint slice)
 {
@@ -84,8 +85,8 @@ public struct ClusterLightGridLookup
 };
 
 // The last finite slice is not stretched to an arbitrary world maximum. Shading
-// outside the covered frustum/depth range instead uses all bounded candidates.
-// Capacity overflow follows the same path, so a crowded cell cannot lose lights.
+// outside the covered frustum/depth range instead uses all clustered candidates.
+// Overflow follows the same path, including unbounded rects with an emission plane.
 public ClusterLightGridLookup clusterLightGridLookup(
     ClusterLightGridParams params,
     StructuredBuffer<ClusterLightGridCell> cells,
@@ -126,8 +127,8 @@ public uint clusterLightGridGlobalLightCount(ClusterLightGridParams params)
     return params.counts.z;
 }
 
-// Unbounded local lights are outside cell lists and are evaluated once alongside
-// the bounded-local lookup. Celestial sources belong to a separate fixed domain.
+// Unbounded punctual lights sit outside cell lists and are evaluated once alongside
+// clustered locals. Celestial sources belong to a separate fixed domain.
 public uint clusterLightGridGlobalLightIndex(
     ClusterLightGridParams params, StructuredBuffer<uint> candidates, uint index)
 {
