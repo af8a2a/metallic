@@ -13,6 +13,7 @@
 #include "Runtime/Render/Shadow/VirtualShadowMaps.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapResolution.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/SceneDocument.h"
@@ -2963,10 +2964,19 @@ public:
                     require(diagnostic[1] == 1 && diagnostic[2] == previous.requested && diagnostic[3] == capacity &&
                         std::bit_cast<float>(diagnostic[4]) == previous.bias,
                         phase + ": feedback does not describe the completed allocation at its recording bias");
-                    const float ratio = float(previous.requested) / (capacity * .85f);
-                    const float target = std::max(0.f, previous.bias + std::log2(ratio));
-                    const float rate = ratio > 1 ? .5f : (frame.lowSamples > 10 ? .1f : 0.f);
-                    const float expected = std::min(2.f, previous.bias + rate * (target - previous.bias));
+                    const float load = float(previous.requested) / float(capacity);
+                    const float targetLoad = .85f * VirtualShadowMapResolutionController::kRecoveryLoadScale;
+                    float target = load > 0 ? std::max(0.f, previous.bias + std::log2(load / targetLoad)) : 0.f;
+                    float expected = previous.bias;
+                    if (load > .85f) {
+                        target = std::max(previous.bias, target);
+                        expected = std::lerp(previous.bias, target, .5f);
+                    } else if (load <= targetLoad && frame.lowSamples > 10) {
+                        target = std::min(previous.bias, target);
+                        const float next = std::lerp(previous.bias, target, .1f);
+                        expected = std::abs(next - target) < VirtualShadowMapResolutionController::kBiasSnapEpsilon ? target : next;
+                    }
+                    expected = std::clamp(expected, 0.f, 2.f);
                     require(std::abs(frame.bias - expected) < 1e-5f, phase + ": applied bias differs from the pressure response");
                 } else {
                     require(diagnostic[1] == 0, phase + ": cold or disabled controller consumed a sample");

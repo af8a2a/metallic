@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <span>
 #include <stdexcept>
 
 namespace metallic::tests {
@@ -103,14 +104,19 @@ struct PlaneImages
             .transform([&](auto b) { readback = std::move(b); }), "Temporal readback");
     }
 
-    void upload(CommandBuffer& commands, const std::array<uint8_t, kLayers>& raw)
+    void upload(CommandBuffer& commands, const std::array<uint8_t, kLayers>& raw,
+        uint32_t varyingLayer = kLayers, std::span<const uint8_t> varyingValues = {})
     {
         auto* z = static_cast<float*>(depthUpload->map()); check(z != nullptr, "Map temporal depth");
         // The orthographic camera stays at z=4, with near=.01 and far=10.
         std::fill_n(z, pixels, (10.f - (4.f - planeZ)) / (10.f - .01f));
         depthUpload->flush(); depthUpload->unmap();
         auto* values = static_cast<uint8_t*>(shadowUpload->map()); check(values != nullptr, "Map temporal input");
-        for (uint32_t layer = 0; layer < kLayers; ++layer) { std::fill_n(values + layer * layerStride, pixels, raw[layer]); }
+        for (uint32_t layer = 0; layer < kLayers; ++layer) {
+            auto* destination = values + layer * layerStride;
+            if (layer == varyingLayer) { std::copy(varyingValues.begin(), varyingValues.end(), destination); }
+            else { std::fill_n(destination, pixels, raw[layer]); }
+        }
         shadowUpload->flush(); shadowUpload->unmap();
         const TextureBarrierDesc before[]{
             {.texture = depth.get(), .oldLayout = initialized ? TextureLayout::ShaderRead : TextureLayout::Undefined,
@@ -376,12 +382,14 @@ public:
             settings.resolutionLodBias = 1;
             (void)uniform("MovingResolutionRejectsHistory", 55, 255, 1, 0);
             (void)uniform("MovingResolutionAccumulates", 56, 0, .5);
+            settings.resolutionLodBias = 1.01f;
+            (void)uniform("MinorResolutionDriftKeepsHistory", 57, 0, 1.0 / 3);
             settings.resolutionLodBias = 0;
-            (void)uniform("RestoredResolutionRejectsCoarseHistory", 57, 0, 0, 0);
-            (void)uniform("RestoredResolutionAccumulates", 58, 255, .5);
+            (void)uniform("RestoredResolutionRejectsCoarseHistory", 58, 0, 0, 0);
+            (void)uniform("RestoredResolutionAccumulates", 59, 255, .5);
             settings.continuousDirectionalBasis = true;
-            (void)uniform("DirectionalBasisChangeRejectsHistory", 59, 255, 1, 0);
-            (void)uniform("StableDirectionalBasisAccumulates", 60, 0, .5);
+            (void)uniform("DirectionalBasisChangeRejectsHistory", 60, 255, 1, 0);
+            (void)uniform("StableDirectionalBasisAccumulates", 61, 0, .5);
 
             // GPU cut changes must reject history even though the CPU caster
             // content key and all temporal settings remain unchanged.
@@ -455,5 +463,93 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapTemporalLifecycleTest);
+
+class VirtualShadowMapTemporalJitterTest final : public RHITest
+{
+public:
+    VirtualShadowMapTemporalJitterTest() { name = "virtual_shadow_map_temporal_jitter"; type = RHITestType::Rendering; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        try {
+            bench::ValidationRecorder validation;
+            auto created = createDevice({.applicationName = "VSM temporal jitter",
+                .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
+                .enableBindlessDescriptorHeap = true, .enableMeshShader = true,
+                .enableRayTracingAccelerationStructure = false, .enableRayQuery = false,
+                .enableRayTracingPipeline = false, .enableClusterAccelerationStructure = false,
+                .validationSink = validation.sink()});
+            if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Requires bindless and mesh shaders"); }
+            check(created, "Temporal jitter device");
+            auto& device = **created;
+            TemporalCommands gpu(device);
+            PlaneImages images(device, 33, 25);
+            RenderView camera;
+            check(camera.setCamera({.eye = {0, 0, 4}, .center = {0, 0, 0}, .nearPlane = .01f,
+                .farPlane = 10, .orthoHeight = 4, .orthographic = true}), "Temporal jitter camera");
+            camera.setTemporalJitter(true);
+            VirtualShadowMapSettings settings;
+            settings.filter = VirtualShadowMapFilter::SMRT;
+            settings.smrtTemporalSampling = true;
+            VirtualShadowMapLight light;
+            light.angularRadius = .04f;
+            constexpr uint32_t kBaseLayer = 1;
+            constexpr uint32_t kHistoryFrames = 32;
+            const uint32_t edge = images.width / 2;
+            ViewConstants previousView{};
+            std::string log;
+            const auto render = [&](VirtualShadowMapTemporal& history, uint64_t frame, uint8_t raw, bool hardEdge) {
+                const auto view = camera.constants(frame, images.width, images.height, images.width, images.height,
+                    frame == 0 ? nullptr : &previousView);
+                previousView = view;
+                std::vector<uint8_t> edgeSamples;
+                if (hardEdge) {
+                    // A coplanar shadow boundary between pixel centers stays between their jittered samples.
+                    edgeSamples.resize(images.pixels);
+                    for (uint32_t y = 0; y < images.height; ++y) {
+                        for (uint32_t x = 0; x < images.width; ++x) {
+                            const float sampleX = float(x) + .5f + view.jitter[0];
+                            edgeSamples[y * images.width + x] = sampleX < float(edge) ? 0 : 255;
+                        }
+                    }
+                }
+                gpu.begin();
+                images.upload(*gpu.commands, rawLayers(kBaseLayer, raw), hardEdge ? kBaseLayer : kLayers, edgeSamples);
+                const auto recorded = history.record(device, *gpu.commands, *images.depthView, *images.shadowView, view,
+                    frame, 1, 1, light, settings, kHistoryFrames, kBaseLayer, 1, true, log);
+                check(recorded, "Record jittered temporal shadow: " + log);
+                images.copyResult(*gpu.commands);
+                gpu.finish();
+                return images.read();
+            };
+            const auto sample = [&](const auto& image, uint32_t x) {
+                return int(image[kBaseLayer * images.pixels + (images.height / 2) * images.width + x]);
+            };
+
+            validation.phase("StaticCoplanarShadowEdge");
+            VirtualShadowMapTemporal edgeHistory;
+            for (uint64_t frame = 0; frame < 8; ++frame) {
+                const auto result = render(edgeHistory, frame, 0, true);
+                const int dark = sample(result, edge - 1), lit = sample(result, edge);
+                check(dark <= 1 && lit >= 254, "Jittered hard edge blurred on frame " + std::to_string(frame) +
+                    " (dark " + std::to_string(dark) + ", lit " + std::to_string(lit) + ")");
+            }
+
+            validation.phase("JitteredVisibilityAccumulation");
+            VirtualShadowMapTemporal uniformHistory;
+            const std::array expected{0, 128, 85};
+            for (uint64_t frame = 0; frame < expected.size(); ++frame) {
+                const auto result = render(uniformHistory, frame, frame == 1 ? 255 : 0, false);
+                check(std::abs(sample(result, edge) - expected[frame]) <= 1,
+                    "Uniform visibility history reset during camera jitter on frame " + std::to_string(frame));
+            }
+            check(!validation.failed(), "Temporal jitter Vulkan validation error");
+            return RHITestResult::pass("Camera jitter preserves a hard shadow edge and still accumulates visibility");
+        } catch (const std::exception& error) {
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapTemporalJitterTest);
 } // namespace
 } // namespace metallic::tests

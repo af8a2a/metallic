@@ -55,8 +55,8 @@ TemporalViewBasis createTemporalViewBasis(BufferSpan<ViewConstants> views, uint 
     b.farPlane = clipOrtho.y;
     float farMinusNear = clipOrtho.y - clipOrtho.x;
     b.nearTimesFar = b.nearPlane * b.farPlane;
-    b.toleranceScale = kTemporalIsOrtho ? 1e-5 : ((2.0 * tanHalfFov * invViewport.y) * 0.01 + 1e-5);
-    b.orthoTolerance = kTemporalIsOrtho ? (halfOrthoHeight * 2.0 * invViewport.y * 0.01) : 0.0;
+    b.toleranceScale = kTemporalIsOrtho ? 1e-5 : ((2.0 * tanHalfFov * invViewport.y) * 0.5 + 1e-5);
+    b.orthoTolerance = kTemporalIsOrtho ? (halfOrthoHeight * 2.0 * invViewport.y * 0.5) : 0.0;
     float2 ndcScale = float2(2.0, -2.0) * invViewport;
     bool reversed = clipOrtho.w > 0.5;
     b.clearDepth = reversed ? 0.0 : 1.0;
@@ -269,16 +269,14 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
 
     if (kTemporalHasHistory && params.hasHistory != 0u && gTemporalLODChanged == 0u) {
         TemporalViewBasis previous = gTemporalViews[1];
-        bool sameView = all(previous.eye == current.eye) &&
+        // History eligibility already matches the projection. With a fixed camera,
+        // accumulate jittered samples per pixel to avoid repeatedly blurring shadow edges.
+        bool sameCamera = all(previous.eye == current.eye) &&
             all(previous.forward == current.forward) &&
-            all(previous.originOrRayBase == current.originOrRayBase) &&
-            all(previous.dirX == current.dirX) &&
-            all(previous.dirY == current.dirY) &&
-            previous.depthParamA == current.depthParamA &&
-            previous.depthParamB == current.depthParamB;
+            all(previous.right == current.right);
         float tolerance = max(1e-4, linearDepth * current.toleranceScale + current.orthoTolerance);
         RWTexture2D<uint2> prevHistory = resolveUniform(params.previousHistory);
-        if (sameView) {
+        if (sameCamera) {
             if (linearDepth > previous.nearPlane && linearDepth < previous.farPlane) {
                 uint2 stored = prevHistory[int2(id.xy)];
                 uint priorSamples = stored.x >> 25u;
@@ -286,7 +284,7 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
                     bool accepted = false;
                     float3 oldNormal = unpackTemporalOctNormal(stored.x & 0x3fffu);
                     if (dot(normal, oldNormal) >= 0.9) {
-                        if (stored.y == asuint(rawDepth)) {
+                        if (stored.y == asuint(rawDepth) && all(previous.jitter == current.jitter)) {
                             accepted = true;
                         } else {
                             float oldLinear = vsmTemporalLinearDepth(asfloat(stored.y), previous);

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <tuple>
 
 namespace metallic::render {
@@ -30,10 +31,11 @@ bool sameLight(const VirtualShadowMapLight& a, const VirtualShadowMapLight& b)
 bool sameSettings(const VirtualShadowMapSettings& a, const VirtualShadowMapSettings& b, bool directional)
 {
     const auto key = [directional](const auto& s) {
+        const auto resolutionBiasBucket = static_cast<int32_t>(std::lround(s.resolutionLodBias * 8.0f));
         return std::tuple{s.pageSize, s.virtualPagesPerAxis, s.clipmapCount, s.physicalPageCount,
             s.maxWorkItems, s.firstClipmapExtent, s.shadowBias, s.filter, s.pcfRadius,
             s.smrtRayCount, s.smrtSamplesPerRay, s.smrtMaxRayLength, s.smrtRayLengthScale,
-            s.smrtMaxRayAngle, s.receiverFootprint, s.resolutionLodBias, s.enabled, s.clusterHybridRaster, s.twoPassHZB, s.hierarchyHZB,
+            s.smrtMaxRayAngle, s.receiverFootprint, resolutionBiasBucket, s.enabled, s.clusterHybridRaster, s.twoPassHZB, s.hierarchyHZB,
             s.shadowLOD, s.shadowLODSmartBias, s.shadowLODScreenRayLength, directional && s.continuousDirectionalBasis};
     };
     // Cache redraw and sampling phase do not change the underlying visibility.

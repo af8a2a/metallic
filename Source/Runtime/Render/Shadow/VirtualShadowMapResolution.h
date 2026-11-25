@@ -52,6 +52,8 @@ class VirtualShadowMapResolutionController
 {
 public:
     static constexpr float kDefaultLoadFactor = 0.85f;
+    static constexpr float kRecoveryLoadScale = 0.90f;
+    static constexpr float kBiasSnapEpsilon = 1e-3f;
     static constexpr float kDefaultMaxBias = 2.0f;
     using Diagnostics = std::array<uint32_t, 8>;
 
@@ -95,18 +97,23 @@ public:
             if (consumedPage) {
                 last_ = **completed;
                 const float load = float(last_.requestedPages) / float(last_.capacity);
-                float target = load > 0 ? std::max(0.0f, last_.appliedBias + std::log2(load / loadFactor)) : 0.0f;
+                const float targetLoad = loadFactor * kRecoveryLoadScale;
+                float target = load > 0 ? std::max(0.0f, last_.appliedBias + std::log2(load / targetLoad)) : 0.0f;
                 if (load > loadFactor) {
                     belowTargetSamples_ = 0;
-                    if (rasterEnabled_) { target = std::max(pageBias_, target); }
+                    target = std::max(pageBias_, target);
                     pageBias_ = std::lerp(pageBias_, target, 0.5f);
-                } else if (last_.motionBiased) {
-                    // Temporary per-light coarsening hides demand that can return when the light stops.
-                    belowTargetSamples_ = 0;
-                } else {
+                } else if (load <= targetLoad && !last_.motionBiased) {
                     belowTargetSamples_ = std::min(belowTargetSamples_ + 1, 11u);
-                    if (rasterEnabled_) { target = std::min(pageBias_, target); }
-                    if (belowTargetSamples_ > 10) { pageBias_ = std::lerp(pageBias_, target, 0.1f); }
+                    target = std::min(pageBias_, target);
+                    if (belowTargetSamples_ > 10) {
+                        const float next = std::lerp(pageBias_, target, 0.1f);
+                        pageBias_ = std::abs(next - target) < kBiasSnapEpsilon ? target : next;
+                    }
+                } else {
+                    // Dead band (targetLoad, loadFactor] or motion-biased hold: keep bias fixed
+                    // so minor frame-to-frame demand jitter does not oscillate resolution.
+                    belowTargetSamples_ = 0;
                 }
             }
         } else {
