@@ -56,13 +56,18 @@ public float punctualLightPower(GPUPunctualLight light)
     return isfinite(power) && power > 0.0 ? power : intensity;
 }
 
+public float lightAverageDistanceToVolume(float distance, float radius)
+{
+    float denominator = max(distance + radius * 1.1547, 1e-6);
+    return distance + radius * (radius / denominator) * (radius / denominator);
+}
+
 public float punctualLightTargetForVolume(GPUPunctualLight light, float3 center, float radius)
 {
     float intensity = punctualIntensityLuminance(light);
     if (light.directionType.w < 0.5) { return 0.0; }
     float distance = length(light.positionRange.xyz - center);
-    float denominator = max(distance + radius * 1.1547, 1e-6);
-    float averageDistance = distance + radius * (radius / denominator) * (radius / denominator);
+    float averageDistance = lightAverageDistanceToVolume(distance, radius);
     // Keep support over the entire volume, including spot/range boundaries.
     // Evaluating the cone or finite range only at its center can discard lights
     // that illuminate a receiver elsewhere in the cell and bias the estimator.
@@ -88,13 +93,12 @@ internal float punctualPdfWeight(Texture2D<float> pdfTex, uint2 position, uint m
     return isfinite(value) ? max(value, 0.0) : 0.0;
 }
 
-public bool selectPunctualLightGlobal(PunctualSamplingResources resources, inout uint seed, out uint index, out float inverseSourcePdf)
+public bool selectLocalLightPower(Texture2D<float> pdfTex, uint count,
+    inout uint seed, out uint index, out float inverseSourcePdf)
 {
     index = 0u;
     inverseSourcePdf = 0.0;
-    uint count = punctualLightCount(resources.lights);
     if (count == 0u) { return false; }
-    let pdfTex = resources.pdf;
     uint width, height, mipCount;
     pdfTex.GetDimensions(0u, width, height, mipCount);
     if (width > 0u && height > 0u && mipCount > 0u &&
@@ -143,51 +147,70 @@ public bool selectPunctualLightGlobal(PunctualSamplingResources resources, inout
     return true;
 }
 
-public bool selectPunctualLight(PunctualSamplingResources resources, float3 position, inout uint seed, out uint index, out float inverseSourcePdf)
+public bool selectPunctualLightGlobal(PunctualSamplingResources resources, inout uint seed,
+    out uint index, out float inverseSourcePdf)
+{
+    return selectLocalLightPower(resources.pdf, punctualLightCount(resources.lights), seed, index, inverseSourcePdf);
+}
+
+public bool findReGIRLightCell(StructuredBuffer<uint4> regir, float3 position, inout uint seed,
+    out uint slotBase, out uint slotCount)
+{
+    slotBase = 0u;
+    slotCount = 0u;
+    uint recordCount, stride;
+    regir.GetDimensions(recordCount, stride);
+    if (recordCount < kPunctualReGIRHeaderRecordCount) { return false; }
+    uint4 grid = regir[0];
+    float4 centerSize = asfloat(regir[1]);
+    uint4 metadata = regir[2];
+    float jitter = asfloat(metadata.z);
+    if (metadata.x != kPunctualReGIRMagic || any(grid.xyz == uint3(0u)) || grid.w == 0u ||
+        metadata.y == 0u || metadata.y > recordCount - kPunctualReGIRHeaderRecordCount ||
+        !all(isfinite(centerSize)) || !(centerSize.w > 0.0) || !isfinite(jitter) || jitter < 0.0) {
+        return false;
+    }
+    float3 random = float3(punctualSamplingRandom(seed), punctualSamplingRandom(seed),
+        punctualSamplingRandom(seed));
+    float3 samplePosition = position + (random - 0.5) * (jitter * centerSize.w * 2.0);
+    float3 origin = centerSize.xyz - float3(grid.xyz) * (centerSize.w * 0.5);
+    float3 cellCoordinates = floor((samplePosition - origin) / centerSize.w);
+    if (!all(isfinite(cellCoordinates)) || any(cellCoordinates < 0.0) ||
+        any(cellCoordinates >= float3(grid.xyz))) {
+        return false;
+    }
+    uint3 cell = uint3(cellCoordinates);
+    uint cellIndex = cell.x + (cell.y + cell.z * grid.y) * grid.x;
+    uint firstSlot = cellIndex * grid.w;
+    if (firstSlot >= metadata.y || grid.w > metadata.y - firstSlot) { return false; }
+    slotBase = firstSlot;
+    slotCount = grid.w;
+    return true;
+}
+
+public bool selectReGIRLightSlot(StructuredBuffer<uint4> regir, uint slotBase, uint slotCount, uint lightCount,
+    inout uint seed, out uint index, out float inverseSourcePdf)
 {
     index = 0u;
     inverseSourcePdf = 0.0;
-    if (punctualLightCount(resources.lights) == 0u) { return false; }
-    do {
-        uint recordCount, stride;
-        resources.regir.GetDimensions(recordCount, stride);
-        if (recordCount < kPunctualReGIRHeaderRecordCount) {
-            break;
-        }
-        uint4 grid = resources.regir[0];
-        float4 centerSize = asfloat(resources.regir[1]);
-        uint4 metadata = resources.regir[2];
-        float jitter = asfloat(metadata.z);
-        if (metadata.x != kPunctualReGIRMagic || any(grid.xyz == uint3(0u)) || grid.w == 0u ||
-            metadata.y == 0u || metadata.y > recordCount - kPunctualReGIRHeaderRecordCount ||
-            !all(isfinite(centerSize)) || !(centerSize.w > 0.0) || !isfinite(jitter) || jitter < 0.0) {
-            break;
-        }
-        float3 random = float3(punctualSamplingRandom(seed), punctualSamplingRandom(seed),
-            punctualSamplingRandom(seed));
-        float3 samplePosition = position + (random - 0.5) * (jitter * centerSize.w * 2.0);
-        float3 origin = centerSize.xyz - float3(grid.xyz) * (centerSize.w * 0.5);
-        float3 cellCoordinates = floor((samplePosition - origin) / centerSize.w);
-        if (!all(isfinite(cellCoordinates)) || any(cellCoordinates < 0.0) ||
-            any(cellCoordinates >= float3(grid.xyz))) {
-            break;
-        }
-        uint3 cell = uint3(cellCoordinates);
-        uint cellIndex = cell.x + (cell.y + cell.z * grid.y) * grid.x;
-        uint slotBase = cellIndex * grid.w;
-        if (slotBase >= metadata.y || grid.w > metadata.y - slotBase) {
-            break;
-        }
-        uint slot = slotBase + min(uint(punctualSamplingRandom(seed) * float(grid.w)), grid.w - 1u);
-        uint4 data = resources.regir[kPunctualReGIRHeaderRecordCount + slot];
-        float inversePdf = asfloat(data.y);
-        // An empty RIS slot is a zero-weight sample, not permission to draw a second
-        // sample from another distribution. Such a fallback changes the estimator.
-        if (data.x >= punctualLightCount(resources.lights) || !(inversePdf > 0.0) || !isfinite(inversePdf)) { return false; }
-        index = data.x;
-        inverseSourcePdf = inversePdf;
-        return true;
-    } while (false);
+    uint slot = slotBase + min(uint(punctualSamplingRandom(seed) * float(slotCount)), slotCount - 1u);
+    uint4 data = regir[kPunctualReGIRHeaderRecordCount + slot];
+    float inversePdf = asfloat(data.y);
+    // An empty RIS slot consumes this draw with a zero contribution.
+    if (data.x >= lightCount || !(inversePdf > 0.0) || !isfinite(inversePdf)) { return false; }
+    index = data.x;
+    inverseSourcePdf = inversePdf;
+    return true;
+}
+
+public bool selectPunctualLight(PunctualSamplingResources resources, float3 position, inout uint seed,
+    out uint index, out float inverseSourcePdf)
+{
+    uint count = punctualLightCount(resources.lights);
+    uint slotBase, slotCount;
+    if (count != 0u && findReGIRLightCell(resources.regir, position, seed, slotBase, slotCount)) {
+        return selectReGIRLightSlot(resources.regir, slotBase, slotCount, count, seed, index, inverseSourcePdf);
+    }
     return selectPunctualLightGlobal(resources, seed, index, inverseSourcePdf);
 }
 } // namespace Metallic.Lighting

@@ -1,5 +1,6 @@
 #include "MeshDistanceFieldFixture.h"
 #include "RHITest.h"
+#include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Debug/LumenProbeTraceReadback.h"
@@ -1096,6 +1097,7 @@ constexpr size_t kCardScene = kCardRecords + 1;
 constexpr size_t kSurfaceUpdateStats = kCardScene + 1;
 constexpr size_t kSurfaceUpdateFlags = kSurfaceUpdateStats + 1;
 constexpr size_t kSurfaceLighting = 4;
+constexpr size_t kSurfaceDirectIrradiance = 5;
 constexpr size_t kRadiosityUpdateStats = 2;
 constexpr size_t kRadiosityCardState = 3;
 
@@ -2247,7 +2249,7 @@ debug::DebugValue surfaceUpdateCaptures(std::string_view pass)
 }
 
 std::string compareSurfaceUpdate(const CardUpdateFrame& frame, const std::array<uint32_t, 3>& expectedStats,
-    uint32_t expectedResident)
+    uint32_t expectedResident, bool compareLighting = true)
 {
     const auto& surface = frame.surface->artifacts;
     const auto& full = frame.fullSurface->artifacts;
@@ -2275,7 +2277,9 @@ std::string compareSurfaceUpdate(const CardUpdateFrame& frame, const std::array<
     }
     for (size_t atlas = 0; atlas < kSurfaceAtlases.size(); ++atlas) {
         const auto& [name, stride] = kSurfaceAtlases[atlas];
-        if (surface[atlas].bytes.size() != kAtlasPixels * stride || surface[atlas].bytes != full[atlas].bytes) {
+        const bool lighting = atlas == kSurfaceLighting || atlas == kSurfaceDirectIrradiance;
+        if (surface[atlas].bytes.size() != kAtlasPixels * stride || full[atlas].bytes.size() != kAtlasPixels * stride ||
+            ((compareLighting || !lighting) && surface[atlas].bytes != full[atlas].bytes)) {
             return std::string("Persistent atlas differs from a same-frame full rebuild: ") + name;
         }
     }
@@ -2415,17 +2419,23 @@ std::string checkDenseRadiosity(const CardUpdateFrame& frame, float highestExpec
 
 class LumenPersistentCardUpdateTest : public RHITest {
 public:
-    explicit LumenPersistentCardUpdateTest(bool rectDiffuse = false)
-        : rectDiffuse_(rectDiffuse)
+    enum class Mode { CardUpdates, RectDiffuse, RectReGIR };
+    static constexpr uint32_t kRectReGIRTestSamples = 2u;
+
+    explicit LumenPersistentCardUpdateTest(Mode mode = Mode::CardUpdates)
+        : mode_(mode)
     {
-        name = rectDiffuse_ ? "lumen_surface_cache_rect_diffuse" : "lumen_persistent_card_updates";
+        name = mode_ == Mode::RectReGIR ? "lumen_surface_cache_rect_regir" :
+            mode_ == Mode::RectDiffuse ? "lumen_surface_cache_rect_diffuse" : "lumen_persistent_card_updates";
         type = RHITestType::Rendering;
     }
 
     RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
-        const std::string fixtureName = rectDiffuse_ ? "LumenRectDiffuse" : "LumenCardUpdate";
+        const bool testRectLighting = mode_ != Mode::CardUpdates;
+        const std::string fixtureName = mode_ == Mode::RectReGIR ? "LumenRectReGIR" :
+            testRectLighting ? "LumenRectDiffuse" : "LumenCardUpdate";
         const auto fixture = context.outputDirectory / (fixtureName + "Boxes.gltf");
         std::error_code error;
         std::filesystem::copy_file(std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/Lumen/SingleBounce.gltf", fixture,
@@ -2444,7 +2454,7 @@ public:
         if (!document.setObjectWorldMatrix(blocker, offsideBlocker)) {
             return RHITestResult::fail("Could not expose the receiver to the emitter in the card fixture");
         }
-        if (rectDiffuse_) {
+        if (testRectLighting) {
             auto material = document.materials()[1];
             material.emissiveFactor = float3(0.0f);
             if (!document.setMaterialProperties(1, material)) {
@@ -2466,7 +2476,7 @@ public:
         }
 
         RenderGraph graph;
-        if (!makeGraph(graph, fieldPaths, cardPaths)) {
+        if (!makeGraph(graph, fieldPaths, cardPaths, mode_ == Mode::RectReGIR)) {
             return RHITestResult::fail("Could not configure paired Surface Caches and persistent Radiosity");
         }
         bench::ValidationRecorder validation;
@@ -2488,7 +2498,7 @@ public:
         RenderView view;
         ViewCamera camera;
         camera.eye = {0.0f, 0.0f, 3.0f};
-        if (rectDiffuse_) { camera.center = {0.0f, 0.0f, 4.0f}; }
+        if (testRectLighting) { camera.center = {0.0f, 0.0f, 4.0f}; }
         camera.orthographic = true;
         if (!view.setCamera(camera) || !view.setRenderResolution(kAtlasEdge, kAtlasEdge)) {
             return RHITestResult::fail("Invalid card update test camera");
@@ -2507,9 +2517,10 @@ public:
             .historyResources = &history, .recordingWorkerLimit = 1};
 
         const auto runFrame = [&](std::string_view stage, const std::array<uint32_t, 3>& stats,
-            uint32_t resident = kPersistentResidentCards, std::optional<bool> rebuildGdf = false) -> std::optional<CardUpdateFrame> {
+            uint32_t resident = kPersistentResidentCards, std::optional<bool> rebuildGdf = false,
+            bool compareLighting = true) -> std::optional<CardUpdateFrame> {
             auto frame = captureFrame(inspector, executor, submission, log);
-            if (frame) { log = compareSurfaceUpdate(*frame, stats, resident); }
+            if (frame) { log = compareSurfaceUpdate(*frame, stats, resident, compareLighting); }
             if (frame && log.empty() && rebuildGdf.has_value()) {
                 constexpr uint32_t pageEdge = kGdfResolution / 7;
                 constexpr uint32_t pageCount = pageEdge * pageEdge * pageEdge;
@@ -2543,11 +2554,14 @@ public:
                 kCardCaptured | kCardRelit, kCardCaptured | kCardRelit);
             !message.empty()) { return RHITestResult::fail(message); }
 
-        if (rectDiffuse_) {
-            const auto result = checkRectDiffuse(renderWorld, receiver, *previous, runFrame,
-                context.outputDirectory / "LumenRectDiffuseAtlas.png", log);
+        if (testRectLighting) {
+            const auto result = mode_ == Mode::RectReGIR ?
+                checkRectReGIR(renderWorld, receiver, *previous, runFrame,
+                    context.outputDirectory / "LumenRectReGIRAtlas.png", log) :
+                checkRectDiffuse(renderWorld, receiver, *previous, runFrame,
+                    context.outputDirectory / "LumenRectDiffuseAtlas.png", log);
             if (validation.failed()) {
-                return RHITestResult::fail("Rect diffuse Vulkan validation " + validation.snapshot().dump());
+                return RHITestResult::fail("Rect lighting Vulkan validation " + validation.snapshot().dump());
             }
             return result;
         }
@@ -2769,7 +2783,6 @@ private:
         using FloatPixel = std::array<float, 4>;
         using HalfPixel = std::array<uint16_t, 4>;
         using BytePixel = std::array<uint8_t, 4>;
-        constexpr size_t kRawIrradiance = 5;
         constexpr float kPi = 3.14159265358979323846f;
         const auto& atlas = initial.surface->artifacts;
         uint32_t slot = 0;
@@ -2790,7 +2803,7 @@ private:
         const auto checkEnergy = [&](const CardUpdateFrame& frame, float expected) -> std::string {
             const auto& surface = frame.surface->artifacts;
             const auto& radiosity = frame.radiosity->artifacts;
-            const auto irradiance = readSurfaceValue<FloatPixel>(surface[kRawIrradiance].bytes, pixelIndex);
+            const auto irradiance = readSurfaceValue<FloatPixel>(surface[kSurfaceDirectIrradiance].bytes, pixelIndex);
             const auto albedo = readSurfaceValue<BytePixel>(surface[0].bytes, pixelIndex);
             const auto emission = readSurfaceValue<HalfPixel>(surface[2].bytes, pixelIndex);
             const auto outgoing = readSurfaceValue<HalfPixel>(surface[kSurfaceLighting].bytes, pixelIndex);
@@ -2876,7 +2889,7 @@ private:
                 };
                 for (size_t index = 0; index < kAtlasPixels; ++index) {
                     const size_t offset = (index + index / kAtlasEdge * kAtlasEdge) * 4;
-                    const auto direct = readSurfaceValue<FloatPixel>(surface[kRawIrradiance].bytes, index);
+                    const auto direct = readSurfaceValue<FloatPixel>(surface[kSurfaceDirectIrradiance].bytes, index);
                     const auto outgoing = readSurfaceValue<HalfPixel>(surface[kSurfaceLighting].bytes, index);
                     for (size_t channel = 0; channel < 3; ++channel) {
                         pixels[offset + channel] = display(direct[channel] / edit.count);
@@ -2896,12 +2909,144 @@ private:
         return RHITestResult::pass("Offscreen rectangular emitters match analytical irradiance, material response, and persistent history edits.");
     }
 
-    bool rectDiffuse_;
+    template<class RunFrame>
+    static RHITestResult checkRectReGIR(render::RenderWorld& world, scene::SceneEntity receiver,
+        const CardUpdateFrame& initial, const RunFrame& runFrame, const std::filesystem::path& imagePath,
+        std::string& log)
+    {
+        using render::color::RGB;
+        using Pixel = std::array<float, 4>;
+        constexpr uint32_t kLightsPerColor = 48u;
+        const auto& atlas = initial.surface->artifacts;
+        uint32_t slot = 0u;
+        CapturedCard card;
+        for (; slot < kPersistentResidentCards; ++slot) {
+            card = readSurfaceValue<CapturedCard>(atlas[kCardRecords].bytes, slot);
+            if (card.metadata[0] == uint32_t(receiver) && card.axisZ[2] > 0.9999f) { break; }
+        }
+        if (slot == kPersistentResidentCards) { return RHITestResult::fail("Missing the ReGIR receiver card facing +Z"); }
+        const size_t center = tileCenter(slot);
+        const auto encodedDepth = readSurfaceValue<uint16_t>(atlas[3].bytes, center);
+        if (encodedDepth == UINT16_MAX) { return RHITestResult::fail("The ReGIR receiver center has no coverage"); }
+        const auto position = cardCenterWorldPosition(card, encodedDepth);
+        auto lighting = world.lighting();
+        for (size_t channel = 0; channel < 3; ++channel) {
+            RGB primary{};
+            primary[channel] = 1.0f;
+            const float workingLuminance = render::color::luminance(render::color::fromLinearRec709(primary));
+            scene::RectLight light;
+            light.position = {position[0], position[1], position[2] + 1.0f};
+            light.direction = {0.0f, 0.0f, -1.0f};
+            light.width = light.height = 2.0f;
+            light.color = {primary[0], primary[1], primary[2]};
+            light.luminance = 0.025f / (float(kLightsPerColor) * workingLuminance);
+            lighting.rectLights.insert(lighting.rectLights.end(), kLightsPerColor, light);
+            // The global proposal sees the same power here, but these lights cannot reach the card.
+            light.position.x += 100.0f;
+            light.range = 1.0f;
+            lighting.rectLights.insert(lighting.rectLights.end(), kLightsPerColor, light);
+        }
+        if (!world.setLighting(lighting)) { return RHITestResult::fail("Could not apply the many-Rect fixture"); }
+        const auto frame = runFrame("Sample many Rects", {0u, 0u, kPersistentResidentCards},
+            kPersistentResidentCards, std::nullopt, false);
+        if (!frame) { return RHITestResult::fail(log); }
+        const auto& sampled = frame->surface->artifacts[kSurfaceDirectIrradiance].bytes;
+        const auto& exact = frame->fullSurface->artifacts[kSurfaceDirectIrradiance].bytes;
+        const auto decode = [](Pixel value) { return render::color::toLinearRec709({value[0], value[1], value[2]}); };
+        std::array<double, 3> sampledEnergy{}, exactEnergy{};
+        uint32_t covered = 0u;
+        uint32_t lit = 0u;
+        std::vector<uint8_t> pixels(kTileEdge * kTileEdge * 2 * 4, 255u);
+        const auto display = [](float value) {
+            return static_cast<uint8_t>(std::lround(255.0f * std::sqrt(std::clamp(value, 0.0f, 1.0f))));
+        };
+        for (uint32_t y = 0; y < kTileEdge; ++y) {
+            for (uint32_t x = 0; x < kTileEdge; ++x) {
+                const size_t index = cardPixelOffset(slot, y) + x;
+                if (readSurfaceValue<uint16_t>(atlas[3].bytes, index) == UINT16_MAX) { continue; }
+                ++covered;
+                const auto estimate = decode(readSurfaceValue<Pixel>(sampled, index));
+                const auto reference = decode(readSurfaceValue<Pixel>(exact, index));
+                const float tolerance = *std::ranges::max_element(estimate) * 0.0001f;
+                if (std::ranges::count_if(estimate, [=](float value) { return value > tolerance; }) > kRectReGIRTestSamples) {
+                    return RHITestResult::fail("A ReGIR texel accumulated more light colors than its draw budget");
+                }
+                lit += tolerance > 0.0f ? 1u : 0u;
+                const size_t offset = (size_t(y) * kTileEdge * 2 + x) * 4;
+                for (size_t channel = 0; channel < 3; ++channel) {
+                    if (!(std::isfinite(estimate[channel]) && reference[channel] > 0.0f)) {
+                        return RHITestResult::fail("Invalid ReGIR estimate or unlit exact receiver");
+                    }
+                    sampledEnergy[channel] += estimate[channel];
+                    exactEnergy[channel] += reference[channel];
+                    pixels[offset + channel] = display(estimate[channel]);
+                    pixels[offset + kTileEdge * 4 + channel] = display(reference[channel]);
+                }
+            }
+        }
+        if (covered < kTileEdge * kTileEdge / 2 || lit * 10u < covered * 9u) {
+            return RHITestResult::fail(std::format("ReGIR lit {} of {} covered receiver texels", lit, covered));
+        }
+        double maxRelativeError = 0.0;
+        for (size_t channel = 0; channel < sampledEnergy.size(); ++channel) {
+            maxRelativeError = std::max(maxRelativeError, std::abs(sampledEnergy[channel] / exactEnergy[channel] - 1.0));
+        }
+        if (maxRelativeError > 0.30) {
+            return RHITestResult::fail(std::format("Sampled Rect irradiance differs from the exact sum by {:.1f}%",
+                maxRelativeError * 100.0));
+        }
+        if (!saveRgba8Png(imagePath, pixels.data(), kTileEdge * 2, kTileEdge, log)) { return RHITestResult::fail(log); }
+
+        const auto stationary = runFrame("Keep sampled Rect lighting", {0u, 0u, 0u},
+            kPersistentResidentCards, std::nullopt, false);
+        if (!stationary) { return RHITestResult::fail(log); }
+        if (stationary->surface->artifacts[kSurfaceDirectIrradiance].bytes != sampled) {
+            return RHITestResult::fail("Stationary cards resampled Rect irradiance");
+        }
+        for (auto& light : lighting.rectLights) { light.luminance *= 0.5f; }
+        if (!world.setLighting(lighting)) { return RHITestResult::fail("Could not dim the many-Rect fixture"); }
+        const auto dimmed = runFrame("Relight with a new Rect grid", {0u, 0u, kPersistentResidentCards},
+            kPersistentResidentCards, std::nullopt, false);
+        if (!dimmed) { return RHITestResult::fail(log); }
+        const auto& dimmedIrradiance = dimmed->surface->artifacts[kSurfaceDirectIrradiance].bytes;
+        for (uint32_t y = 0; y < kTileEdge; ++y) {
+            for (uint32_t x = 0; x < kTileEdge; ++x) {
+                const auto index = cardPixelOffset(slot, y) + x;
+                const auto before = readSurfaceValue<Pixel>(sampled, index);
+                const auto after = readSurfaceValue<Pixel>(dimmedIrradiance, index);
+                for (size_t channel = 0; channel < 3; ++channel) {
+                    if (std::abs(after[channel] - before[channel] * 0.5f) > before[channel] * 0.0001f) {
+                        return RHITestResult::fail("ReGIR irradiance did not track the many-light edit");
+                    }
+                }
+            }
+        }
+        lighting.rectLights.resize(1);
+        if (!world.setLighting(lighting)) { return RHITestResult::fail("Could not reduce the fixture to one Rect"); }
+        const auto small = runFrame("Use the exact small-light path", {0u, 0u, kPersistentResidentCards});
+        if (!small) { return RHITestResult::fail(log); }
+        if (readSurfaceValue<Pixel>(small->surface->artifacts[kSurfaceDirectIrradiance].bytes, center)[0] <= 0.0f) {
+            return RHITestResult::fail("The remaining Rect failed to light the receiver");
+        }
+        lighting.rectLights.front().enabled = false;
+        if (!world.setLighting(lighting)) { return RHITestResult::fail("Could not disable the remaining Rect"); }
+        const auto off = runFrame("Clear Rect lighting", {0u, 0u, kPersistentResidentCards});
+        if (!off) { return RHITestResult::fail(log); }
+        if (off->surface->artifacts[kSurfaceDirectIrradiance].bytes != atlas[kSurfaceDirectIrradiance].bytes) {
+            return RHITestResult::fail("Disabled Rect left stale irradiance on the cards");
+        }
+        if (!runFrame("Idle after clearing Rect lighting", {0u, 0u, 0u})) { return RHITestResult::fail(log); }
+        return RHITestResult::pass(std::format("{} ReGIR draws light {} of {} covered texels with {} Rects. "
+            "Maximum channel energy error vs. exact: {:.1f}%.", kRectReGIRTestSamples, lit, covered, kLightsPerColor * 6,
+            maxRelativeError * 100.0));
+    }
+
+    Mode mode_;
     static constexpr std::string_view kGdfPass = "GDF";
     static constexpr uint32_t kGdfResolution = 84;
 
     static bool makeGraph(render::RenderGraph& graph, const std::vector<std::string>& fields,
-        const std::vector<std::string>& cards)
+        const std::vector<std::string>& cards, bool testReGIR)
     {
         using render::makeRenderGraphFieldName;
         const auto edge = [&](std::string_view from, std::string_view source, std::string_view to, std::string_view target) {
@@ -2911,9 +3056,11 @@ private:
                 {"center", {0.0, 0.5, 0.65}}, {"extent", 2.2}, {"resolution", kGdfResolution}, {"maxPhysicalPages", 1728},
                 {"quantized", true}, {"buildObjectGrid", true}, {"persistentPages", true}})) { return false; }
         for (const auto name : {kFullSurface, kPersistentSurface}) {
-            if (!graph.addNode("LumenSurfaceCachePass", std::string(name), {{"meshCardPaths", cards},
+            render::RenderGraphProperties properties{{"meshCardPaths", cards},
                     {"atlasSize", kAtlasEdge}, {"tileResolution", kTileEdge}, {"shadowedLighting", true},
-                    {"exportDirectIrradiance", true}, {"persistentCards", name == kPersistentSurface}})) { return false; }
+                    {"exportDirectIrradiance", true}, {"persistentCards", name == kPersistentSurface}};
+            if (testReGIR) { properties["rectLightSamples"] = name == kPersistentSurface ? kRectReGIRTestSamples : 0u; }
+            if (!graph.addNode("LumenSurfaceCachePass", std::string(name), std::move(properties))) { return false; }
             for (const auto* input : {"pageTable", "pageAtlas", "coarseMip", "domain"}) {
                 if (!edge(kGdfPass, input, name, input)) { return false; }
             }
@@ -3001,10 +3148,17 @@ METALLIC_REGISTER_RHI_TEST(LumenPersistentCardUpdateTest);
 
 class LumenRectDiffuseTest final : public LumenPersistentCardUpdateTest {
 public:
-    LumenRectDiffuseTest() : LumenPersistentCardUpdateTest(true) {}
+    LumenRectDiffuseTest() : LumenPersistentCardUpdateTest(Mode::RectDiffuse) {}
 };
 
 METALLIC_REGISTER_RHI_TEST(LumenRectDiffuseTest);
+
+class LumenRectReGIRTest final : public LumenPersistentCardUpdateTest {
+public:
+    LumenRectReGIRTest() : LumenPersistentCardUpdateTest(Mode::RectReGIR) {}
+};
+
+METALLIC_REGISTER_RHI_TEST(LumenRectReGIRTest);
 
 constexpr uint64_t kFastLightingPulseFrame = 6;
 constexpr uint64_t kFastLightingDisocclusionFrame = kFastLightingPulseFrame + 3;

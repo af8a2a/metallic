@@ -6,6 +6,7 @@ module BuildReGIR;
 import ShaderCore;
 using Metallic;
 import Lighting;
+import RectLightLTC;
 using Metallic.Lighting;
 
 // GPU construction of a grid ReGIR light selector. Each grid cell owns a
@@ -98,6 +99,17 @@ bool sampleLocalLightPdf(inout uint seed, uint lightCount, out uint lightIndex, 
     return true;
 }
 
+float rectLightTargetForVolume(GPURectLight light, float3 center, float radius)
+{
+    float3 displacement = center - light.positionRange.xyz;
+    if (dot(displacement, light.direction.xyz) < -radius) { return 0.0; }
+    float distance = length(displacement);
+    if (light.positionRange.w > 0.0 && distance - radius > light.positionRange.w) { return 0.0; }
+    float averageDistance = lightAverageDistanceToVolume(distance, radius);
+    float solidAngle = min(rectLightArea(light) / (averageDistance * averageDistance), 6.2831853071795865f);
+    return solidAngle * Metallic.WorkingColor::luminance(light.radiance.rgb);
+}
+
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void buildReGIRMain(
@@ -139,15 +151,23 @@ void buildReGIRMain(
     uint selectedLight = 0xffffffffu;
     float selectedTarget = 0.0;
     float weightSum = 0.0;
-    uint lightCount = min(push.lightCount, uint(gParams.lights[0].positionRange.x));
+    bool rectLightDomain = push.rectLightDomain != 0u;
+    uint lightCount = push.lightCount;
+    if (!rectLightDomain) {
+        lightCount = min(lightCount, uint(gParams.lights[0].positionRange.x));
+    }
     for (uint sampleIndex = 0u; lightCount > 0u && sampleIndex < push.buildSamples; ++sampleIndex) {
         uint candidateLight;
         float sourcePdf;
         if (!sampleLocalLightPdf(seed, lightCount, candidateLight, sourcePdf)) {
             continue;
         }
-        GPUPunctualLight light = gParams.lights[candidateLight + 1u];
-        float target = punctualLightTargetForVolume(light, cellCenter, cellRadius);
+        float target;
+        if (rectLightDomain) {
+            target = rectLightTargetForVolume(gParams.rectLights[candidateLight], cellCenter, cellRadius);
+        } else {
+            target = punctualLightTargetForVolume(gParams.lights[candidateLight + 1u], cellCenter, cellRadius);
+        }
         float candidateWeight = target / (sourcePdf * float(push.buildSamples));
         if (!(candidateWeight > 0.0) || !isfinite(candidateWeight)) { continue; }
         weightSum += candidateWeight;

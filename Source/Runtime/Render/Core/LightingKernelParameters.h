@@ -17,12 +17,14 @@ using LightGridData = GPUBufferSpan;
 using LightGridCells = GPUBufferSpan;
 using LightGridLights = GPUBufferSpan;
 using LightPunctualData = GPUBufferSpan;
+using LightRectData = GPUBufferSpan;
 using LightUIntData = GPUBufferSpan;
 using LightUInt4Data = GPUBufferSpan;
 using LightFloat4Data = GPUBufferSpan;
 #else
 import ShaderCore;
 import Lighting;
+import RectLightLTC;
 using Metallic;
 using Metallic.Lighting;
 namespace Metallic {
@@ -37,6 +39,7 @@ typealias LightGridData = RWBufferSpan<ClusterLightGridParams>;
 typealias LightGridCells = RWBufferSpan<ClusterLightGridCell>;
 typealias LightGridLights = RWBufferSpan<ClusterLightData>;
 typealias LightPunctualData = RWBufferSpan<GPUPunctualLight>;
+typealias LightRectData = RWBufferSpan<GPURectLight>;
 typealias LightUIntData = RWBufferSpan<uint>;
 typealias LightUInt4Data = RWBufferSpan<uint4>;
 typealias LightFloat4Data = RWBufferSpan<float4>;
@@ -71,11 +74,12 @@ struct PrepareLightsPdfParams {
     LightStorageScalarImage sourceMip, destinationMip;
     LightPunctualData lights;
     PrepareLightsPdfPush settings;
+    LightRectData rectLights;
 };
 
 struct BuildReGIRPush {
     LightUInt lightCount, gridSize, lightsPerCell, buildSamples;
-    LightUInt frameIndex, padding0, lightSlotCount, padding1;
+    LightUInt frameIndex, rectLightDomain, lightSlotCount, padding1;
     LightFloat4 sceneCenterRadius;
     float samplingJitter;
     LightUInt padding2, padding3, padding4;
@@ -90,6 +94,7 @@ struct BuildReGIRParams {
     LightPunctualData lights;
     LightUInt padding0;
     BuildReGIRPush settings;
+    LightRectData rectLights;
 };
 
 struct EnvironmentLightingPrecomputePush {
@@ -105,13 +110,15 @@ struct EnvironmentLightingPrecomputeParams {
 #ifdef __cplusplus
 inline constexpr uint64_t kClusterLightGridBuildABI = 0x4347524944000002ull;
 inline constexpr uint64_t kLightGridDebugABI = 0x4c47444247000002ull;
-inline constexpr uint64_t kPrepareLightsPdfABI = 0x4c50444600000002ull;
-inline constexpr uint64_t kBuildReGIRABI = 0x5245474952000002ull;
+inline constexpr uint64_t kPrepareLightsPdfABI = 0x4c50444600000003ull;
+inline constexpr uint64_t kBuildReGIRABI = 0x5245474952000003ull;
 inline constexpr uint64_t kEnvironmentLightingPrecomputeABI = 0x454e565052000002ull;
 static_assert(sizeof(ClusterLightGridBuildParams) == 60);
 static_assert(sizeof(LightGridDebugParams) == 60 && offsetof(LightGridDebugParams, settings) == 28);
-static_assert(sizeof(PrepareLightsPdfParams) == 56 && offsetof(PrepareLightsPdfParams, settings) == 24);
-static_assert(sizeof(BuildReGIRParams) == 96 && offsetof(BuildReGIRParams, settings) == 32);
+static_assert(sizeof(PrepareLightsPdfParams) == 68 && offsetof(PrepareLightsPdfParams, settings) == 24 &&
+    offsetof(PrepareLightsPdfParams, rectLights) == 56);
+static_assert(sizeof(BuildReGIRParams) == 112 && offsetof(BuildReGIRParams, settings) == 32 &&
+    offsetof(BuildReGIRParams, rectLights) == 96);
 static_assert(sizeof(EnvironmentLightingPrecomputeParams) == 72 && offsetof(EnvironmentLightingPrecomputeParams, settings) == 40);
 #endif
 } // namespace metallic::render (C++) / Metallic (Slang)

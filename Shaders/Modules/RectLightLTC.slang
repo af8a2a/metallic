@@ -7,6 +7,7 @@ module RectLightLTC;
 // See Shaders/Licenses/PolygonalLightLTC.txt.
 
 import OpenPBR;
+import ShaderCore;
 
 namespace Metallic.Lighting
 {
@@ -20,6 +21,18 @@ public struct GPURectLight
     public float4 halfHeight;
     public float4 radiance;
 };
+
+static const float kRectLightPi = 3.1415926535897932f;
+
+public float rectLightArea(GPURectLight light)
+{
+    return (2.0f * length(light.halfWidth.xyz)) * (2.0f * length(light.halfHeight.xyz));
+}
+
+public float rectLightPower(GPURectLight light)
+{
+    return rectLightArea(light) * kRectLightPi * Metallic.WorkingColor::luminance(light.radiance.rgb);
+}
 
 float3 integrateEdgeVector(float3 v1, float3 v2)
 {

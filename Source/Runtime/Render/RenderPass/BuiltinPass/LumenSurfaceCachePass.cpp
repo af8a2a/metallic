@@ -6,6 +6,7 @@
 #include "Runtime/Render/Core/SceneColorConversion.h"
 #include "Runtime/Render/Environment/CelestialLighting.h"
 #include "Runtime/Render/GAPI/CommandSubmission.h"
+#include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
@@ -16,6 +17,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
+#include <numeric>
 #include <optional>
 #include <unordered_map>
 #include <spdlog/spdlog.h>
@@ -25,11 +28,15 @@ namespace {
 
 constexpr char kShaderModule[] = "Features/DistanceField/SurfaceCacheCapture";
 constexpr uint64_t kCaptureABI = 0x4c554d454e010001ull;
-constexpr uint64_t kResolveABI = 0x4c554d454e010109ull;
+constexpr uint64_t kResolveABI = 0x4c554d454e01010bull;
 constexpr uint64_t kEncodeDepthABI = 0x4c554d454e010104ull;
-constexpr uint64_t kShadowedLightingABI = 0x4c554d454e01010aull;
+constexpr uint64_t kShadowedLightingABI = 0x4c554d454e01010cull;
 constexpr uint32_t kGDFDomainStride = 32;
 constexpr uint32_t kCardsPerDispatchRow = 128u;
+constexpr uint32_t kDefaultRectLightSamples = 8u;
+constexpr uint32_t kRectReGIRGridSize = 8u;
+constexpr uint32_t kRectReGIRLightsPerCell = 64u;
+constexpr float kRectReGIRJitter = 1.0f;
 constexpr std::array kCaptureFormats{Format::RGBA8Unorm, Format::RGBA8Unorm, Format::RGBA16Sfloat};
 constexpr std::array kCaptureOutputs{"albedo", "normal", "emissive"};
 constexpr SamplerDesc kMaterialSampler{
@@ -65,6 +72,14 @@ struct alignas(16) CaptureParams {
     std::array<Float4, 8> textureTransforms;
 };
 
+struct RectLightingParams {
+    ShaderBuffer lights;
+    uint32_t count;
+    ShaderBuffer grid;
+    ShaderSampledImage pdf;
+    uint32_t sampleCount;
+};
+
 struct alignas(16) ResolveParams {
     ShaderSampledImage albedo, normal, emissive, hardwareDepth;
     ShaderStorageImage depth, lighting;
@@ -73,8 +88,7 @@ struct alignas(16) ResolveParams {
     Float4 lightDirection, illuminance;
     ShaderBuffer updateTiles;
     uint32_t updateCount;
-    ShaderBuffer rectLights;
-    uint32_t rectLightCount;
+    RectLightingParams rectLighting;
 };
 
 struct EncodeDepthParams {
@@ -99,18 +113,18 @@ struct alignas(16) ShadowedLightingParams {
     uint32_t exportDirectIrradiance;
     ShaderBuffer updateTiles;
     uint32_t updateCount;
-    ShaderBuffer rectLights;
-    uint32_t rectLightCount;
+    RectLightingParams rectLighting;
 };
 
 static_assert(sizeof(CaptureVertex) == 64 && sizeof(SurfaceCard) == 80);
 static_assert(sizeof(CaptureParams) == 288 && offsetof(CaptureParams, textureTransforms) == 160);
-static_assert(sizeof(ResolveParams) == 80 && offsetof(ResolveParams, updateTiles) == 64 &&
-    offsetof(ResolveParams, rectLights) == 72 && offsetof(ResolveParams, rectLightCount) == 76);
+static_assert(sizeof(RectLightingParams) == 20 && offsetof(RectLightingParams, sampleCount) == 16);
+static_assert(sizeof(ResolveParams) == 96 && offsetof(ResolveParams, updateTiles) == 64 &&
+    offsetof(ResolveParams, rectLighting) == 72);
 static_assert(sizeof(EncodeDepthParams) == 28 && offsetof(EncodeDepthParams, updateTiles) == 20);
-static_assert(sizeof(ShadowedLightingParams) == 128 && offsetof(ShadowedLightingParams, pageTable) == 64 &&
+static_assert(sizeof(ShadowedLightingParams) == 144 && offsetof(ShadowedLightingParams, pageTable) == 64 &&
     offsetof(ShadowedLightingParams, directIrradiance) == 96 && offsetof(ShadowedLightingParams, updateTiles) == 104 &&
-    offsetof(ShadowedLightingParams, rectLights) == 112 && offsetof(ShadowedLightingParams, rectLightCount) == 116);
+    offsetof(ShadowedLightingParams, rectLighting) == 112);
 
 struct AtlasLayout {
     uint32_t edge = 128;
@@ -204,6 +218,7 @@ struct CaptureGeometry {
     std::vector<CaptureSection> sections;
     std::vector<CaptureCard> cardsToDraw;
     std::unique_ptr<Buffer> vertexBuffer;
+    Float4 rectGridCenterRadius{};
 };
 
 struct CaptureDraw {
@@ -217,12 +232,27 @@ struct CaptureMaterials {
     std::vector<CaptureMaterial> records;
 };
 
+bool sameRectLights(std::span<const GPURectLight> a, std::span<const GPURectLight> b)
+{
+    return a.size() == b.size() && (a.empty() || std::memcmp(a.data(), b.data(), a.size_bytes()) == 0);
+}
+
+struct RectLightSampling {
+    Float4 centerRadius;
+    std::vector<GPURectLight> lights;
+    std::unique_ptr<Buffer> lightBuffer;
+    ImportancePdfTexture pdf;
+    ReGIRLightSelector grid;
+};
+
 struct CaptureLighting {
     Float4 direction, illuminance;
     bool sunCastsShadow;
     std::vector<GPUPunctualLight> punctual;
     std::vector<GPURectLight> rectLights;
     std::array<float, 3> clipmapEye{};
+    uint32_t rectLightSamples = 0;
+    Float4 rectGridCenterRadius{};
 
     bool sameLocalLights(const CaptureLighting& other) const
     {
@@ -230,9 +260,8 @@ struct CaptureLighting {
         return punctual.size() == other.punctual.size() &&
             (punctual.size() <= 1 || std::memcmp(punctual.data() + 1, other.punctual.data() + 1,
                 (punctual.size() - 1) * sizeof(GPUPunctualLight)) == 0) &&
-            rectLights.size() == other.rectLights.size() &&
-            (rectLights.empty() || std::memcmp(rectLights.data(), other.rectLights.data(),
-                rectLights.size() * sizeof(GPURectLight)) == 0);
+            rectLightSamples == other.rectLightSamples && rectGridCenterRadius == other.rectGridCenterRadius &&
+            sameRectLights(rectLights, other.rectLights);
     }
 
     bool sameLights(const CaptureLighting& other) const
@@ -290,9 +319,13 @@ private:
     Device* device_ = nullptr;
     AtlasLayout layout_;
     uint32_t maxDirectLightingCardsPerFrame_ = 0;
+    uint32_t rectLightSamples_ = kDefaultRectLightSamples;
     std::unordered_map<int32_t, std::vector<scene::MeshCardBuildRecord>> fields_;
     std::shared_ptr<const CaptureGeometry> captureGeometry_;
     std::shared_ptr<std::optional<PublishedSurfaceCache>> published_;
+    std::shared_ptr<std::shared_ptr<RectLightSampling>> rectSampling_ =
+        std::make_shared<std::shared_ptr<RectLightSampling>>();
+    ImportancePdfCompute rectPdfCompute_;
     ScenePathTraceResources materialResources_;
     std::unique_ptr<GraphicsPipeline> pipeline_;
     ComputeKernel resolve_;
@@ -422,6 +455,13 @@ Result<> LumenSurfaceCachePass::compile(const RenderGraphCompileContext& context
         return makeError(Error::InvalidArgument);
     }
     maxDirectLightingCardsPerFrame_ = properties().value("maxDirectLightingCardsPerFrame", 0u);
+    const auto rectLightSamples = properties().find("rectLightSamples");
+    if (rectLightSamples != properties().end() && (!rectLightSamples->is_number_integer() ||
+        rectLightSamples->get<double>() < 0.0 || rectLightSamples->get<double>() > kRectReGIRLightsPerCell)) {
+        log = "Surface Cache rectLightSamples must be an integer from 0 to 64";
+        return makeError(Error::InvalidArgument);
+    }
+    rectLightSamples_ = properties().value("rectLightSamples", kDefaultRectLightSamples);
     captureGeometry_.reset();
     if (!persistentCards()) { published_.reset(); }
     else if (!published_) { published_ = std::make_shared<std::optional<PublishedSurfaceCache>>(); }
@@ -586,6 +626,27 @@ Result<> LumenSurfaceCachePass::gather(const scene::Scene& scene, std::vector<Su
     return {};
 }
 
+Float4 rectGridCenterRadius(std::span<const SurfaceCard> cards)
+{
+    Float4 centerRadius{};
+    for (size_t axis = 0; axis < 3; ++axis) {
+        float lower = std::numeric_limits<float>::infinity();
+        float upper = -lower;
+        for (const auto& card : cards) {
+            const float extent = std::abs(card.axisX[axis] * card.axisX[3]) +
+                std::abs(card.axisY[axis] * card.axisY[3]) + std::abs(card.axisZ[axis] * card.axisZ[3]);
+            lower = std::min(lower, card.origin[axis] - extent);
+            upper = std::max(upper, card.origin[axis] + extent);
+        }
+        centerRadius[axis] = std::midpoint(lower, upper);
+        centerRadius[3] = std::max(centerRadius[3], upper - centerRadius[axis]);
+    }
+    // Reserve room for the sampling jitter on either side of the card bounds.
+    centerRadius[3] = std::max(centerRadius[3], 0.01f) *
+        (float(kRectReGIRGridSize) / (float(kRectReGIRGridSize) - 2.0f * kRectReGIRJitter));
+    return centerRadius;
+}
+
 Result<> LumenSurfaceCachePass::prepareCaptureGeometry(const scene::Scene& scene)
 {
     // The scene identity covers imported geometry and section material indices.
@@ -598,6 +659,9 @@ Result<> LumenSurfaceCachePass::prepareCaptureGeometry(const scene::Scene& scene
     std::vector<CaptureVertex> vertices;
     if (auto result = gather(scene, geometry.cards, geometry.cardsToDraw, geometry.sections, vertices); !result) {
         return result;
+    }
+    if (!geometry.cardsToDraw.empty()) {
+        geometry.rectGridCenterRadius = rectGridCenterRadius(std::span(geometry.cards).first(geometry.cardsToDraw.size()));
     }
     if (!vertices.empty()) {
         auto buffer = upload(*device_, std::as_bytes(std::span(vertices)), BufferUsageBits::Storage);
@@ -868,6 +932,10 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         return makeError(rectLights.error());
     }
     lighting.rectLights = std::move(*rectLights);
+    if (!geometry.cardsToDraw.empty() && rectLightSamples_ != 0u && lighting.rectLights.size() > rectLightSamples_) {
+        lighting.rectLightSamples = rectLightSamples_;
+        lighting.rectGridCenterRadius = geometry.rectGridCenterRadius;
+    }
     TextureHandle pageTable, coarseMip;
     BufferHandle domains;
     uint32_t clipmapCount = 0;
@@ -910,7 +978,7 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
     const RenderGraphStageUse captureUses[]{{"albedo", Access::TextureColorWrite}, {"normal", Access::TextureColorWrite},
         {"emissive", Access::TextureColorWrite}, {"hardwareDepth", Access::TextureDepthStencilWrite}};
     std::vector<RenderGraphStage> stages;
-    stages.reserve(5);
+    stages.reserve(6);
 
     std::unique_ptr<Buffer> cardUpload, sceneUpload, flagsUpload, statisticsUpload;
     if (update.uploadCards) {
@@ -995,8 +1063,18 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         }, RenderGraphPassKind::Raster});
     }
 
+    auto rectSampling = *rectSampling_;
+    bool publishRectSampling = false;
     const auto executeAndPublish = [&]() -> Result<> {
-        if (auto result = context.executeStages(stages); !result || !update.publish) { return result; }
+        if (auto result = context.executeStages(stages); !result) { return result; }
+        if (publishRectSampling) {
+            auto transaction = std::make_shared<SubmissionTransaction>(
+                [state = rectSampling_, sampling = rectSampling] { *state = sampling; }, [] {});
+            if (auto result = context.commandBuffer().addSubmissionTransaction(std::move(transaction)); !result) {
+                return result;
+            }
+        }
+        if (!update.publish) { return {}; }
         return context.commandBuffer().addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
             [state = published_, next = std::move(next)]() mutable { *state = std::move(next); }, [] {}));
     };
@@ -1004,11 +1082,53 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
 
     auto lightingDispatch = makeCardDispatch(*device_, layout_, update.lightingTiles, update.fullCapture);
     if (!lightingDispatch) { return makeError(lightingDispatch.error()); }
-    std::unique_ptr<Buffer> rectLightBuffer;
-    if (!lighting.rectLights.empty()) {
+    std::unique_ptr<Buffer> exactRectLightBuffer;
+    if (lighting.rectLightSamples != 0u) {
+        if (!rectSampling || rectSampling->centerRadius != lighting.rectGridCenterRadius ||
+            !sameRectLights(rectSampling->lights, lighting.rectLights)) {
+            rectSampling = std::make_shared<RectLightSampling>();
+            rectSampling->centerRadius = lighting.rectGridCenterRadius;
+            rectSampling->lights = lighting.rectLights;
+            auto records = upload(*device_, std::as_bytes(std::span(rectSampling->lights)), BufferUsageBits::Storage);
+            if (!records) { return makeError(records.error()); }
+            rectSampling->lightBuffer = std::move(*records);
+
+            const uint32_t lightCount = uint32_t(lighting.rectLights.size());
+            const auto pdfSize = computeImportancePdfTextureSize(lightCount);
+            std::string log;
+            const auto initializeSampling = [&]() -> Result<> {
+                if (auto r = rectPdfCompute_.initialize(*device_, log); !r) { return r; }
+                if (auto r = rectSampling->pdf.initialize(*device_, pdfSize.width, pdfSize.height,
+                        "Surface Cache Rect Light PDF", log); !r) { return r; }
+                if (auto r = rectSampling->grid.initialize(*device_, log); !r) { return r; }
+                return rectSampling->grid.ensureGrid(*device_, kRectReGIRGridSize, kRectReGIRLightsPerCell, log);
+            };
+            if (auto result = initializeSampling(); !result) {
+                spdlog::error("Surface Cache Rect ReGIR initialization failed: {}", log);
+                return result;
+            }
+            stages.push_back({"Build Rect ReGIR", {}, [&, lightCount](CommandBuffer& cmd) -> Result<> {
+                auto& sampling = *rectSampling;
+                if (auto r = rectPdfCompute_.buildRectLights(cmd, sampling.pdf, *sampling.lightBuffer, lightCount); !r) {
+                    return r;
+                }
+                const auto& center = sampling.centerRadius;
+                return sampling.grid.buildRectLights(cmd, *sampling.pdf.view(), *sampling.lightBuffer, {
+                    .lightCount = lightCount, .sceneCenter = {center[0], center[1], center[2]},
+                    .sceneRadius = center[3], .samplingJitter = kRectReGIRJitter,
+                });
+            }});
+            publishRectSampling = true;
+        }
+        if (auto result = context.commandBuffer().retainResource(rectSampling); !result) { return result; }
+    } else {
+        publishRectSampling = rectSampling != nullptr;
+        rectSampling.reset();
+    }
+    if (!rectSampling && !lighting.rectLights.empty()) {
         auto records = upload(*device_, std::as_bytes(std::span(lighting.rectLights)), BufferUsageBits::Storage);
         if (!records) { return makeError(records.error()); }
-        rectLightBuffer = std::move(*records);
+        exactRectLightBuffer = std::move(*records);
     }
     const auto bindLighting = [&](ParameterWriter& writer, auto& params) {
         params.albedo = writer.sampledImageHandle(context.outputTexture("albedo").view());
@@ -1021,9 +1141,17 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         params.illuminance = lighting.illuminance;
         params.updateCount = lightingDispatch->count;
         if (lightingDispatch->tiles) { params.updateTiles = writer.buffer(lightingDispatch->tiles.get()); }
-        if (rectLightBuffer) {
-            params.rectLights = writer.buffer(rectLightBuffer.get());
-            params.rectLightCount = uint32_t(lighting.rectLights.size());
+        if (rectSampling) {
+            params.rectLighting = {
+                .lights = writer.buffer(rectSampling->lightBuffer.get()),
+                .count = uint32_t(rectSampling->lights.size()),
+                .grid = writer.buffer(rectSampling->grid.buffer()),
+                .pdf = writer.sampledImageHandle(rectSampling->pdf.view()),
+                .sampleCount = lighting.rectLightSamples,
+            };
+        } else if (exactRectLightBuffer) {
+            params.rectLighting.lights = writer.buffer(exactRectLightBuffer.get());
+            params.rectLighting.count = uint32_t(lighting.rectLights.size());
         }
     };
 
@@ -1040,7 +1168,7 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
             {"emissive", Access::TextureSampleRead}, {"hardwareDepth", Access::TextureSampleRead},
             {"cards", Access::BufferStorageRead}, {"depth", Access::TextureStorageWrite}, {"lighting", Access::TextureStorageWrite}};
         stages.push_back({"Encode depth and shade cards", resolveUses, [&](CommandBuffer& cmd) {
-            return lightingDispatch->record(resolve_, cmd, *resolveParams, rectLightBuffer != nullptr);
+            return lightingDispatch->record(resolve_, cmd, *resolveParams, exactRectLightBuffer != nullptr);
         }});
         return executeAndPublish();
     }

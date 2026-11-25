@@ -7,6 +7,7 @@
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/SceneLightResources.h"
 
 #include <algorithm>
 #include <array>
@@ -286,6 +287,7 @@ inline constexpr uint32_t kPrepareLocalLightsMode = 0;
 inline constexpr uint32_t kPrepareEnvironmentMode = 1;
 inline constexpr uint32_t kGenerateLocalMipMode = 2;
 inline constexpr uint32_t kGenerateEnvironmentMipMode = 3;
+inline constexpr uint32_t kPrepareRectLightsMode = 4;
 
 uint32_t dimensionAtMip(uint32_t dimension, uint32_t mipLevel)
 {
@@ -349,10 +351,31 @@ Result<> ImportancePdfCompute::buildLocalLights(
     Buffer& punctualLights,
     uint32_t lightCount)
 {
+    return buildLights(commandBuffer, localLightPdf, punctualLights, lightCount, false);
+}
+
+Result<> ImportancePdfCompute::buildRectLights(
+    CommandBuffer& commandBuffer,
+    ImportancePdfTexture& localLightPdf,
+    Buffer& rectLights,
+    uint32_t lightCount)
+{
+    return buildLights(commandBuffer, localLightPdf, rectLights, lightCount, true);
+}
+
+Result<> ImportancePdfCompute::buildLights(
+    CommandBuffer& commandBuffer,
+    ImportancePdfTexture& localLightPdf,
+    Buffer& lights,
+    uint32_t lightCount,
+    bool rectLightDomain)
+{
+    const uint32_t lightStride = rectLightDomain ? sizeof(GPURectLight) : sizeof(GPUPunctualLight);
+    const uint64_t recordCount = uint64_t(lightCount) + (rectLightDomain ? 0u : 1u);
     if (!valid() || !localLightPdf.valid() ||
-        !hasFlag(punctualLights.desc().usage, BufferUsageBits::Storage) ||
+        !hasFlag(lights.desc().usage, BufferUsageBits::Storage) ||
         uint64_t(localLightPdf.textureWidth()) * localLightPdf.textureHeight() < lightCount ||
-        punctualLights.desc().size < (uint64_t(lightCount) + 1u) * sizeof(float) * 16u) {
+        lights.desc().size < recordCount * lightStride) {
         return makeError(Error::InvalidArgument);
     }
     if (auto* frame = metallic::render::RenderFrameContext::from(commandBuffer); frame != nullptr && !frame->recording()) {
@@ -365,11 +388,12 @@ Result<> ImportancePdfCompute::buildLocalLights(
     auto dispatch = [&](const PrepareLightsPdfPush& push) -> Result<> {
         ParameterWriter writer(*impl_->device, **registry, metallic::render::RenderFrameContext::from(commandBuffer));
         PrepareLightsPdfParams params{.settings = push};
-        const bool reduction = push.mode >= kGenerateLocalMipMode;
+        const bool reduction = push.mode == kGenerateLocalMipMode;
         if (reduction) {
             params.sourceMip = writer.storageImage(localLightPdf.mipView(push.sourceMipLevel));
         } else {
-            params.lights = writer.bufferSpan(&punctualLights, 64, 16);
+            auto& lightSpan = rectLightDomain ? params.rectLights : params.lights;
+            lightSpan = writer.bufferSpan(&lights, lightStride, 16);
         }
         params.destinationMip = writer.storageImage(
             localLightPdf.mipView(reduction ? push.sourceMipLevel + 1u : 0u));
@@ -381,7 +405,7 @@ Result<> ImportancePdfCompute::buildLocalLights(
 
     if (auto commandResult = localLightPdf.beginGpuBuild(commandBuffer); !commandResult) { return commandResult; }
     PrepareLightsPdfPush push{};
-    push.mode = kPrepareLocalLightsMode;
+    push.mode = rectLightDomain ? kPrepareRectLightsMode : kPrepareLocalLightsMode;
     push.lightCount = lightCount;
     push.sourceSize[0] = localLightPdf.textureWidth();
     push.sourceSize[1] = localLightPdf.textureHeight();

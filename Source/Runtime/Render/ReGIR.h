@@ -54,6 +54,11 @@ public:
         TextureView& localLightPdf,
         Buffer& punctualLights,
         const ReGIRBuildParameters& parameters);
+    Result<> buildRectLights(
+        CommandBuffer& commandBuffer,
+        TextureView& localLightPdf,
+        Buffer& rectLights,
+        const ReGIRBuildParameters& parameters);
     void clear();
 
     bool valid() const;
@@ -61,6 +66,9 @@ public:
     const ReGIRGridLayout& layout() const;
 
 private:
+    Result<> buildLights(CommandBuffer& commandBuffer, TextureView& localLightPdf, Buffer& lights,
+        const ReGIRBuildParameters& parameters, bool rectLightDomain);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

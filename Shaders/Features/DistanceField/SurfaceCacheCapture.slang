@@ -144,6 +144,15 @@ SurfaceCacheCaptureOutputs surfaceCacheCaptureFragmentMain(SurfaceCacheCaptureIn
 typealias SurfaceCacheDepthTexture = _Texture<float, __Shape2D, 0, 0, 0, 1, 0, 0, 13>;
 typealias SurfaceCacheLightingTexture = _Texture<float4, __Shape2D, 0, 0, 0, 1, 0, 0, 2>;
 
+struct SurfaceCacheRectLightingParams
+{
+    ResourceHandle<StructuredBuffer<GPURectLight>> lights;
+    uint count;
+    ResourceHandle<StructuredBuffer<uint4>> grid;
+    ResourceHandle<Texture2D<float>> pdf;
+    uint sampleCount;
+};
+
 struct SurfaceCacheResolveParams
 {
     ResourceHandle<Texture2D<float4>> albedo;
@@ -158,8 +167,7 @@ struct SurfaceCacheResolveParams
     float4 illuminance;
     ResourceHandle<StructuredBuffer<uint>> updateTiles;
     uint updateCount;
-    ResourceHandle<StructuredBuffer<GPURectLight>> rectLights;
-    uint rectLightCount;
+    SurfaceCacheRectLightingParams rectLighting;
 };
 
 // Fixed-resolution cards have equal-sized rectangles. Pack the update list
@@ -206,15 +214,38 @@ void writeSurfaceCacheLighting(SurfaceCacheLightingTexture finalLightingAtlas, u
     finalLightingAtlas[texel] = float4(finalLighting, 0.0f);
 }
 
-float3 surfaceCacheRectIrradiance(StructuredBuffer<GPURectLight> lights, uint count,
+float3 surfaceCacheRectIrradiance(SurfaceCacheRectLightingParams params, uint2 texel,
     float3 position, float3 normal)
 {
+    let lights = resolveUniform(params.lights);
     const float3x3 basis = rectLightLambertBasis(normal);
     float3 irradiance = float3(0.0);
-    for (uint index = 0u; index < count; ++index) {
-        irradiance += evaluateRectLightDiffuseIrradiance(lights[index], position, basis);
+    if (params.sampleCount == 0u) {
+        for (uint index = 0u; index < params.count; ++index) {
+            irradiance += evaluateRectLightDiffuseIrradiance(lights[index], position, basis);
+        }
+        return irradiance;
     }
-    return irradiance;
+
+    // A tile keeps the same sequence when it is relit in a partial dispatch.
+    uint seed = punctualSamplingHash(texel.x | (texel.y << 16u));
+    let grid = resolveUniform(params.grid);
+    uint slotBase, slotCount;
+    bool inGrid = findReGIRLightCell(grid, position, seed, slotBase, slotCount);
+    for (uint sampleIndex = 0u; sampleIndex < params.sampleCount; ++sampleIndex) {
+        uint index;
+        float inverseSourcePdf;
+        bool selected;
+        if (inGrid) {
+            selected = selectReGIRLightSlot(grid, slotBase, slotCount, params.count, seed, index, inverseSourcePdf);
+        } else {
+            selected = selectLocalLightPower(resolveUniform(params.pdf), params.count, seed, index, inverseSourcePdf);
+        }
+        if (selected) {
+            irradiance += evaluateRectLightDiffuseIrradiance(lights[index], position, basis) * inverseSourcePdf;
+        }
+    }
+    return irradiance / float(params.sampleCount);
 }
 
 [shader("compute")]
@@ -250,13 +281,12 @@ void surfaceCacheResolveMain(uint3 threadID : SV_DispatchThreadID)
     float3 worldNormal = decodeSurfaceCacheNormal(card, encodedNormal.xy);
     // DeferredLightingCommon.ush:545, an unshadowed directional light at default diffuse scale.
     float3 directLighting = params.illuminance.xyz * saturate(dot(worldNormal, params.lightDirection.xyz));
-    if (params.rectLightCount != 0u) {
+    if (params.rectLighting.count != 0u) {
         float2 cardUV = (float2(texel - tile * params.tileResolution) + 0.5f) / float(params.tileResolution);
         // Match the R16 UNORM depth read by the separate lighting pass.
         float cardDepth = round(depth * 65535.0f) * (1.0f / 65535.0f);
         float3 worldPosition = surfaceCacheWorldPosition(card, cardUV, cardDepth);
-        directLighting += surfaceCacheRectIrradiance(resolveUniform(params.rectLights),
-            params.rectLightCount, worldPosition, worldNormal);
+        directLighting += surfaceCacheRectIrradiance(params.rectLighting, texel, worldPosition, worldNormal);
     }
 
     writeSurfaceCacheLighting(finalLightingAtlas, texel, resolveUniform(params.albedo),
@@ -315,8 +345,7 @@ struct SurfaceCacheShadowedLightingParams
     uint exportDirectIrradiance;
     ResourceHandle<StructuredBuffer<uint>> updateTiles;
     uint updateCount;
-    ResourceHandle<StructuredBuffer<GPURectLight>> rectLights;
-    uint rectLightCount;
+    SurfaceCacheRectLightingParams rectLighting;
 };
 
 // UE 5.7.4 defaults in Scene.cpp (20000 cm) and LumenSceneDirectLighting.cpp.
@@ -397,9 +426,8 @@ void surfaceCacheShadowedLightingMain(uint3 threadID : SV_DispatchThreadID)
         directLighting += shadowedSurfaceCacheLight(distanceField, domains, params.clipmapCount,
             worldPosition, worldNormal, light, true, true);
     }
-    if (params.rectLightCount != 0u) {
-        directLighting += surfaceCacheRectIrradiance(resolveUniform(params.rectLights),
-            params.rectLightCount, worldPosition, worldNormal);
+    if (params.rectLighting.count != 0u) {
+        directLighting += surfaceCacheRectIrradiance(params.rectLighting, texel, worldPosition, worldNormal);
     }
 
     if (params.exportDirectIrradiance != 0u) {

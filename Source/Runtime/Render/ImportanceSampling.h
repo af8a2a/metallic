@@ -78,6 +78,11 @@ public:
         ImportancePdfTexture& localLightPdf,
         Buffer& punctualLights,
         uint32_t lightCount);
+    Result<> buildRectLights(
+        CommandBuffer& commandBuffer,
+        ImportancePdfTexture& localLightPdf,
+        Buffer& rectLights,
+        uint32_t lightCount);
     Result<> buildEnvironment(
         CommandBuffer& commandBuffer,
         TextureView& environmentMap,
@@ -86,6 +91,9 @@ public:
     bool valid() const;
 
 private:
+    Result<> buildLights(CommandBuffer& commandBuffer, ImportancePdfTexture& localLightPdf,
+        Buffer& lights, uint32_t lightCount, bool rectLightDomain);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

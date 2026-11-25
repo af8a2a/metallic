@@ -3,6 +3,7 @@
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/ReGIR.h"
+#include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -174,14 +175,33 @@ Result<> ReGIRLightSelector::build(
     Buffer& punctualLights,
     const ReGIRBuildParameters& parameters)
 {
-    constexpr uint64_t kPunctualLightByteSize = 64;
+    return buildLights(commandBuffer, localLightPdf, punctualLights, parameters, false);
+}
+
+Result<> ReGIRLightSelector::buildRectLights(
+    CommandBuffer& commandBuffer,
+    TextureView& localLightPdf,
+    Buffer& rectLights,
+    const ReGIRBuildParameters& parameters)
+{
+    return buildLights(commandBuffer, localLightPdf, rectLights, parameters, true);
+}
+
+Result<> ReGIRLightSelector::buildLights(
+    CommandBuffer& commandBuffer,
+    TextureView& localLightPdf,
+    Buffer& lights,
+    const ReGIRBuildParameters& parameters,
+    bool rectLightDomain)
+{
+    const uint32_t lightStride = rectLightDomain ? sizeof(GPURectLight) : sizeof(GPUPunctualLight);
+    const uint64_t recordCount = uint64_t(parameters.lightCount) + (rectLightDomain ? 0u : 1u);
     if (!valid() || parameters.buildSamples == 0 ||
         !std::isfinite(parameters.sceneRadius) || parameters.sceneRadius <= 0.0f ||
         !std::isfinite(parameters.samplingJitter) || parameters.samplingJitter < 0.0f ||
         !std::isfinite(parameters.sceneCenter[0]) || !std::isfinite(parameters.sceneCenter[1]) ||
         !std::isfinite(parameters.sceneCenter[2]) ||
-        !hasFlag(punctualLights.desc().usage, BufferUsageBits::Storage) ||
-        punctualLights.desc().size < (uint64_t(parameters.lightCount) + 1u) * kPunctualLightByteSize) {
+        !hasFlag(lights.desc().usage, BufferUsageBits::Storage) || lights.desc().size < recordCount * lightStride) {
         return makeError(Error::InvalidArgument);
     }
     if (auto* frame = metallic::render::RenderFrameContext::from(commandBuffer)) {
@@ -205,6 +225,7 @@ Result<> ReGIRLightSelector::build(
     push.lightsPerCell = impl_->layout.lightsPerCell;
     push.buildSamples = parameters.buildSamples;
     push.frameIndex = parameters.frameIndex;
+    push.rectLightDomain = rectLightDomain;
     push.lightSlotCount = impl_->layout.lightSlotCount;
     push.sceneCenterRadius[0] = parameters.sceneCenter[0];
     push.sceneCenterRadius[1] = parameters.sceneCenter[1];
@@ -215,12 +236,13 @@ Result<> ReGIRLightSelector::build(
     auto registry = metallic::render::ResourceRegistry::forDevice(*impl_->device);
     if (!registry) { return makeError(registry.error()); }
     ParameterWriter writer(*impl_->device, **registry, metallic::render::RenderFrameContext::from(commandBuffer));
-    const BuildReGIRParams params{
+    BuildReGIRParams params{
         .localLightPdf = writer.sampledImage(&localLightPdf),
         .output = writer.bufferSpan(impl_->buffer.get(), 16, 16),
-        .lights = writer.bufferSpan(&punctualLights, 64, 16),
         .settings = push,
     };
+    auto& lightSpan = rectLightDomain ? params.rectLights : params.lights;
+    lightSpan = writer.bufferSpan(&lights, lightStride, 16);
     auto encoded = writer.encode(params, kBuildReGIRABI, ParameterTransport::InlinePush);
     if (!encoded) { return makeError(encoded.error()); }
     Result<> result = impl_->program.dispatch(commandBuffer, *encoded,

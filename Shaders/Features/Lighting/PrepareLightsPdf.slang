@@ -6,6 +6,7 @@ module PrepareLightsPdf;
 import ShaderCore;
 using Metallic;
 import Lighting;
+import RectLightLTC;
 using Metallic.Lighting;
 
 // GPU PDF preparation for RTXDI-style local-light and environment importance sampling.
@@ -14,6 +15,7 @@ static const uint kPrepareLocalLights = 0u;
 static const uint kPrepareEnvironment = 1u;
 static const uint kGenerateLocalMip = 2u;
 static const uint kGenerateEnvironmentMip = 3u;
+static const uint kPrepareRectLights = 4u;
 static const float kPi = 3.14159265358979323846;
 
 #define gEnvironmentMap resolveUniform(gParams.environment)
@@ -44,10 +46,18 @@ void prepareLocalLightPdf(uint2 dispatchPosition, PrepareLightsPdfPush push)
     if (any(pdfPosition >= push.destinationSize)) {
         return;
     }
-    // buildLocalLights validates space for the metadata record and push.lightCount lights.
-    resolveUniform(gParams.destinationMip)[pdfPosition] = linearIndex < min(push.lightCount, uint(gParams.lights[0].positionRange.x))
-        ? punctualLightPower(gParams.lights[linearIndex + 1u])
-        : 0.0;
+    float weight = 0.0;
+    if (push.mode == kPrepareRectLights) {
+        if (linearIndex < push.lightCount) {
+            weight = rectLightPower(gParams.rectLights[linearIndex]);
+        }
+    } else {
+        // Punctual records store a count at index zero.
+        if (linearIndex < min(push.lightCount, uint(gParams.lights[0].positionRange.x))) {
+            weight = punctualLightPower(gParams.lights[linearIndex + 1u]);
+        }
+    }
+    resolveUniform(gParams.destinationMip)[pdfPosition] = weight;
 }
 
 void prepareEnvironmentPdf(uint2 position, PrepareLightsPdfPush push)
@@ -111,7 +121,7 @@ void prepareLightsPdfMain(
     uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     PrepareLightsPdfPush push = gParams.settings;
-    if (push.mode == kPrepareLocalLights) {
+    if (push.mode == kPrepareLocalLights || push.mode == kPrepareRectLights) {
         prepareLocalLightPdf(dispatchThreadId.xy, push);
     } else if (push.mode == kPrepareEnvironment) {
         prepareEnvironmentPdf(dispatchThreadId.xy, push);
