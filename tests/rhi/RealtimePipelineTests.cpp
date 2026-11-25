@@ -869,9 +869,6 @@ public:
     {
         using namespace render;
         const auto capabilities = vulkan::deviceCapabilities(context.device);
-        if (!capabilities.streamlineDlssSr || !capabilities.streamlineDlssRr) {
-            return RHITestResult::skip("Requires --rhi-streamline and SR/RR support");
-        }
         registerRenderGraphPassType("DLSSFloat32HDRFixturePass", "FP32 solar-range DLSS input",
             [] { return std::make_unique<DLSSFloat32HDRFixturePass>(); });
         registerRenderGraphPassType("WorkingColorHDRReadbackPass", "FP32 HDR raw readback",
@@ -879,9 +876,11 @@ public:
         constexpr uint32_t width = 38, height = 26;
         for (const char* type : {"StreamlineDLSSSRPass", "StreamlineDLSSRRPass"}) {
             const bool rr = std::string_view(type) == "StreamlineDLSSRRPass";
+            if (rr && !capabilities.streamlineDlssRr) { continue; }
+            const bool fallback = !rr && !capabilities.streamlineDlssSr;
             RenderGraph graph;
             graph.addNode("DLSSFloat32HDRFixturePass", "Source");
-            graph.addNode(type, "DLSS", {{"mode", "Off"}});
+            graph.addNode(type, "DLSS", {{"mode", fallback ? "Quality" : "Off"}, {"fallbackToInput", fallback}});
             graph.addNode("WorkingColorHDRReadbackPass", "InputReadback");
             graph.addNode("WorkingColorHDRReadbackPass", "OutputReadback");
             graph.addEdge("Source.color", "DLSS.inputColor");
@@ -900,7 +899,7 @@ public:
             std::string log;
             if (!executor.compile(context.device, graph, width, height, log) ||
                 !executor.execute({.graphicsQueue = &context.graphicsQueue}) || !executor.waitForSubmittedWork()) {
-                return realtimeFailure(std::string(type) + " FP32 Off graph failed: " + log);
+                return realtimeFailure(std::string(type) + " FP32 native copy graph failed: " + log);
             }
             auto* inputBuffer = executor.outputResource("InputReadback.pixels")->buffer;
             auto* outputBuffer = executor.outputResource("OutputReadback.pixels")->buffer;
@@ -920,9 +919,9 @@ public:
             }
             inputBuffer->unmap();
             outputBuffer->unmap();
-            if (!valid) { return realtimeFailure(std::string(type) + " clamped/quantized FP32 solar-range color in mode Off"); }
+            if (!valid) { return realtimeFailure(std::string(type) + " clamped/quantized FP32 solar-range color during native copy"); }
         }
-        return RHITestResult::pass("SR/RR Off preserve 1e9 solar-range color and dark channels byte for byte in FP32");
+        return RHITestResult::pass("DLSS native copy preserves solar-range color and dark channels byte for byte in FP32");
     }
 };
 METALLIC_REGISTER_RHI_TEST(DLSSFloat32HDROffCopyTest);

@@ -69,7 +69,7 @@ public:
 
     RenderPassReflection reflect(const RenderGraphCompileContext& context) const override
     {
-        const vulkan::StreamlineDLSSRRMode mode = modeFromProperties(properties());
+        const vulkan::StreamlineDLSSRRMode mode = modeForDevice(properties(), context.device);
         const bool hasPreparedExtent = preparedFor(mode, context.width, context.height);
         const uint32_t renderWidth = hasPreparedExtent ? preparedSettings_.renderWidth : 0;
         const uint32_t renderHeight = hasPreparedExtent ? preparedSettings_.renderHeight : 0;
@@ -196,7 +196,7 @@ public:
         forceReset_ = true;
         preparedValid_ = false;
         preparedSettings_ = {};
-        preparedMode_ = modeFromProperties(properties());
+        preparedMode_ = modeForDevice(properties(), context.device);
         preparedOutputWidth_ = context.width;
         preparedOutputHeight_ = context.height;
         if (context.device == nullptr) {
@@ -207,6 +207,9 @@ public:
             return makeError(Error::InvalidArgument);
         }
         if (preparedMode_ == vulkan::StreamlineDLSSRRMode::Off) {
+            if (modeFromProperties(properties()) != vulkan::StreamlineDLSSRRMode::Off) {
+                spdlog::info("[Streamline] DLSS-SR unavailable, using native rendering at {}x{}", context.width, context.height);
+            }
             preparedSettings_.renderWidth = context.width;
             preparedSettings_.renderHeight = context.height;
             preparedSettings_.renderWidthMin = context.width;
@@ -242,10 +245,6 @@ public:
 
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
-#if !METALLIC_HAS_STREAMLINE
-        log = std::string(passTypeName()) + " requires the NVIDIA Streamline SDK target";
-        return makeError(Error::Unsupported);
-#else
         if (context.device == nullptr || context.graphicsQueue == nullptr) {
             log = std::string(passTypeName()) + " requires a device and graphics queue";
             return makeError(Error::InvalidArgument);
@@ -276,15 +275,16 @@ public:
             }, log);
             if (!result) { return result; }
         }
+        const auto& capabilities = vulkan::deviceCapabilities(*context.device);
         const bool featureSupported = variant_ == DLSSVariant::RayReconstruction
-            ? metallic::render::vulkan::deviceCapabilities(*context.device).streamlineDlssRr
-            : metallic::render::vulkan::deviceCapabilities(*context.device).streamlineDlssSr;
-        if (!metallic::render::vulkan::deviceCapabilities(*context.device).streamline || !featureSupported) {
+            ? capabilities.streamlineDlssRr : capabilities.streamlineDlssSr;
+        if (!(allowsNativeFallback(properties()) && preparedMode_ == vulkan::StreamlineDLSSRRMode::Off) &&
+            (!capabilities.streamline || !featureSupported)) {
             log = std::string(passTypeName()) + " requires DeviceCapabilities::" +
                 (variant_ == DLSSVariant::RayReconstruction ? "streamlineDlssRr" : "streamlineDlssSr");
             return makeError(Error::Unsupported);
         }
-        if (!preparedFor(modeFromProperties(properties()), context.width, context.height)) {
+        if (!preparedFor(modeForDevice(properties(), context.device), context.width, context.height)) {
             log = std::string(passTypeName()) + " was not prepared with optimal input dimensions";
             return makeError(Error::InvalidArgument);
         }
@@ -302,7 +302,6 @@ public:
                 log);
         }
         return {};
-#endif
     }
 
     Result<> execute(RenderGraphExecutionContext& context) override
@@ -334,7 +333,7 @@ public:
             return makeError(Error::InvalidArgument);
         }
 
-        const vulkan::StreamlineDLSSRRMode mode = modeFromProperties(context.properties());
+        const vulkan::StreamlineDLSSRRMode mode = modeForDevice(context.properties(), device_);
         const uint32_t renderWidth = inputColor.desc().width;
         const uint32_t renderHeight = inputColor.desc().height;
         const uint32_t outputWidth = outputColor.desc().width;
@@ -636,6 +635,19 @@ private:
     const char* featureName() const
     {
         return variant_ == DLSSVariant::RayReconstruction ? "DLSS-RR" : "DLSS-SR";
+    }
+
+    bool allowsNativeFallback(const RenderGraphProperties& properties) const
+    {
+        return variant_ == DLSSVariant::SuperResolution && boolProperty(&properties, "fallbackToInput", false);
+    }
+
+    vulkan::StreamlineDLSSRRMode modeForDevice(const RenderGraphProperties& properties, const Device* device) const
+    {
+        if (device && allowsNativeFallback(properties) && !vulkan::deviceCapabilities(*device).streamlineDlssSr) {
+            return vulkan::StreamlineDLSSRRMode::Off;
+        }
+        return modeFromProperties(properties);
     }
 
     bool preparedFor(

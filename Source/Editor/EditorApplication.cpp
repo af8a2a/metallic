@@ -7333,7 +7333,16 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
     // This also covers manual output selection and preserves the saved DLSS setting.
     const auto* previewNode = findRenderGraphNodeForOutput(renderGraph_, previewOutput);
     const bool rawVisibilityPreview = previewNode != nullptr && previewNode->type == "VisibilityBufferPass";
-    viewportView_.setTemporalJitterSuppressed(rawVisibilityPreview);
+    const bool dlssSrSupported = render::vulkan::deviceCapabilities(*device_).streamlineDlssSr;
+    const bool nativeView = std::ranges::any_of(renderGraph_.nodes(), [dlssSrSupported](const auto& node) {
+        if (node.type != "StreamlineDLSSSRPass") { return false; }
+        const auto props = effectiveNodeProperties(node);
+        const auto fallback = props.find("fallbackToInput");
+        if (fallback == props.end() || *fallback != true) { return false; }
+        const auto mode = props.find("mode");
+        return !dlssSrSupported || (mode != props.end() && (*mode == "Off" || *mode == "off"));
+    });
+    viewportView_.setTemporalJitterSuppressed(rawVisibilityPreview || nativeView);
 
     const bool textureSizeMatches =
         viewportDescriptor_ != 0 &&

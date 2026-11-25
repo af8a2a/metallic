@@ -87,6 +87,7 @@
             },
             "properties": {
                 "mode": "Quality",
+                "fallbackToInput": true,
                 "exportOutputGuides": true
             }
         },
