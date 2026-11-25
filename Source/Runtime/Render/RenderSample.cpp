@@ -136,7 +136,7 @@ public:
     std::string_view name() const override { return "Real-time / VSM Candidate"; }
     std::string_view description() const override
     {
-        return "Realtime template with cached PCF virtual shadows, scene-authored realtime GI and no shadow acceleration structures. "
+        return "Realtime template with cached SMRT virtual shadows, temporal stabilization, LOD 0 visibility, and scene-authored realtime GI. "
             "Candidate pending representative scene, memory and performance acceptance; the RT template remains available.";
     }
     std::string graphPath() const override { return "Pipelines/Samples/realtime_lighting_vsm.metallic_graph.json"; }

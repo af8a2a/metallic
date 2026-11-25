@@ -2630,15 +2630,26 @@ public:
             }
             const auto* visibility = candidate.graph.findNode("VBuffer");
             const auto* shadows = candidate.graph.findNode("Shadows");
+            const bool standardTemplate = std::string_view(id) == "realtime-lighting-vsm";
             if (!visibility || !shadows || shadows->type != "VirtualShadowMapLightsPass" ||
                 visibility->properties.value("enableClusterRtx", true) ||
                 visibility->properties.value("enableClas", true) ||
                 visibility->properties.value("rtTessellation", false) ||
                 !visibility->properties.value("initialLoad", false) ||
                 !shadows->properties.value("compactOutputs", false) ||
-                shadows->properties.value("filter", "") != "pcf" ||
+                shadows->properties.value("filter", "") != (standardTemplate ? "smrt" : "pcf") ||
                 candidate.graph.firstOutputName() != "FinalBlit.color") {
-                return RHITestResult::fail("VSM realtime candidates must use compact PCF outputs without shadow RTAS");
+                return RHITestResult::fail("VSM realtime candidates must use compact shadow outputs with the expected filter");
+            }
+            if (standardTemplate &&
+                (!shadows->properties.value("smrtTemporalEnabled", false) ||
+                    shadows->properties.value("smrtTemporalMaxFrames", 0) != 32 ||
+                    shadows->properties.value("smrtRayCount", 0) != 2 ||
+                    shadows->properties.value("firstClipmapExtent", 0.0) != 1.0 ||
+                    shadows->properties.value("clipmapCount", 0) != 6 ||
+                    visibility->properties.value("autoLod", true) ||
+                    visibility->properties.value("lodLevel", -1) != 0)) {
+                return RHITestResult::fail("The realtime VSM template must use reference SMRT and LOD 0 visibility");
             }
             bool visibilityEdge = false;
             bool lightTableEdge = false;
