@@ -30,6 +30,9 @@ public:
     bool setObjectCameraProperties(SceneEntity object, const CameraProperties& properties);
     bool setObjectLightProperties(SceneEntity object, const LightProperties& properties);
     bool setMaterialProperties(int32_t materialIndex, const RenderMaterial& properties);
+    bool setDecal(RenderDecal decal, const std::filesystem::path& baseColorFile = {},
+        const std::filesystem::path& roughnessFile = {});
+    bool removeDecal(uint32_t id);
     bool setMaterialAsset(int32_t materialIndex, std::string_view uri,
         const std::filesystem::path& assetRoot, std::string& error);
     bool reloadMaterialAsset(int32_t materialIndex, std::string& error);

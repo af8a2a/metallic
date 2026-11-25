@@ -776,6 +776,19 @@ Result<> createKtxMaterialTexture(Device& device, SceneUploadStagingArena& arena
     return {};
 }
 
+void stampTextureFormat(SceneMaterialData::TextureInfo& info, const ScenePathTraceMaterialTexture& texture, bool normal)
+{
+    info.sourceLodTerm = makeTextureLodTerm(texture.sourceWidth, texture.sourceHeight);
+    info.sourceMipCount = texture.sourceMipCount;
+    // KTX2 vkFormat declares the transfer function: sRGB views decode in
+    // hardware, while UNORM KTX2 is already linear. Legacy PNG views
+    // retain their existing shader-side sRGB conversion.
+    uint32_t flags = uint32_t(info.transform0[3]);
+    if (compressedBlockBytes(texture.format) != 0) { flags |= 1u; }
+    if (normal && texture.format == Format::BC5Unorm) { flags |= 2u; }
+    info.transform0[3] = float(flags);
+}
+
 void stampTextureFormats(std::vector<ScenePathTraceGPUMaterial>& materials,
     const std::vector<ScenePathTraceMaterialTexture>& textures)
 {
@@ -785,15 +798,7 @@ void stampTextureFormats(std::vector<ScenePathTraceGPUMaterial>& materials,
              &material.thicknessTexture,&material.diffuseTransmissionTexture,&material.diffuseTransmissionColorTexture,&material.specularTexture,&material.specularColorTexture}) {
             const auto index = info->textureIndex;
             if (index >= textures.size()) { continue; }
-            info->sourceLodTerm = makeTextureLodTerm(textures[index].sourceWidth, textures[index].sourceHeight);
-            info->sourceMipCount = textures[index].sourceMipCount;
-            // KTX2 vkFormat declares the transfer function: sRGB views decode in
-            // hardware, while UNORM KTX2 is already linear. Legacy PNG views
-            // retain their existing shader-side sRGB conversion.
-            uint32_t flags = uint32_t(info->transform0[3]);
-            if (compressedBlockBytes(textures[index].format) != 0) { flags |= 1u; }
-            if (info == &material.normalTexture && textures[index].format == Format::BC5Unorm) { flags |= 2u; }
-            info->transform0[3] = float(flags);
+            stampTextureFormat(*info, textures[index], info == &material.normalTexture);
         }
     }
 }
@@ -966,12 +971,10 @@ std::vector<ScenePathTraceGPUMaterial> buildGpuMaterials(
 std::vector<bool> referencedMaterialTextures(const scene::Scene& loadedScene)
 {
     std::vector<bool> referenced(loadedScene.textures().size(), loadedScene.hasStreamGeometry());
-    const auto mark = [&referenced](const scene::RenderTextureInfo& texture) {
-        if (texture.textureIndex >= 0 &&
-            static_cast<size_t>(texture.textureIndex) < referenced.size()) {
-            referenced[static_cast<size_t>(texture.textureIndex)] = true;
-        }
+    const auto markIndex = [&referenced](int32_t index) {
+        if (index >= 0 && static_cast<size_t>(index) < referenced.size()) { referenced[index] = true; }
     };
+    const auto mark = [&](const scene::RenderTextureInfo& texture) { markIndex(texture.textureIndex); };
     for (const scene::RenderMaterial& material : loadedScene.materials()) {
         mark(material.baseColorTexture);
         mark(material.metallicRoughnessTexture);
@@ -985,6 +988,10 @@ std::vector<bool> referencedMaterialTextures(const scene::Scene& loadedScene)
         mark(material.specularTexture);
         mark(material.specularColorTexture);
         mark(material.displacementTexture);
+    }
+    for (const auto& decal : loadedScene.decals()) {
+        markIndex(decal.baseColorTexture);
+        markIndex(decal.roughnessTexture);
     }
     return referenced;
 }
@@ -3212,6 +3219,23 @@ SceneUploadStats ScenePathTraceResources::uploadStats() const
 
 SceneTextureStats ScenePathTraceResources::textureStats() const { return impl_->textureStats; }
 std::span<const uint32_t> ScenePathTraceResources::logicalTextureIndices() const { return impl_->textureIndexMap; }
+
+SceneMaterialData::TextureInfo ScenePathTraceResources::decalTextureInfo(
+    int32_t logicalTexture, TextureColorMetadata colorMetadata, std::span<uint32_t, 2> sourceExtent) const
+{
+    SceneMaterialData::TextureInfo info;
+    info.textureIndex = materialTextureIndex(logicalTexture, impl_->textureIndexMap);
+    info.transform0[3] = float(textureColorFlags(colorMetadata));
+    if (info.textureIndex == kInvalidMaterialTextureIndex) {
+        sourceExtent[0] = sourceExtent[1] = 0;
+        return info;
+    }
+    const auto& texture = impl_->materialTextures[info.textureIndex];
+    sourceExtent[0] = texture.sourceWidth;
+    sourceExtent[1] = texture.sourceHeight;
+    stampTextureFormat(info, texture, false);
+    return info;
+}
 
 bool ScenePathTraceResources::gpuWorkComplete()
 {

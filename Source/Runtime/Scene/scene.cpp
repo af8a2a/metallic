@@ -5142,6 +5142,7 @@ bool materialPropertiesEqual(const RenderMaterial& lhs, const RenderMaterial& rh
         lhs.metallicFactor == rhs.metallicFactor && lhs.roughnessFactor == rhs.roughnessFactor &&
         sameColor(lhs.emissiveFactor, rhs.emissiveFactor) && lhs.alphaCutoff == rhs.alphaCutoff &&
         lhs.alphaMode == rhs.alphaMode && lhs.doubleSided == rhs.doubleSided &&
+        lhs.decalReceiverMask == rhs.decalReceiverMask &&
         lhs.normalTextureScale == rhs.normalTextureScale && lhs.occlusionTextureStrength == rhs.occlusionTextureStrength &&
         lhs.specularFactor == rhs.specularFactor && sameColor(lhs.specularColorFactor, rhs.specularColorFactor) &&
         lhs.unlit == rhs.unlit &&
@@ -5199,6 +5200,7 @@ bool Scene::setMaterialProperties(int32_t materialIndex, const RenderMaterial& p
     current.alphaCutoff = properties.alphaCutoff;
     current.alphaMode = properties.alphaMode;
     current.doubleSided = properties.doubleSided;
+    current.decalReceiverMask = properties.decalReceiverMask;
     current.normalTextureScale = properties.normalTextureScale;
     current.displacementMagnitude = properties.displacementMagnitude;
     current.displacementCenter = properties.displacementCenter;
@@ -5218,6 +5220,100 @@ bool Scene::setMaterialProperties(int32_t materialIndex, const RenderMaterial& p
     return true;
 }
 
+namespace {
+
+// Stage new image/texture pairs until every binding for an authored object has resolved.
+struct PendingSceneTextures {
+    std::vector<RenderImage> images;
+    std::vector<RenderTexture> textures;
+
+    int32_t resolve(const Scene& scene, const std::filesystem::path& path, std::string_view name)
+    {
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error)) { return kInvalidSceneIndex; }
+        const auto text = path.generic_string();
+        for (size_t index = 0; index < scene.textures().size(); ++index) {
+            const auto image = scene.textures()[index].imageIndex;
+            if (image >= 0 && size_t(image) < scene.images().size() && scene.images()[image].uri == text) {
+                return static_cast<int32_t>(index);
+            }
+        }
+        for (size_t index = 0; index < images.size(); ++index) {
+            if (images[index].uri == text) { return static_cast<int32_t>(scene.textures().size() + index); }
+        }
+        if (scene.textures().size() + textures.size() >= INT32_MAX ||
+            scene.images().size() + images.size() >= INT32_MAX) { return kInvalidSceneIndex; }
+        const auto imageIndex = static_cast<int32_t>(scene.images().size() + images.size());
+        images.push_back({.name = path.filename().string(), .uri = text});
+        textures.push_back({.name = std::string(name), .imageIndex = imageIndex});
+        return static_cast<int32_t>(scene.textures().size() + textures.size() - 1);
+    }
+
+    void publish(std::vector<RenderImage>& destinationImages, std::vector<RenderTexture>& destinationTextures)
+    {
+        destinationImages.reserve(destinationImages.size() + images.size());
+        destinationTextures.reserve(destinationTextures.size() + textures.size());
+        for (auto& image : images) { destinationImages.push_back(std::move(image)); }
+        for (auto& texture : textures) { destinationTextures.push_back(std::move(texture)); }
+    }
+};
+
+} // namespace
+
+bool Scene::setDecal(RenderDecal decal, const std::filesystem::path& baseColorFile,
+    const std::filesystem::path& roughnessFile)
+{
+    const auto unit = [](float v) { return std::isfinite(v) && v >= 0.0f && v <= 1.0f; };
+    const auto& matrix = decal.worldFromDecal;
+    if (!valid() || !unit(decal.baseColor.x) || !unit(decal.baseColor.y) || !unit(decal.baseColor.z) ||
+        !unit(decal.baseColor.w) || !unit(decal.roughness) || !unit(decal.roughnessOpacity) ||
+        matrix.a30 != 0.0f || matrix.a31 != 0.0f || matrix.a32 != 0.0f || matrix.a33 != 1.0f) { return false; }
+    auto inverse = matrix;
+    inverse.Invert();
+    if (!std::ranges::all_of(inverse.a, [](float value) { return std::isfinite(value); })) { return false; }
+
+    PendingSceneTextures pending;
+    const auto resolve = [&](const std::filesystem::path& file, int32_t& index) {
+        if (file.empty()) {
+            if (index == kInvalidSceneIndex) { return true; }
+            if (!validIndex(index, textures_.size())) { return false; }
+            return validIndex(textures_[index].imageIndex, images_.size());
+        }
+        std::error_code error;
+        auto path = std::filesystem::absolute(file, error).lexically_normal();
+        if (error) { return false; }
+        index = pending.resolve(*this, path, path.filename().string());
+        return index != kInvalidSceneIndex;
+    };
+    if (!resolve(baseColorFile, decal.baseColorTexture) || !resolve(roughnessFile, decal.roughnessTexture)) {
+        return false;
+    }
+    auto current = std::ranges::find(decals_, decal.id, &RenderDecal::id);
+    const bool changedBindings = current == decals_.end()
+        ? decal.baseColorTexture >= 0 || decal.roughnessTexture >= 0
+        : current->baseColorTexture != decal.baseColorTexture || current->roughnessTexture != decal.roughnessTexture;
+    pending.publish(images_, textures_);
+    if (current == decals_.end()) { decals_.push_back(decal); }
+    else { *current = decal; }
+    if (changedBindings) { resourceIdentity_ = nextSceneResourceIdentity(); }
+    stats_.textureCount = textures_.size();
+    stats_.imageCount = images_.size();
+    ++decalRevision_;
+    return true;
+}
+
+bool Scene::removeDecal(uint32_t id)
+{
+    const auto current = std::ranges::find(decals_, id, &RenderDecal::id);
+    if (current == decals_.end()) { return false; }
+    if (current->baseColorTexture >= 0 || current->roughnessTexture >= 0) {
+        resourceIdentity_ = nextSceneResourceIdentity();
+    }
+    decals_.erase(current);
+    ++decalRevision_;
+    return true;
+}
+
 bool Scene::applyMaterialInstance(int32_t materialIndex, const material::ResolvedMaterialInstance& instance,
     const material::MaterialAssetLibrary& library, const RenderMaterial& imported, std::string& error,
     bool replaceOwnedValueProgram)
@@ -5229,8 +5325,7 @@ bool Scene::applyMaterialInstance(int32_t materialIndex, const material::Resolve
     }
     auto candidate = materials_[materialIndex];
     if (replaceOwnedValueProgram) { candidate.valueProgram.clear(); candidate.valueParameters = {}; }
-    std::vector<RenderImage> newImages;
-    std::vector<RenderTexture> newTextures;
+    PendingSceneTextures pending;
     const auto resolver = [&](std::string_view uri) -> int32_t {
         if (uri.starts_with("imported://")) {
             const auto slot = uri.substr(11);
@@ -5239,46 +5334,20 @@ bool Scene::applyMaterialInstance(int32_t materialIndex, const material::Resolve
             }
             return kInvalidSceneIndex;
         }
-        const auto path = library.pathFor(uri);
-        if (!std::filesystem::is_regular_file(path)) { return kInvalidSceneIndex; }
-        const auto text = path.generic_string();
-        for (size_t index = 0; index < textures_.size(); ++index) {
-            const auto image = textures_[index].imageIndex;
-            if (image >= 0 && size_t(image) < images_.size() && images_[image].uri == text) { return static_cast<int32_t>(index); }
-        }
-        for (size_t index = 0; index < newImages.size(); ++index) {
-            if (newImages[index].uri == text) { return static_cast<int32_t>(textures_.size() + index); }
-        }
-        if (textures_.size() + newTextures.size() >= INT32_MAX || images_.size() + newImages.size() >= INT32_MAX) {
-            return kInvalidSceneIndex;
-        }
-        RenderImage image;
-        image.name = path.filename().string();
-        image.uri = text;
-        RenderTexture texture;
-        texture.name = std::string(uri);
-        texture.imageIndex = static_cast<int32_t>(images_.size() + newImages.size());
-        newImages.push_back(std::move(image));
-        newTextures.push_back(std::move(texture));
-        return static_cast<int32_t>(textures_.size() + newTextures.size() - 1);
+        return pending.resolve(*this, library.pathFor(uri), uri);
     };
     if (!material::lowerMaterialInstance(instance, resolver, candidate, error)) { return false; }
     bool changedTextures = false;
     for (const auto& [name, member] : material::detail::kTextures) {
         const auto& a = materials_[materialIndex].*member;
         const auto& b = candidate.*member;
-        if (b.textureIndex < -1 || (b.textureIndex >= 0 && size_t(b.textureIndex) >= textures_.size() + newTextures.size())) {
+        if (b.textureIndex < -1 || (b.textureIndex >= 0 && size_t(b.textureIndex) >= textures_.size() + pending.textures.size())) {
             error = "Material texture does not belong to this scene";
             return false;
         }
         changedTextures |= a.textureIndex != b.textureIndex;
     }
-    // Reserve both before committing either. Resource payloads move only after
-    // every URI and material property has resolved successfully.
-    images_.reserve(images_.size() + newImages.size());
-    textures_.reserve(textures_.size() + newTextures.size());
-    for (auto& image : newImages) { images_.push_back(std::move(image)); }
-    for (auto& texture : newTextures) { textures_.push_back(std::move(texture)); }
+    pending.publish(images_, textures_);
     bool changed = !materialPropertiesEqual(materials_[materialIndex], candidate);
     for (const auto& [name, member] : material::detail::kTextures) {
         const auto& a = materials_[materialIndex].*member;
@@ -5643,6 +5712,8 @@ void Scene::clearParsedData()
     materials_.clear();
     cameras_.clear();
     lights_.clear();
+    decals_.clear();
+    decalRevision_ = 0;
     sources_.clear();
     sourceMountObjects_.clear();
     sourceRenderNodeRanges_.clear();

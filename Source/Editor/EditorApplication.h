@@ -86,6 +86,7 @@ private:
     void drawCameraControls();
     void drawEnvironmentControls();
     void drawLightingControls();
+    void drawDecalControls();
     void beginEnvironmentEdit();
     void drawSceneNode(int32_t nodeIndex);
     void drawSceneGraphTab();

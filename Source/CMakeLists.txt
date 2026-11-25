@@ -73,6 +73,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/MeshletLOD.cpp
     Runtime/Render/MaterialBinning.cpp
     Runtime/Render/ClusterLightGrid.cpp
+    Runtime/Render/RealtimeDecals.cpp
     Runtime/Render/Core/RenderFrameContext.cpp
     Runtime/Render/GAPI/CommandSubmission.cpp
     Runtime/Render/Core/RHISmokeTests.cpp

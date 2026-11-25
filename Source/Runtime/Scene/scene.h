@@ -205,6 +205,20 @@ struct RenderTextureInfo {
     render::TextureColorMetadata colorMetadata{};
 };
 
+// World-space projector. Its local volume is [-0.5, 0.5]^3 and XY maps to UV.
+struct RenderDecal {
+    uint32_t id = 0;
+    int32_t priority = 0;
+    bool enabled = true;
+    float4x4 worldFromDecal = float4x4::Identity();
+    float4 baseColor{1.0f, 1.0f, 1.0f, 1.0f}; // Linear Rec.709 RGB and opacity
+    int32_t baseColorTexture = kInvalidSceneIndex;
+    float roughness = 1.0f;
+    float roughnessOpacity = 0.0f;
+    int32_t roughnessTexture = kInvalidSceneIndex; // Linear R
+    uint32_t receiverMask = 1;
+};
+
 struct RenderNode {
     SceneEntity object = kNullSceneEntity;
     int32_t nodeIndex = kInvalidSceneIndex;
@@ -228,6 +242,7 @@ struct RenderMaterial {
     float alphaCutoff = 0.5f;
     std::string alphaMode = "OPAQUE";
     bool doubleSided = false;
+    uint32_t decalReceiverMask = 1;
     float normalTextureScale = 1.0f;
     // GPU raster displacement in world units: (linear height.r - centre) * magnitude.
     float displacementMagnitude = 0.0f;
@@ -429,6 +444,10 @@ public:
     bool setObjectCameraProperties(SceneEntity object, const CameraProperties& properties);
     bool setObjectLightProperties(SceneEntity object, const LightProperties& properties);
     bool setMaterialProperties(int32_t materialIndex, const RenderMaterial& properties);
+    // Insert or update by stable ID. Optional files replace the corresponding logical texture indices.
+    bool setDecal(RenderDecal decal, const std::filesystem::path& baseColorFile = {},
+        const std::filesystem::path& roughnessFile = {});
+    bool removeDecal(uint32_t id);
     // Resolve semantic resources transactionally. New texture bindings invalidate
     // scene resource identity; factor-only changes retain the old upload fast path.
     bool applyMaterialInstance(int32_t materialIndex, const material::ResolvedMaterialInstance& instance,
@@ -477,6 +496,8 @@ public:
     const std::vector<RenderMaterial>& materials() const { return materials_; }
     const std::vector<RenderCamera>& cameras() const { return cameras_; }
     const std::vector<RenderLight>& lights() const { return lights_; }
+    const std::vector<RenderDecal>& decals() const { return decals_; }
+    uint64_t decalRevision() const { return decalRevision_; }
     // Authored document lights remain available when a render graph resolves
     // this scene independently of the editor's active RenderWorld.
     const LightingSettings& authoredLighting() const { return lighting_; }
@@ -561,6 +582,8 @@ private:
     std::vector<RenderMaterial> materials_;
     std::vector<RenderCamera> cameras_;
     std::vector<RenderLight> lights_;
+    std::vector<RenderDecal> decals_;
+    uint64_t decalRevision_ = 0;
     std::vector<SceneSourceDesc> sources_;
     std::vector<SceneEntity> sourceMountObjects_;
     std::vector<SourceRenderNodeRange> sourceRenderNodeRanges_;

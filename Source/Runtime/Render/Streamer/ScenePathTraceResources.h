@@ -119,6 +119,8 @@ public:
     SceneUploadStats uploadStats() const;
     SceneTextureStats textureStats() const;
     std::span<const uint32_t> logicalTextureIndices() const;
+    SceneMaterialData::TextureInfo decalTextureInfo(int32_t logicalTexture, TextureColorMetadata colorMetadata,
+        std::span<uint32_t, 2> sourceExtent) const;
 
     void clear();
     bool valid() const;

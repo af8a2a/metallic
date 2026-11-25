@@ -23,6 +23,7 @@
 #include "Runtime/Render/ScreenSpaceShadows.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
 #include "Runtime/Render/ClusterLightGrid.h"
+#include "Runtime/Render/RealtimeDecals.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
@@ -93,6 +94,13 @@ constexpr ComputeResourceMember kLightGridMembers[] = {
 constexpr ComputeResourceMember kRasterGeometryMembers[] = {
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterInstances),
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterMaterials)
+};
+constexpr std::array kDecalBuffers{
+    METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, decals.records),
+    METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, decals.tileRanges),
+    METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, decals.tileIndices),
+    METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, decals.materials),
+    METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, decals.receiverMasks)
 };
 constexpr ComputeResourceMember kStreamGeometryMembers[] = {
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamRecords),
@@ -378,6 +386,15 @@ struct ScenePathTraceCameraSnapshot {
     float upProjection[4] = {};
     float viewport[4] = {};
     float clipOrtho[4] = {};
+    bool operator==(const ScenePathTraceCameraSnapshot&) const = default;
+};
+
+struct DecalViewKey {
+    ScenePathTraceCameraSnapshot camera;
+    uint64_t sceneIdentity, decalRevision, resourceRevision;
+    uint32_t width, height;
+    bool jittered, fullScan;
+    bool operator==(const DecalViewKey&) const = default;
 };
 
 class ScenePathTracePass final : public ComputePass {
@@ -569,6 +586,7 @@ public:
                 auto binning = runtimeBoolSetting("materialBinning", "Wave32 Material Tile Classification", true, true);
                 binning.rebuildGraph = true;
                 settings.push_back(binning);
+                settings.push_back(runtimeBoolSetting("decalFullScan", "Decals: Full List Reference", false));
                 settings.push_back(runtimeBoolSetting("programBinning", "Sparse Material Program Bins", true, true));
                 auto halfPrecision = runtimeBoolSetting("halfPrecision", "FP16 Material Weights", true, true);
                 halfPrecision.rebuildGraph = true;
@@ -1050,6 +1068,11 @@ public:
             }
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount), .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialSampler), .kind = ComputeResourceBindingKind::Sampler});
+            for (const auto member : kDecalBuffers) {
+                baseBindings.push_back({.binding = member, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true});
+            }
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, decals.sampler),
+                .kind = ComputeResourceBindingKind::Sampler, .optional = true});
             for (const auto binding : kStreamGeometryMembers) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
@@ -2102,6 +2125,21 @@ public:
             }
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount), .buffer = deferredStream->paramsBuffer});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialSampler), .sampler = &materialSampler_});
+            {
+                CPUProfileScope decalProfile(profiler, "Prepare decal tiles");
+                result = prepareDecals(*lightScene, push, boolProperty(context.properties(), "decalFullScan", false), profiler);
+                if (!result) { return result; }
+            }
+            if (decalBuffers_[0]) {
+                push.deferredSettings |= kScenePathTraceHasDecals;
+                for (size_t i = 0; i < kDecalBuffers.size(); ++i) {
+                    if (decalBuffers_[i]) {
+                        bindings.push_back({.binding = kDecalBuffers[i], .buffer = decalBuffers_[i].get()});
+                    }
+                }
+                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, decals.sampler),
+                    .sampler = &decalSampler_});
+            }
             const std::array streamBuffers{
                 deferredStream->visibleClusterBuffer,
                 deferredStream->activeGroupBuffer,
@@ -2266,6 +2304,14 @@ public:
             if (!result) { return result; }
         } else {
             auto resources = stageResources(context, push);
+            constexpr std::array decalNames{"decalRecords", "decalTileRanges", "decalTileIndices", "decalMaterials", "decalReceiverMasks"};
+            for (size_t i = 0; i < decalBuffers_.size(); ++i) {
+                if (decalBuffers_[i]) {
+                    result = importBuffer(resources, decalNames[i], decalBuffers_[i].get());
+                    if (!result) { return result; }
+                    resources.uses.push_back({decalNames[i], RenderGraphResourceAccess::BufferShaderRead});
+                }
+            }
             if (materialBins.arguments != nullptr) {
                 const std::array buffers{materialBins.bins, materialBins.tiles, materialBins.arguments};
                 const std::array names{"materialBins", "materialTiles", "materialArguments"};
@@ -2333,6 +2379,52 @@ public:
     }
 
 private:
+    Result<> prepareDecals(const scene::Scene& scene, const ScenePathTracePush& push, bool fullScan,
+        CPUProfileRecorder* profiler)
+    {
+        if (scene.decals().empty()) {
+            decalViewKey_.reset();
+            decalBuffers_ = {};
+            return {};
+        }
+        const DecalViewKey key{cameraSnapshotFromPush(push), scene.resourceIdentity(), scene.decalRevision(),
+            sceneResources_.revision(), push.width, push.height, push.temporalJitter != 0, fullScan};
+        if (decalViewKey_ == key) { return {}; }
+
+        CPUProfileScope buildProfile(profiler, "Build decal candidates");
+        const auto view = buildRealtimeDecalView(scene.decals(), push, sceneResources_, fullScan);
+        buildProfile.end();
+        std::vector<uint32_t> receiverMasks;
+        if (!view.records.empty() && std::ranges::any_of(scene.materials(),
+                [](const scene::RenderMaterial& material) { return material.decalReceiverMask != 1u; })) {
+            receiverMasks.reserve(scene.materials().size());
+            for (const auto& material : scene.materials()) { receiverMasks.push_back(material.decalReceiverMask); }
+        }
+        const std::array data{std::as_bytes(std::span(view.records)), std::as_bytes(std::span(view.tileRanges)),
+            std::as_bytes(std::span(view.tileIndices)), std::as_bytes(std::span(view.materials)),
+            std::as_bytes(std::span(receiverMasks))};
+        const std::array strides{sizeof(view.records.front()), sizeof(view.tileRanges.front()), sizeof(uint32_t),
+            sizeof(view.materials.front()), sizeof(uint32_t)};
+        decltype(decalBuffers_) buffers;
+        for (size_t i = 0; i < data.size(); ++i) {
+            if (data[i].empty()) { continue; }
+            auto buffer = device_->createBuffer({.size = data[i].size(), .structureStride = uint32_t(strides[i]),
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload,
+                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute});
+            if (!buffer) { return makeError(buffer.error()); }
+            void* mapped = (*buffer)->map();
+            if (!mapped) { return makeError(Error::Failure); }
+            std::memcpy(mapped, data[i].data(), data[i].size());
+            (*buffer)->flush();
+            (*buffer)->unmap();
+            buffers[i] = std::move(*buffer);
+        }
+        // Recorded frames retain their buffer allocations through the stage and resource encoder.
+        decalBuffers_ = std::move(buffers);
+        decalViewKey_ = key;
+        return {};
+    }
+
     Result<const ClusterLightGridSnapshot*> buildRayQueryLightGrid(RenderGraphExecutionContext& context,
         const scene::Scene& scene, const scene::LightingSettings& lighting, const ScenePathTracePush& push)
     {
@@ -3365,6 +3457,13 @@ private:
     bool compiledGlobalView_ = false;
     SceneLightResources lights_;
     ScenePathTraceResources sceneResources_;
+    std::optional<DecalViewKey> decalViewKey_;
+    std::array<std::unique_ptr<Buffer>, kDecalBuffers.size()> decalBuffers_;
+    SamplerDesc decalSampler_{
+        .minFilter = SamplerFilter::Linear, .magFilter = SamplerFilter::Linear, .mipFilter = SamplerFilter::Linear,
+        .addressU = SamplerAddressMode::ClampToEdge, .addressV = SamplerAddressMode::ClampToEdge,
+        .addressW = SamplerAddressMode::ClampToEdge,
+    };
     std::shared_ptr<const ComputeSampledImageSnapshot> previousTextureSnapshot_;
     uint64_t geometryShadingRevision_ = 0;
     SamplerDesc materialSampler_{

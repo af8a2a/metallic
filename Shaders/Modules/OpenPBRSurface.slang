@@ -17,6 +17,9 @@ import ScenePathMath;
 import MaterialTextureDecode;
 import Lighting;
 import WorkingColor;
+#if METALLIC_REALTIME_DEFERRED
+import ProjectedDecals;
+#endif
 #if METALLIC_CUSTOM_MATERIALS
 import SlabClosure;
 #endif
@@ -242,7 +245,8 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
     RayCone rayCone,
     float3 rayDirection,
     inout uint seed, TSource source, TextureFootprint footprint, float3 authoredNormal, bool faceForwardNormal,
-    int fixedMetalness = -1, bool opaquePrimary = false)
+    int fixedMetalness = -1, bool opaquePrimary = false, uint2 rasterPixel = uint2(0),
+    uint rasterSourceMaterial = 0xffffffffu)
 {
     bool deterministicGlassTextures = !opaquePrimary && materialNeedsDeterministicTextureMip0(material);
 #if METALLIC_CUSTOM_MATERIALS
@@ -362,6 +366,12 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
 #endif
     if (fixedMetalness >= 0) { metallic = float(fixedMetalness); }
     if (opaquePrimary) { transmission = 0.0; }
+#if METALLIC_REALTIME_DEFERRED
+    if ((push.deferredSettings & kScenePathTraceHasDecals) != 0u &&
+        material.textureParams.w < 0.5 && material.glassParams.x <= 0.0) {
+        applyProjectedDecals(rasterPixel, rasterSourceMaterial, hit, rayCone, rayDirection, push, baseColor, roughness);
+    }
+#endif
 
     OpenPBRClosure<TSource.Context> result;
     result.context = source.context();
@@ -468,6 +478,8 @@ public struct OpenPBRMaterialProgramImpl<TSource : IOpenPBRMaterialSource> : ISc
     public bool applyDebugNormalOverrides;
     public int fixedMetalness;
     public bool opaquePrimary;
+    public uint2 rasterPixel;
+    public uint rasterSourceMaterial;
     public OpenPBRMaterialParameters material;
     public float4 normalSample;
     public SceneSurfaceSummary summary;
@@ -490,7 +502,8 @@ public struct OpenPBRMaterialProgramImpl<TSource : IOpenPBRMaterialSource> : ISc
             applyDebugNormalOverrides, context.footprint, source, seed, normalSample);
         SurfaceMaterialResult<Closure> result = (SurfaceMaterialResult<Closure>)0;
         result.closure = resolveOpenPBRInputsResolved(hit, material, push, rayCone, rayDirection, seed, source,
-            context.footprint, context.shadingNormalWS, faceForwardNormal, fixedMetalness, opaquePrimary);
+            context.footprint, context.shadingNormalWS, faceForwardNormal, fixedMetalness, opaquePrimary,
+            rasterPixel, rasterSourceMaterial);
         result.emission = result.closure.inputs.emission_luminance * result.closure.inputs.emission_color;
         result.flags = 0u;
         summary = summarizeOpenPBRSurface(result.closure, material.emissive.w != 0.0);

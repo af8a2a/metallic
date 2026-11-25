@@ -70,7 +70,7 @@ public:
     {
         render::RenderPassReflection reflection;
         auto& cones = reflection.addBufferOutput("cones")
-            .buffer(kFootprintCaseCount * sizeof(float) * 2, sizeof(float) * 2).storageReadWrite();
+            .buffer(kFootprintCaseCount * sizeof(float) * 4, sizeof(float) * 4).storageReadWrite();
         cones.memoryLocation = render::MemoryLocation::HostReadback;
         return reflection;
     }
@@ -149,7 +149,7 @@ public:
         buffer->invalidate();
         const void* mapped = buffer->map();
         if (mapped == nullptr) { return RHITestResult::fail("Pixel cone probe readback failed"); }
-        std::array<std::array<float, 2>, kFootprintCaseCount> values{};
+        std::array<std::array<float, 4>, kFootprintCaseCount> values{};
         std::memcpy(values.data(), mapped, sizeof(values));
         buffer->unmap();
         const auto cases = footprintCases();
@@ -186,6 +186,13 @@ public:
             }
             if (values[index][input.orthographic ? 0 : 1] <= 0.0f) {
                 return RHITestResult::fail("Pixel cone became non-positive at case " + std::to_string(index));
+            }
+            // An 8192x1 source and its 32x1 resident tail differ by eight X mips.
+            const double sourceLod = std::log2(std::max(8192.0 * diameter, 1e-8));
+            const double residentLod = std::log2(std::max(32.0 * diameter, 1e-8));
+            if (!(std::abs(values[index][2] - sourceLod) < 2e-4 &&
+                  std::abs(values[index][3] - residentLod) < 2e-4)) {
+                return RHITestResult::fail("Projected decal source/resident LOD mismatch at case " + std::to_string(index));
             }
             if (index > kHighResolutionCaseStart && values[index][1] >= values[index - 1][1]) {
                 return RHITestResult::fail("High-resolution pixel cones lost continuity at case " + std::to_string(index));

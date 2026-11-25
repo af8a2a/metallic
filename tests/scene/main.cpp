@@ -5274,6 +5274,81 @@ TEST(SceneEditing, DocumentRoundTrip)
     testSceneDocumentRoundTrip(prepareOutputDirectory());
 }
 
+TEST(SceneEditing, DecalDocumentRoundTrip)
+{
+    using namespace metallic::scene;
+    const auto directory = prepareOutputDirectory() / "decal_document";
+    std::filesystem::create_directories(directory);
+    const auto source = writeFullScene(directory);
+    const auto sidecar = SceneDocument::sidecarPathForSource(source);
+    std::filesystem::remove(sidecar);
+    SceneDocument document;
+    ASSERT_TRUE(document.load(source));
+    const auto color = directory / "Decal.png";
+    writeRgbTestImage(color, {128, 32, 0});
+    const auto initialTextures = document.textures().size();
+    RenderDecal decal{.id = 14, .priority = -2, .baseColor = {0.5f, 0.2f, 0.1f, 0.75f},
+        .roughness = 0.3f, .roughnessOpacity = 0.4f, .receiverMask = 3};
+    decal.worldFromDecal.a03 = 2.0f;
+    ASSERT_FALSE(document.setDecal(decal, color, directory / "missing.png"));
+    EXPECT_TRUE(document.decals().empty());
+    EXPECT_EQ(document.textures().size(), initialTextures);
+    ASSERT_TRUE(document.setDecal(decal, color, color));
+    ASSERT_TRUE(document.dirty());
+    EXPECT_EQ(document.textures().size(), initialTextures + 1);
+    EXPECT_TRUE(document.setLighting(document.lighting()));
+    const auto identity = document.resourceIdentity();
+    const auto revision = document.decalRevision();
+    decal.worldFromDecal.a03 = 4.0f;
+    ASSERT_TRUE(document.setDecal(decal, color, color));
+    EXPECT_EQ(document.resourceIdentity(), identity);
+    EXPECT_GT(document.decalRevision(), revision);
+    auto receiver = document.materials().front();
+    receiver.decalReceiverMask = 0x80000002u;
+    ASSERT_TRUE(document.setMaterialProperties(0, receiver));
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    std::ifstream stream(sidecar);
+    const auto saved = nlohmann::json::parse(stream);
+    stream.close();
+    EXPECT_EQ(saved["world"]["decals"][0]["baseColorTexture"], "Decal.png");
+    SceneDocument loaded;
+    ASSERT_TRUE(loaded.load(sidecar)) << loaded.documentWarning();
+    ASSERT_EQ(loaded.decals().size(), 1);
+    EXPECT_EQ(loaded.materials().front().decalReceiverMask, 0x80000002u);
+    const auto& restored = loaded.decals().front();
+    EXPECT_EQ(restored.baseColorTexture, restored.roughnessTexture);
+    EXPECT_EQ(restored.baseColorTexture, initialTextures);
+    EXPECT_EQ(restored.id, 14u);
+    EXPECT_EQ(restored.priority, -2);
+    EXPECT_EQ(restored.receiverMask, 3u);
+    EXPECT_FLOAT_EQ(restored.worldFromDecal.a03, 4.0f);
+    EXPECT_FLOAT_EQ(restored.baseColor.w, 0.75f);
+    EXPECT_FLOAT_EQ(restored.roughness, 0.3f);
+    EXPECT_FLOAT_EQ(restored.roughnessOpacity, 0.4f);
+    // Each editor picker replaces just its own slot, retaining the other logical texture.
+    const auto roughnessFile = directory / "DecalRoughness.png";
+    writeRgbTestImage(roughnessFile, {64, 0, 0});
+    ASSERT_TRUE(loaded.setDecal(restored, {}, roughnessFile));
+    EXPECT_EQ(loaded.decals().front().baseColorTexture, initialTextures);
+    EXPECT_EQ(loaded.decals().front().roughnessTexture, initialTextures + 1);
+    const auto boundRevision = loaded.decalRevision();
+    EXPECT_FALSE(loaded.setDecal(loaded.decals().front(), directory / "missing.png"));
+    EXPECT_EQ(loaded.decalRevision(), boundRevision);
+    EXPECT_EQ(loaded.decals().front().baseColorTexture, initialTextures);
+    auto rejected = saved;
+    rejected["world"]["decals"].push_back(saved["world"]["decals"][0]);
+    writeTextFile(sidecar, rejected.dump());
+    EXPECT_FALSE(loaded.load(sidecar));
+    EXPECT_EQ(loaded.decals().size(), 1);
+    decal.worldFromDecal.a00 = 0.0f;
+    EXPECT_FALSE(loaded.setDecal(decal));
+    ASSERT_TRUE(loaded.removeDecal(14));
+    ASSERT_TRUE(loaded.save(message));
+    ASSERT_TRUE(loaded.load(sidecar));
+    EXPECT_TRUE(loaded.decals().empty());
+}
+
 TEST(SceneEditing, EnvironmentColorSpaceDeclarationRoundTrip)
 {
     using namespace metallic::scene;

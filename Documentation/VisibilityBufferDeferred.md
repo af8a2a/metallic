@@ -13,6 +13,52 @@ VBuffer.visibility / depth / rasterInfo / domain
           AutoExposure → FinalBlit ← ColorGrading.lut
 ```
 
+## 投影贴花
+
+在 **Scene Browser → List → Decals** 添加投影器。颜色与粗糙度纹理可以从场景中选择，
+也可以在各自的下拉菜单选择 **Load texture file...** 导入文件。局部 XY
+映射到纹理 UV，局部 +Z 朝向接收面的几何法线，盒子的 Z 尺寸控制投影深度。在接收材质的
+**Surface details → Decal receiver mask** 设置接收层。两侧掩码至少有一个相同的置位才会混合，默认值均为 1。
+重叠处先处理较低的 priority，同优先级先处理较小的持久化 ID。
+
+投影器保存在场景文档的 `world.decals` 数组。下面的条目将一张标记投影到水平地面，
+宽 3 米、长 2 米、深 0.4 米。矩阵按列存储，贴图路径相对于场景文档。
+
+```json
+{
+    "id": 1,
+    "worldFromDecal": [3, 0, 0, 0, 0, 0, -2, 0, 0, 0.4, 0, 0, 0, 0, 0, 1],
+    "baseColorTexture": "Textures/Marking.png",
+    "baseColor": [1, 1, 1, 1],
+    "roughness": 0.25,
+    "roughnessOpacity": 0.8
+}
+```
+
+Base Color 系数使用线性 Rec.709，颜色纹理的 alpha 定义两个通道共用的形状。
+`baseColor.a` 和 `roughnessOpacity` 分别控制颜色与粗糙度强度。只改变湿润度时将
+`baseColor.a` 设为 0。可选的 `roughnessTexture` 用线性 R 通道调制 `roughness`。
+
+当前接收范围是实时 Visibility Buffer 的不透明、无透射 OpenPBR 表面。直接光照和
+Deferred 导出的 Lumen 接收面使用合成后的材质。离屏 Surface Cache、路径追踪和
+自定义 Slab 使用各自的材质路径。Deferred 的 `decalFullScan` 调试开关可将
+16×16 像素 tile 候选与完整有序投影器表对照。
+
+`visibility_buffer_bindless_decals` 在 Sponza 地砖上验证透明条纹、重叠顺序、接收层、
+背面过滤和 Lumen 接收面的粗糙度。2026-11-25 的 Release 对照使用 RTX 5070 Ti，
+SponzaGI，960×540。每个进程预热 20 帧，测量 40 帧，表中为 Deferred 节点的 GPU 时间。
+
+| 投影器 | 受影响像素 | 全表 | Tile | CPU 候选重建（全表 / Tile，不含上传） |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 0% | 0.2672 ms | 0.2696 ms | 无重建 |
+| 8 | 2.50% | 0.3117 ms | 0.2783 ms | 2.35 / 9.65 µs |
+| 75，三层重叠 | 42.28% | 0.6859 ms | 0.4520 ms | 9.85 / 76.35 µs |
+
+稀疏、密集两组各取得 4 个有效独立进程样本，最终 HDR 图像与全表逐像素相同。
+相机固定时两组 Tile 缓存命中均约 0.25 µs。零贴花对照的差异低于 1%，
+两种模式使用同一版渲染器。8 次启动中有 1 次因采集期间编辑器源码变更被剔除，
+零贴花组共保留 7 次。部分 CPU 计时与一次 Debug 增量编译重叠。
+
 ## 2026-11-16：按实例预计算法线变换和镜像符号（未采用）
 
 首次计时波动过大；随后独立重测仍未达到采用门槛，生产源码保持原版，既有 MODE3

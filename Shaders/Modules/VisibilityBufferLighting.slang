@@ -409,7 +409,7 @@ public struct DeferredOpenPBRMaterialSource : IOpenPBRMaterialSource
 };
 
 [ForceInline]
-public float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
+public float3 shadeVisibilitySurface(Ray ray, HitInfo hit, uint2 pixel, float2 samplePixel,
     ScenePathTracePush push, inout uint seed, inout DeferredLumenReceiver receiver, int fixedMetalness = -1, bool opaquePrimary = false)
 {
     RayCone cone = propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t);
@@ -439,6 +439,10 @@ public float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
     program.program.applyDebugNormalOverrides = false;
     program.program.fixedMetalness = fixedMetalness;
     program.program.opaquePrimary = opaquePrimary;
+    program.program.rasterPixel = pixel;
+    // The GPUScene fallback has no authored receiver material. Retain its
+    // sentinel before material evaluation translates the byte offset back to an ID.
+    program.program.rasterSourceMaterial = hit.materialIndex;
     return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed, receiver, fixedMetalness, opaquePrimary, true);
 }
 } // namespace Metallic.VisibilityLighting

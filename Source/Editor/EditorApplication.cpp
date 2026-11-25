@@ -505,9 +505,12 @@ std::filesystem::path openSceneFileDialog(
 #endif
 }
 
-std::filesystem::path openEnvironmentFileDialog(
+enum class ImageFilePurpose { Environment, Decal };
+
+std::filesystem::path openImageFileDialog(
     SDL_Window* window,
     const std::filesystem::path& initialPath,
+    ImageFilePurpose purpose,
     std::string& error)
 {
 #if defined(_WIN32)
@@ -536,14 +539,14 @@ std::filesystem::path openEnvironmentFileDialog(
     OPENFILENAMEW openFilename{};
     openFilename.lStructSize = sizeof(openFilename);
     openFilename.hwndOwner = owner;
-    openFilename.lpstrFilter =
-        L"HDR Environment (*.hdr)\0*.hdr\0"
-        L"All Files (*.*)\0*.*\0";
+    openFilename.lpstrFilter = purpose == ImageFilePurpose::Environment
+        ? L"HDR Environment (*.hdr)\0*.hdr\0All Files (*.*)\0*.*\0"
+        : L"Decal textures (*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.ktx2)\0*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.ktx2\0";
     openFilename.nFilterIndex = 1;
     openFilename.lpstrFile = filename.data();
     openFilename.nMaxFile = static_cast<DWORD>(filename.size());
     openFilename.lpstrInitialDir = initialDirectory[0] != L'\0' ? initialDirectory.data() : nullptr;
-    openFilename.lpstrTitle = L"Load Environment";
+    openFilename.lpstrTitle = purpose == ImageFilePurpose::Environment ? L"Load Environment" : L"Load Decal Texture";
     openFilename.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 
     if (GetOpenFileNameW(&openFilename) != FALSE) {
@@ -553,14 +556,15 @@ std::filesystem::path openEnvironmentFileDialog(
 
     const DWORD dialogError = CommDlgExtendedError();
     if (dialogError != 0) {
-        error = "Open environment dialog failed: " + std::string(commonDialogErrorName(dialogError)) +
+        error = "Open image dialog failed: " + std::string(commonDialogErrorName(dialogError)) +
             " (" + std::to_string(dialogError) + ")";
     }
     return {};
 #else
     (void)window;
     (void)initialPath;
-    error = "Native environment file dialog is only implemented on Windows.";
+    (void)purpose;
+    error = "Native image file selection is available on Windows.";
     return {};
 #endif
 }
@@ -3943,6 +3947,10 @@ void EditorApplication::drawSceneListTab()
         ImGui::EndChild();
     }
 
+    if (ImGui::CollapsingHeader(("Decals (" + std::to_string(scene_.decals().size()) + ")###SceneDecals").c_str())) {
+        drawDecalControls();
+    }
+
     if (ImGui::CollapsingHeader(("Textures (" + std::to_string(scene_.textures().size()) + ")").c_str())) {
         ImGui::BeginChild("TexturesScrollRegion", ImVec2(0, 120.0f * mainScale_), false, ImGuiWindowFlags_HorizontalScrollbar);
         for (size_t index = 0; index < scene_.textures().size(); ++index) {
@@ -5092,6 +5100,106 @@ void EditorApplication::drawLightingControls()
         renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
         sceneNonTransformDirty_ = true;
         updateSceneDirtyState();
+        viewportPreviewNeedsRender_ = true;
+    }
+}
+
+void EditorApplication::drawDecalControls()
+{
+    ImGui::PushID("SceneDecals");
+    bool changed = false;
+    if (ImGui::Button("Add decal")) {
+        scene::RenderDecal decal;
+        decal.id = 1;
+        while (std::ranges::find(scene_.decals(), decal.id, &scene::RenderDecal::id) != scene_.decals().end()) {
+            ++decal.id;
+        }
+        auto position = scene_.bounds().center();
+        if (const auto* selected = selectedSceneObject().tryGetComponent<scene::TransformComponent>()) {
+            position = float3(selected->worldMatrix.a03, selected->worldMatrix.a13, selected->worldMatrix.a23);
+        }
+        decal.worldFromDecal.a03 = position.x;
+        decal.worldFromDecal.a13 = position.y;
+        decal.worldFromDecal.a23 = position.z;
+        changed = scene_.setDecal(decal);
+    }
+    const auto drawTexture = [&](const char* label, int32_t& index, std::filesystem::path& file) {
+        const auto textureName = [&](int32_t slot) {
+            return slot < 0 ? std::string("None") :
+                "[" + std::to_string(slot) + "] " + scene_.textures()[slot].name;
+        };
+        bool selected = false;
+        if (ImGui::BeginCombo(label, textureName(index).c_str())) {
+            if (ImGui::Selectable("Load texture file...")) {
+                std::string error;
+                file = openImageFileDialog(window_, scene_.documentPath().parent_path(), ImageFilePurpose::Decal, error);
+                if (!error.empty()) { sceneStatus_ = std::move(error); }
+                selected = !file.empty();
+            }
+            for (int32_t i = -1; i < static_cast<int32_t>(scene_.textures().size()); ++i) {
+                if (ImGui::Selectable(textureName(i).c_str(), i == index)) {
+                    index = i;
+                    selected = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        return selected;
+    };
+    for (size_t i = 0; i < scene_.decals().size(); ++i) {
+        auto decal = scene_.decals()[i];
+        ImGui::PushID(static_cast<int>(decal.id));
+        bool remove = false;
+        if (ImGui::TreeNode("Projector", "Decal #%u", decal.id)) {
+            bool edited = ImGui::Checkbox("Enabled", &decal.enabled);
+            float position[3], rotation[3], size[3];
+            ImGuizmo::DecomposeMatrixToComponents(decal.worldFromDecal.a, position, rotation, size);
+            if (ImGui::DragFloat3("Position (m)", position, 0.01f)) {
+                decal.worldFromDecal.a03 = position[0];
+                decal.worldFromDecal.a13 = position[1];
+                decal.worldFromDecal.a23 = position[2];
+                edited = true;
+            }
+            const bool shearedOrReflected = matrixHasShear(decal.worldFromDecal) || affineDeterminant(decal.worldFromDecal) < 0.0f;
+            ImGui::BeginDisabled(shearedOrReflected);
+            bool shapeChanged = ImGui::DragFloat3("Rotation (deg)", rotation, 0.25f);
+            shapeChanged |= ImGui::DragFloat3("Size (m)", size, 0.01f, 0.0001f, 1e6f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
+            ImGui::EndDisabled();
+            if (shearedOrReflected) { ImGui::TextDisabled("Rotation and size require an unreflected TRS transform."); }
+            if (shapeChanged) {
+                ImGuizmo::RecomposeMatrixFromComponents(position, rotation, size, decal.worldFromDecal.a);
+                edited = true;
+            }
+            edited |= ImGui::InputInt("Priority", &decal.priority);
+            edited |= ImGui::InputScalar("Receiver mask", ImGuiDataType_U32, &decal.receiverMask);
+            edited |= ImGui::ColorEdit4("Color and opacity", decal.baseColor.a, ImGuiColorEditFlags_Float);
+            std::filesystem::path colorFile, roughnessFile;
+            edited |= drawTexture("Color texture", decal.baseColorTexture, colorFile);
+            edited |= ImGui::SliderFloat("Roughness", &decal.roughness, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+            edited |= ImGui::SliderFloat("Roughness opacity", &decal.roughnessOpacity, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+            edited |= drawTexture("Roughness texture (R)", decal.roughnessTexture, roughnessFile);
+            remove = ImGui::Button("Remove decal");
+            if (edited && !remove) {
+                if (scene_.setDecal(decal, colorFile, roughnessFile)) { changed = true; }
+                else if (!colorFile.empty() || !roughnessFile.empty()) {
+                    sceneStatus_ = "Could not bind decal texture " + (colorFile.empty() ? roughnessFile : colorFile).string();
+                }
+            }
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+        if (remove) {
+            changed |= scene_.removeDecal(decal.id);
+            break;
+        }
+    }
+    ImGui::PopID();
+    if (changed) {
+        sceneNonTransformDirty_ = true;
+        updateSceneDirtyState();
+        renderWorld_.notifySceneChanged(render::RenderChangeBits::InvalidateTemporalHistory);
+        historyResources_.invalidateAll();
+        historyFrameIndex_ = 0;
         viewportPreviewNeedsRender_ = true;
     }
 }
@@ -7955,7 +8063,7 @@ void EditorApplication::chooseEnvironmentFile()
         ? std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset"
         : currentEnvironmentPath;
     std::string dialogError;
-    const std::filesystem::path selectedPath = openEnvironmentFileDialog(window_, initialPath, dialogError);
+    const std::filesystem::path selectedPath = openImageFileDialog(window_, initialPath, ImageFilePurpose::Environment, dialogError);
     if (selectedPath.empty()) {
         if (!dialogError.empty()) {
             renderGraphStatus_ = dialogError;

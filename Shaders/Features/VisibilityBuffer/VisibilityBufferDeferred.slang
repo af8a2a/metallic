@@ -362,7 +362,7 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push, CameraRayBasis b
     else {
         push = withTextureFeedbackSampling(push, pixel);
         uint seed = hash(pixel.x + pixel.y * push.width);
-        radiance = shadeVisibilitySurface(ray, hit, rayPixel, push, seed, receiver,
+        radiance = shadeVisibilitySurface(ray, hit, pixel, rayPixel, push, seed, receiver,
 #if METALLIC_DEFERRED_CLASS_SPECIALIZATION
             kDeferredFixedMetalness, kDeferredOpaquePrimary);
 #else

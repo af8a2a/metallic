@@ -23,7 +23,12 @@ struct TextureFootprintProbePush
 void textureFootprintProbeMain()
 {
     TextureFootprintProbePush push = getConstants<TextureFootprintProbePush>();
-    resolveBuffer<RWStructuredBuffer<float2>>(getResourceParameters<TextureFootprintProbeResources>().output)[push.index] = primaryTextureRayCone(
+    float2 cone = primaryTextureRayCone(
         uint2(push.width, push.height), push.aspect, push.verticalFovRadians,
         push.orthographicHeight, push.orthographic != 0u);
+    float2 footprint = float2(cone.x + cone.y, (cone.x + cone.y) * 0.5);
+    float sourceLod = projectedTextureLod(footprint, uint2(8192, 1));
+    float residentLod = projectedTextureLod(footprint, uint2(32, 1));
+    resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<TextureFootprintProbeResources>().output)[push.index] =
+        float4(cone, sourceLod, residentLod);
 }

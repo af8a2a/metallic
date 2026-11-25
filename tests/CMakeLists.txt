@@ -491,6 +491,7 @@ add_executable(MetallicRHITests
     rhi/ResourceMemoryInfoTests.cpp
     rhi/DeferredTransmissionTests.cpp
     rhi/ClusterLightGridTests.cpp
+    rhi/RealtimeDecalTests.cpp
     rhi/CommandSubmissionTests.cpp
     rhi/RHIRefinementTests.cpp
     rhi/GPUProfilingTests.cpp

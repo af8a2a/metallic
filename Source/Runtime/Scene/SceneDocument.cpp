@@ -10,6 +10,7 @@
 #include <string_view>
 #include <system_error>
 #include <unordered_set>
+#include <utility>
 
 #include <json.hpp>
 
@@ -242,6 +243,7 @@ nlohmann::json serializeMaterialProperties(const RenderMaterial& properties)
             properties.baseColorFactor.z, properties.baseColorFactor.w}},
         {"alphaMode", properties.alphaMode},
         {"doubleSided", properties.doubleSided},
+        {"decalReceiverMask", properties.decalReceiverMask},
         {"unlit", properties.unlit},
         {"featurePolicies", material::serializeFeaturePolicies(properties.featurePolicies)},
     };
@@ -313,6 +315,14 @@ bool parseMaterialProperties(const nlohmann::json& value, RenderMaterial& proper
     if (value.contains("doubleSided")) {
         if (!value["doubleSided"].is_boolean()) { reason = "doubleSided must be a boolean"; return false; }
         properties.doubleSided = value["doubleSided"].get<bool>();
+    }
+    if (value.contains("decalReceiverMask")) {
+        const auto& mask = value["decalReceiverMask"];
+        if (!mask.is_number_unsigned() || mask.get<uint64_t>() > UINT32_MAX) {
+            reason = "decalReceiverMask must be an unsigned 32-bit integer";
+            return false;
+        }
+        properties.decalReceiverMask = mask.get<uint32_t>();
     }
     if (value.contains("unlit")) {
         if (!value["unlit"].is_boolean()) { reason = "unlit must be a boolean"; return false; }
@@ -808,6 +818,102 @@ nlohmann::json serializeMatrix(const float4x4& matrix)
     return value;
 }
 
+template<typename T>
+bool readDecalInteger(const nlohmann::json& value, T& result)
+{
+    if (!value.is_number_integer()) { return false; }
+    if (value.is_number_unsigned()) {
+        const auto number = value.get<uint64_t>();
+        if (!std::in_range<T>(number)) { return false; }
+        result = static_cast<T>(number);
+    } else {
+        const auto number = value.get<int64_t>();
+        if (!std::in_range<T>(number)) { return false; }
+        result = static_cast<T>(number);
+    }
+    return true;
+}
+
+bool loadDecals(Scene& scene, const nlohmann::json& values, const std::filesystem::path& directory,
+    std::string& reason)
+{
+    if (!values.is_array()) { reason = "world.decals must be an array."; return false; }
+    std::unordered_set<uint32_t> ids;
+    for (const auto& value : values) {
+        RenderDecal decal;
+        if (!value.is_object() || !value.contains("id") || !readDecalInteger(value["id"], decal.id) ||
+            !ids.insert(decal.id).second) {
+            reason = "Each world.decals entry requires a unique uint32 id.";
+            return false;
+        }
+        reason = "Invalid world.decals entry " + std::to_string(decal.id) + ".";
+        if ((value.contains("priority") && !readDecalInteger(value["priority"], decal.priority)) ||
+            (value.contains("receiverMask") && !readDecalInteger(value["receiverMask"], decal.receiverMask)) ||
+            (value.contains("enabled") && !value["enabled"].is_boolean())) { return false; }
+        decal.enabled = value.value("enabled", true);
+        if (value.contains("worldFromDecal") && !readMatrix(value["worldFromDecal"], decal.worldFromDecal, reason)) {
+            return false;
+        }
+        if (value.contains("baseColor")) {
+            const auto& color = value["baseColor"];
+            if (!color.is_array() || color.size() != 4) { return false; }
+            for (size_t i = 0; i < 4; ++i) {
+                if (!color[i].is_number()) { return false; }
+                decal.baseColor.a[i] = color[i].get<float>();
+            }
+        }
+        for (const auto& [key, field] : {std::pair{"roughness", &decal.roughness},
+                 {"roughnessOpacity", &decal.roughnessOpacity}}) {
+            if (value.contains(key)) {
+                if (!value[key].is_number()) { return false; }
+                *field = value[key].get<float>();
+            }
+        }
+        const auto readTexture = [&](const char* key, int32_t& index, std::filesystem::path& file) {
+            if (!value.contains(key)) { return true; }
+            const auto& binding = value[key];
+            if (!binding.is_string()) { return readDecalInteger(binding, index); }
+            const std::filesystem::path asset = binding.get<std::string>();
+            if (asset.empty()) { return false; }
+            file = directory / asset;
+            return true;
+        };
+        std::filesystem::path baseColorFile, roughnessFile;
+        if (!readTexture("baseColorTexture", decal.baseColorTexture, baseColorFile) ||
+            !readTexture("roughnessTexture", decal.roughnessTexture, roughnessFile) ||
+            !scene.setDecal(decal, baseColorFile, roughnessFile)) { return false; }
+    }
+    reason.clear();
+    return true;
+}
+
+nlohmann::json serializeDecals(const Scene& scene, const std::filesystem::path& directory)
+{
+    auto values = nlohmann::json::array();
+    for (const auto& decal : scene.decals()) {
+        nlohmann::json value = {{"id", decal.id}, {"priority", decal.priority}, {"enabled", decal.enabled},
+            {"worldFromDecal", serializeMatrix(decal.worldFromDecal)}, {"receiverMask", decal.receiverMask},
+            {"baseColor", {decal.baseColor.x, decal.baseColor.y, decal.baseColor.z, decal.baseColor.w}},
+            {"roughness", decal.roughness}, {"roughnessOpacity", decal.roughnessOpacity}};
+        const auto writeTexture = [&](const char* key, int32_t index) {
+            if (index < 0) { return; }
+            const auto image = scene.textures()[index].imageIndex;
+            const std::filesystem::path file = scene.images()[image].uri;
+            if (file.is_absolute()) {
+                std::error_code error;
+                const auto relative = std::filesystem::relative(file, directory, error);
+                value[key] = (error || relative.empty() ? file : relative).generic_string();
+            } else {
+                value[key] = index;
+            }
+        };
+        writeTexture("baseColorTexture", decal.baseColorTexture);
+        writeTexture("roughnessTexture", decal.roughnessTexture);
+        values.push_back(std::move(value));
+    }
+    return values;
+}
+
 bool parseCompositeSources(
     const nlohmann::json& document,
     const std::filesystem::path& documentPath,
@@ -1197,6 +1303,21 @@ bool SceneDocument::setMaterialProperties(int32_t materialIndex, const RenderMat
     return true;
 }
 
+bool SceneDocument::setDecal(RenderDecal decal, const std::filesystem::path& baseColorFile,
+    const std::filesystem::path& roughnessFile)
+{
+    if (!Scene::setDecal(decal, baseColorFile, roughnessFile)) { return false; }
+    dirty_ = true;
+    return true;
+}
+
+bool SceneDocument::removeDecal(uint32_t id)
+{
+    if (!Scene::removeDecal(id)) { return false; }
+    dirty_ = true;
+    return true;
+}
+
 bool SceneDocument::setMaterialAsset(int32_t materialIndex, std::string_view uri,
     const std::filesystem::path& assetRoot, std::string& error)
 {
@@ -1377,7 +1498,8 @@ bool SceneDocument::setLighting(LightingSettings lighting)
             continue;
         }
         const auto* component = sceneGraph().object(light.imported->object).tryGetComponent<LightComponent>();
-        if (source == nullptr || source->virtualLightSceneIdentity != resourceIdentity() ||
+        // A new decal texture can replace the GPU resource snapshot while this imported light stays bound.
+        if (source == nullptr || source->virtualLightSceneIdentity != binding.sceneIdentity ||
             component == nullptr || !compatibleImportedProperties(component->properties, light.properties)) {
             return false;
         }
@@ -2023,6 +2145,13 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
             }
         }
     }
+    if (version >= 2 && document.contains("world") && document["world"].contains("decals")) {
+        std::string reason;
+        if (!loadDecals(*this, document["world"]["decals"], path.parent_path(), reason)) {
+            documentWarning_ = std::move(reason);
+            return false;
+        }
+    }
     if (legacySun) {
         auto& sun = worldEnvironment_.sun;
         sun.direction = legacySun->direction;
@@ -2266,6 +2395,9 @@ bool SceneDocument::save(std::string& message)
             {"visible", environment_.visible},
         }},
     };
+    if (!decals().empty()) {
+        document["world"]["decals"] = serializeDecals(*this, documentPath_.parent_path());
+    }
     if (environment_.hasExplicitSourceColorSpace()) {
         document["world"]["environment"]["colorSpace"] = render::colorSpaceName(environment_.sourceColorSpace);
     }

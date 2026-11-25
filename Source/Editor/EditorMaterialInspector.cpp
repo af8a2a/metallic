@@ -141,6 +141,9 @@ void EditorApplication::drawMaterialInspector(int32_t materialIndex)
         }
         scalar("Normal scale", edited.normalTextureScale, -10.0f, 10.0f);
         scalar("Occlusion", edited.occlusionTextureStrength, 0.0f, 1.0f);
+        changed = ImGui::InputScalar("Decal receiver mask", ImGuiDataType_U32, &edited.decalReceiverMask,
+            nullptr, nullptr, "%08X", ImGuiInputTextFlags_CharsHexadecimal) || changed;
+        trackEdit();
         if (ImGui::BeginCombo("Alpha mode", edited.alphaMode.c_str())) {
             for (const char* mode : {"OPAQUE", "MASK", "BLEND"}) {
                 if (ImGui::Selectable(mode, edited.alphaMode == mode) && edited.alphaMode != mode) {

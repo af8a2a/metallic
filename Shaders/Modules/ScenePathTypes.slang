@@ -12,6 +12,7 @@ public static const uint kScenePathTraceExportUpscalerGuides = 1u << 26u;
 public static const uint kScenePathTraceUseGlobalView = 1u << 27u;
 public static const uint kScenePathTraceUseFP16Precision = 1u << 28u;
 public static const uint kScenePathTraceStrictOpaqueShadows = 1u << 29u;
+public static const uint kScenePathTraceHasDecals = 1u << 30u;
 #if defined(METALLIC_PT_CACHE_QUERY_SPECIALIZATION) && METALLIC_PT_CACHE_QUERY_SPECIALIZATION != 0 && METALLIC_PT_CACHE_QUERY_SPECIALIZATION != 1
 #error METALLIC_PT_CACHE_QUERY_SPECIALIZATION must be 0 or 1.
 #endif
@@ -82,7 +83,7 @@ public struct ScenePathTracePush
     public float jitterOffsetY;
     public uint sampleFrame;
     public uint temporalJitter;
-    public uint deferredSettings; // bin0:15, samples16:20, depth21:25, guides26, global view27, FP16 precision28, strict opaque shadows29
+    public uint deferredSettings; // bin0:15, samples16:20, depth21:25, guides26, global view27, FP16 precision28, strict opaque shadows29, decals30
     public uint textureFeedbackEnabled; // host capture decision, then launch-tile sampling
 };
 

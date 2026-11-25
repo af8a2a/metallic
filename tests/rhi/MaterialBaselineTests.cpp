@@ -545,6 +545,7 @@ public:
                 }
                 result["frames"] = Json::array();
                 result["warmup"] = Json::array();
+                const auto cpuTimingSections = spec.value("cpuTimingSections", std::vector<std::string>{});
                 result["environmentTransitions"] = Json::array();
                 Json previousEnvironment;
                 result["resolvedGraph"] = Json::parse(serializeRenderGraphToString(graph));
@@ -718,6 +719,9 @@ public:
                         for (const auto& section : node.sections) {
                             entry["sections"].push_back({{"name", section.name}, {"parent", section.parent},
                                 {"gpuMs", section.gpuTimingAvailable ? Json(section.gpuMilliseconds) : Json(nullptr)}});
+                            if (std::ranges::find(cpuTimingSections, section.name) != cpuTimingSections.end()) {
+                                entry["sections"].back()["cpuMs"] = section.cpuMilliseconds;
+                            }
                         }
                         timing["nodes"].push_back(std::move(entry));
                     }

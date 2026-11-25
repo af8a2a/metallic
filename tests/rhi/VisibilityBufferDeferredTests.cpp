@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <cstdlib>
 #include <fstream>
+#include <numeric>
 
 namespace metallic::tests {
 namespace {
@@ -176,6 +178,166 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VisibilityBufferDeferredTest);
+
+class VisibilityBufferDecalTest final : public RHITest {
+public:
+    VisibilityBufferDecalTest() { type = RHITestType::Rendering; name = "visibility_buffer_bindless_decals"; }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        render::RenderSampleLoadResult sample;
+        std::string log;
+        const auto path = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/Sponza/glTF/Sponza.gltf";
+        if (!render::loadBuiltInRenderSample("lookdev-vbuffer", sample, log) ||
+            !render::setRenderSampleScenePath(sample, path.generic_string(), log) ||
+            !render::makeLookDevRenderGraph(sample.graph, render::LookDevRenderPath::DeferredOnly, sample.graph, log)) {
+            return RHITestResult::fail(log);
+        }
+        const auto deferred = sample.graph.findNode("Deferred")->id;
+        const auto raster = sample.graph.findNode("VBuffer")->id;
+        sample.graph.setNodeRuntimeProperty(raster, "camera",
+            {{"eye", {5.0, 2.6, 0.4}}, {"center", {0.0, 0.0, 0.0}}, {"fovDegrees", 57.0}});
+        // Keep visibility deterministic across resource edits and binning-mode changes.
+        for (const char* setting : {"temporalJitter", "hybridRaster", "instanceHzbCull", "meshletHzbCull"}) {
+            sample.graph.setNodeRuntimeProperty(raster, setting, false);
+        }
+        sample.graph.setNodeRuntimeProperty(deferred, "debugView", "baseColor");
+        auto deferredProperties = sample.graph.findNode(deferred)->properties;
+        deferredProperties["exportLumenReceivers"] = true;
+        deferredProperties["exportLumenSpecular"] = true;
+        sample.graph.setNodeProperties(deferred, std::move(deferredProperties));
+        sample.graph.markOutput("Deferred.lumenSpecular");
+        scene::SceneDocument scene;
+        if (!scene.load(path)) { return RHITestResult::fail(scene.lastLoadResult().error); }
+
+        // A diagonal striped floor marking with transparent gaps exercises nonuniform
+        // texture lookup, projection and alpha composition on the actual Sponza mesh.
+        constexpr uint32_t side = 64;
+        std::array<uint8_t, side * side * 4> image{};
+        for (uint32_t y = 0; y < side; ++y) {
+            for (uint32_t x = 0; x < side; ++x) {
+                auto* pixel = &image[(y * side + x) * 4];
+                pixel[0] = 255; pixel[1] = 178; pixel[2] = 28;
+                pixel[3] = ((x + y) % 16 < 8) ? 255 : 0;
+            }
+        }
+        const auto imagePath = std::filesystem::absolute(context.outputDirectory / "DecalStripes.png");
+        if (!saveRgba8Png(imagePath, image.data(), side, side, log)) { return RHITestResult::fail(log); }
+        const auto roughnessPath = std::filesystem::absolute(context.outputDirectory / "DecalRoughness.png");
+        constexpr std::array<uint8_t, 4> roughnessTexel{64, 255, 0, 255};
+        if (!saveRgba8Png(roughnessPath, roughnessTexel.data(), 1, 1, log)) { return RHITestResult::fail(log); }
+        scene::RenderDecal marking;
+        marking.id = 20;
+        marking.worldFromDecal[0] = float4(3, 0, 0, 0);
+        marking.worldFromDecal[1] = float4(0, 0, -2, 0);
+        marking.worldFromDecal[2] = float4(0, 0.6f, 0, 0);
+        marking.worldFromDecal[3] = float4(1, 0, 0, 1);
+        marking.enabled = false;
+        if (!scene.setDecal(marking, imagePath, roughnessPath)) { return RHITestResult::fail("Could not add decal-only textures"); }
+        marking = scene.decals().front();
+        auto paint = marking;
+        paint.id = 10;
+        paint.baseColorTexture = scene::kInvalidSceneIndex;
+        paint.baseColor = float4(0.03f, 0.22f, 0.72f, 1);
+        if (!scene.setDecal(paint)) { return RHITestResult::fail("Could not add the overlapping projector"); }
+
+        render::RenderGraphPreviewRenderer preview;
+        preview.bindRuntimeScene(&scene);
+        auto initialized = preview.initialize(context.enableValidation, true, false);
+        if (render::hasError(initialized, render::Error::Unsupported)) { return RHITestResult::skip("Requires mesh shaders"); }
+        if (!initialized) { return RHITestResult::fail("Preview initialization failed"); }
+        auto lighting = scene.lighting();
+        lighting.autoExposure.enabled = false;
+        preview.setLighting(lighting);
+        preview.setRawReadbackEnabled(true);
+        const auto renderColor = [&]() { return preview.render(sample.graph, 513, 321, "Deferred.color"); };
+        const auto different = [](const auto& a, const auto& b) {
+            return std::inner_product(a.begin(), a.end(), b.begin(), size_t{}, std::plus<>{}, std::not_equal_to<>{});
+        };
+        // Allow visible geometry and material textures to finish streaming before taking references.
+        for (int frame = 0; frame < 16; ++frame) {
+            if (!preview.render(sample.graph, 513, 321, "Deferred.color", false)) {
+                return RHITestResult::fail(preview.lastLog());
+            }
+        }
+        if (!renderColor()) { return RHITestResult::fail(preview.lastLog()); }
+        const auto bare = preview.pixels();
+        if (!savePreview(preview, context.outputDirectory / "SponzaDecalBefore.png", log)) { return RHITestResult::fail(log); }
+        marking.enabled = true;
+        if (!scene.setDecal(marking) || !renderColor()) { return RHITestResult::fail(preview.lastLog()); }
+        const auto stripes = preview.pixels();
+        size_t stripePixels = 0;
+        for (size_t i = 0; i < bare.size(); ++i) {
+            const uint32_t rgb = stripes[i];
+            if (bare[i] != rgb && (rgb & 255) > 200 && ((rgb >> 8) & 255) > 75 && ((rgb >> 16) & 255) < 80) {
+                ++stripePixels;
+            }
+        }
+        if (!savePreview(preview, context.outputDirectory / "SponzaDecalAfter.png", log)) { return RHITestResult::fail(log); }
+        if (stripePixels < 100) { return RHITestResult::fail("Textured floor marking missing: " + std::to_string(stripePixels)); }
+        paint.enabled = true;
+        if (!scene.setDecal(paint) || !renderColor()) { return RHITestResult::fail(preview.lastLog()); }
+        const auto overlay = preview.pixels();
+        if (!savePreview(preview, context.outputDirectory / "SponzaDecalOverlay.png", log)) { return RHITestResult::fail(log); }
+        sample.graph.setNodeRuntimeProperty(deferred, "decalFullScan", true);
+        if (!renderColor()) { return RHITestResult::fail(preview.lastLog()); }
+        if (preview.pixels() != overlay) {
+            if (!savePreview(preview, context.outputDirectory / "SponzaDecalFullList.png", log)) { return RHITestResult::fail(log); }
+            return RHITestResult::fail("Tile/full-list decal mismatch: " + std::to_string(different(overlay, preview.pixels())) + " pixels");
+        }
+        sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", false);
+        if (!renderColor() || preview.pixels() != overlay) { return RHITestResult::fail("Binned/unbinned decal mismatch"); }
+        sample.graph.setNodeRuntimeProperty(deferred, "decalFullScan", false);
+        paint.priority = 1;
+        if (!scene.setDecal(paint) || !renderColor() || different(overlay, preview.pixels()) < stripePixels / 2) {
+            return RHITestResult::fail("Changing overlapping decal priority did not cover the stripes");
+        }
+        paint.receiverMask = 2;
+        marking.worldFromDecal[2] = -marking.worldFromDecal[2];
+        if (!scene.setDecal(marking) || !scene.setDecal(paint) || !renderColor() || preview.pixels() != bare) {
+            return RHITestResult::fail("Back-facing or excluded projector modified the floor");
+        }
+        for (int32_t i = 0; i < int32_t(scene.materials().size()); ++i) {
+            auto material = scene.materials()[i];
+            material.decalReceiverMask = 2;
+            if (!scene.setMaterialProperties(i, material)) { return RHITestResult::fail("Could not change receiver layer"); }
+        }
+        if (!renderColor() || different(bare, preview.pixels()) < stripePixels) {
+            return RHITestResult::fail("Material receiver layer did not select the blue decal");
+        }
+        paint.baseColor.w = 0;
+        if (!scene.setDecal(paint) || !renderColor() || preview.pixels() != bare) {
+            return RHITestResult::fail("Zero color opacity modified the receiver base color");
+        }
+        sample.graph.setNodeRuntimeProperty(deferred, "debugView", "final");
+        const auto roughness = [&]() { return preview.render(sample.graph, 513, 321, "Deferred.lumenSpecular"); };
+        if (!roughness()) { return RHITestResult::fail(preview.lastLog()); }
+        const auto dry = preview.readbackBytes();
+        paint.roughness = 1.0f;
+        paint.roughnessOpacity = 1.0f;
+        if (!scene.setDecal(paint) || !roughness() || preview.readbackFormat() != render::Format::RGBA16Sfloat) {
+            return RHITestResult::fail("Failed to read Lumen specular/roughness");
+        }
+        const auto wet = preview.readbackBytes();
+        size_t wetPixels = 0;
+        for (size_t offset = 6; offset < wet.size(); offset += 8) {
+            if (std::memcmp(&dry[offset], &wet[offset], 2) != 0) { ++wetPixels; }
+        }
+        if (wetPixels < stripePixels) { return RHITestResult::fail("Wet decal missing from Lumen receiver roughness"); }
+        // The roughness map is linear and uses R. The other channels deliberately differ.
+        auto constant = paint;
+        constant.id = 30;
+        constant.roughnessTexture = scene::kInvalidSceneIndex;
+        constant.roughness = float(roughnessTexel[0]) / 255.0f;
+        paint.enabled = false;
+        if (!scene.setDecal(paint) || !scene.setDecal(constant) || !roughness() || preview.readbackBytes() != wet) {
+            return RHITestResult::fail("Textured roughness differs from the equivalent linear red-channel value");
+        }
+        return RHITestResult::pass("Sponza projected stripes, ordered overlap, receiver masks, back faces and Lumen roughness");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VisibilityBufferDecalTest);
 
 class VisibilityBufferDeferredShadowHistoryTest final : public RHITest {
 public:

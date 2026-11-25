@@ -314,19 +314,34 @@ DR_PUBLIC struct RectLightResourceParameters
     DR_PUBLIC DR_SAMPLED(2D<float4>) amplitudeLUT;
 };
 
+DR_PUBLIC struct DecalResourceParameters
+{
+    DR_PUBLIC DR_BUFFER records;
+    DR_PUBLIC DR_BUFFER materials;
+    DR_PUBLIC DR_BUFFER tileRanges;
+    DR_PUBLIC DR_BUFFER tileIndices;
+    DR_PUBLIC DR_BUFFER receiverMasks;
+    DR_PUBLIC DR_SAMPLER sampler;
+};
+
 DR_PUBLIC struct SceneRealtimeResourceParameters
 {
     DR_PUBLIC SceneResourceParameters scene;
     DR_PUBLIC RectLightResourceParameters rectLights;
+    DR_PUBLIC DecalResourceParameters decals;
 };
 #ifdef __cplusplus
 inline constexpr uint32_t kSceneRectLightsOffset = 416;
+inline constexpr uint32_t kSceneDecalsOffset = 428;
 static_assert(offsetof(SceneRealtimeResourceParameters, scene) == 0);
 static_assert(offsetof(SceneRealtimeResourceParameters, rectLights) == kSceneRectLightsOffset);
+static_assert(offsetof(SceneRealtimeResourceParameters, decals) == kSceneDecalsOffset);
 static_assert(sizeof(RectLightResourceParameters) == 12);
-static_assert(sizeof(SceneRealtimeResourceParameters) == 432);
+static_assert(sizeof(DecalResourceParameters) == 24);
+static_assert(sizeof(SceneRealtimeResourceParameters) == 456);
 #else
 public static const uint kSceneRectLightsOffset = 416;
+public static const uint kSceneDecalsOffset = 428;
 #endif
 
 // Experimental primary-guide split extends the packet without changing the

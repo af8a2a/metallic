@@ -74,6 +74,9 @@ bool EditorApplication::runMaterialInspectorSmokeTest()
     // production-only test hook. Mouse events stay inside this ImGui context.
     bool inspectFeatures = false;
     std::string featureText;
+    bool inspectDecals = false;
+    const char* decalButton = nullptr;
+    ImRect decalButtonRect;
     const auto inspectorFrame = [&](ImVec2 mouse, bool mouseDown, int32_t locateMaterial = -1,
                                    bool bothMaterials = false, bool ctrl = false, const char* input = nullptr) {
         auto& io = ImGui::GetIO();
@@ -106,7 +109,27 @@ bool EditorApplication::runMaterialInspectorSmokeTest()
             ImGui::PopID(); ImGui::PopID();
             ImGui::LogToBuffer();
         }
-        drawSelectedMaterialInspector();
+        if (inspectDecals) {
+            if (decalButton) {
+                ImGui::PushID("SceneDecals");
+                if (!scene_.decals().empty()) {
+                    ImGui::PushID(static_cast<int>(scene_.decals().back().id));
+                    ImGui::GetStateStorage()->SetInt(ImGui::GetID("Projector"), 1);
+                    ImGui::PushID("Projector");
+                }
+                const ImGuiID id = ImGui::GetID(decalButton);
+                if (!scene_.decals().empty()) { ImGui::PopID(); ImGui::PopID(); }
+                ImGui::PopID();
+                ImGui::FocusWindow(window);
+                ImGui::SetNavID(id, ImGuiNavLayer_Main, ImGui::GetCurrentFocusScope(), ImRect());
+            }
+            drawDecalControls();
+            if (decalButton && GImGui->NavIdIsAlive) {
+                decalButtonRect = ImGui::WindowRectRelToAbs(window, window->NavRectRel[ImGuiNavLayer_Main]);
+            }
+        } else {
+            drawSelectedMaterialInspector();
+        }
         if (inspectFeatures) {
             featureText = GImGui->LogBuffer.c_str();
             ImGui::LogFinish();
@@ -256,7 +279,25 @@ bool EditorApplication::runMaterialInspectorSmokeTest()
         }
     }
     spdlog::info("[Smoke Material Inspector] Feature diagnostics:\n{}", featureText);
-    spdlog::info("[Smoke Material Inspector] Passed real Roughness drag, grouped undo/redo, material handoff, dirty state, save/reload and comparison rendering ({} -> {})",
+    inspectFeatures = false;
+    inspectDecals = true;
+    const auto clickDecalButton = [&](const char* label) {
+        decalButton = label;
+        decalButtonRect = {};
+        inspectorFrame(ImVec2(-100.0f, -100.0f), false);
+        decalButton = nullptr;
+        if (decalButtonRect.GetWidth() <= 0.0f || decalButtonRect.GetHeight() <= 0.0f) { return false; }
+        const auto center = decalButtonRect.GetCenter();
+        inspectorFrame(center, false);
+        inspectorFrame(center, true);
+        inspectorFrame(center, false);
+        return true;
+    };
+    if (!expect(clickDecalButton("Add decal") && scene_.decals().size() == 1 && scene_.dirty(),
+            "Adding a projector through the scene browser updates the authored scene") ||
+        !expect(clickDecalButton("Remove decal") && scene_.decals().empty(),
+            "Removing the projector through its inspector updates the authored scene")) { return false; }
+    spdlog::info("[Smoke Material Inspector] Passed decal projector add/remove, real Roughness drag, grouped undo/redo, material handoff, dirty state, save/reload and comparison rendering ({} -> {})",
         before.roughnessFactor, edited.roughnessFactor);
     return true;
 }

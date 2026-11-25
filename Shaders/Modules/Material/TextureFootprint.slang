@@ -3,6 +3,14 @@ implementing Material;
 
 namespace Metallic.Material
 {
+// Source demand and resident filtering each use the actual dimensions of their
+// image. A narrow mip tail can reach one texel on one axis before the other.
+public float projectedTextureLod(float2 uvFootprint, uint2 extent)
+{
+    float2 texels = uvFootprint * float2(extent);
+    return log2(max(max(texels.x, texels.y), 1e-8));
+}
+
 // The cone represents one internal-render pixel's diameter. Use the larger
 // axis footprint when projection aspect and render dimensions differ.
 // Analytic projection slopes avoid acos(dot(ray, neighbour)) rounding to zero
