@@ -5647,9 +5647,9 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
     EXPECT_DOUBLE_EQ(restored.lighting().lights[0].properties.intensity, -3.0);
     EXPECT_EQ(restored.lights()[0].intensityUnit, LightUnit::EV100);
     EXPECT_DOUBLE_EQ(restored.lights()[0].intensity, -3.0);
-    auto invalid = lighting;
-    invalid.exposureEV100 = std::numeric_limits<float>::infinity();
-    EXPECT_FALSE(restored.setLighting(invalid));
+    auto invalidExposure = lighting;
+    invalidExposure.exposureEV100 = std::numeric_limits<float>::infinity();
+    EXPECT_FALSE(restored.setLighting(invalidExposure));
     ASSERT_TRUE(restored.setLighting({}));
     ASSERT_TRUE(restored.revert(message)) << message;
     EXPECT_EQ(restored.lighting().lights.size(), 3u);
