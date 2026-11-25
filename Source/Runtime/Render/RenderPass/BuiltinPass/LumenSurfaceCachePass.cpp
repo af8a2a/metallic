@@ -451,8 +451,12 @@ RenderPassReflection LumenSurfaceCachePass::reflect(const RenderGraphCompileCont
     auto& depth = reflection.addTextureOutput("depth", "Card depth, with 1 reserved for uncovered texels")
         .texture2D(layout.edge, layout.edge).storageWrite().stageAccess(RenderGraphResourceAccess::TextureStorageWrite);
     depth.format = Format::R16Unorm;
-    if (separateLighting()) {
+    const bool separateDirectLighting = separateLighting();
+    const bool useGdfShadows = shadowedLighting();
+    if (separateDirectLighting || useGdfShadows) {
         depth.stageAccess(RenderGraphResourceAccess::TextureSampleRead);
+    }
+    if (separateDirectLighting) {
         reflection.addTextureOutput("deterministicIrradiance", "Direct irradiance before stochastic Rect lighting")
             .texture2D(layout.edge, layout.edge).storageWrite().stageAccess(RenderGraphResourceAccess::TextureSampleRead)
             .format = Format::RGBA32Sfloat;
@@ -460,8 +464,7 @@ RenderPassReflection LumenSurfaceCachePass::reflect(const RenderGraphCompileCont
             .texture2D(layout.edge, layout.edge).storageReadWrite()
             .stageAccess(RenderGraphResourceAccess::TextureStorageReadWrite).format = Format::RGBA32Sfloat;
     }
-    if (shadowedLighting()) {
-        depth.stageAccess(RenderGraphResourceAccess::TextureSampleRead);
+    if (useGdfShadows) {
         reflection.addTextureInput("pageTable", "GDF page table").texture3D(0, 0, 0).sampledRead()
             .stageAccess(RenderGraphResourceAccess::TextureSampleRead).format = Format::R32Uint;
         reflection.addTextureInput("pageAtlas", "GDF fine page distances").texture3D(0, 0, 0).sampledRead()
