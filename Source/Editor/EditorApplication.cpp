@@ -2637,7 +2637,15 @@ bool EditorApplication::initialize()
         if (!startupSampleId_.empty()) {
             loadBuiltInSample(startupSampleId_.c_str());
         } else {
-            resetDefaultRenderGraph();
+            constexpr auto localStartupGraph = ".metallic-local/startup.metallic_graph.json";
+            std::error_code error;
+            if (startupScenePath_.empty() && std::filesystem::is_regular_file(resolveGraphAssetPath(localStartupGraph), error)) {
+                copyToBuffer(localStartupGraph, graphFilePath_, sizeof(graphFilePath_));
+                loadRenderGraph();
+            }
+            if (renderGraph_.nodes().empty()) {
+                resetDefaultRenderGraph();
+            }
         }
     }
 
