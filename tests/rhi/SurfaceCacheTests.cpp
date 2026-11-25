@@ -3339,11 +3339,13 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(LumenRectReGIRTest);
 
-class LumenHardwarePunctualSurfaceCacheTest final : public RHITest {
+class LumenHardwareSurfaceCacheTest : public RHITest {
 public:
-    LumenHardwarePunctualSurfaceCacheTest()
+    enum class Mode { Punctual, Rect, RectReGIR };
+
+    explicit LumenHardwareSurfaceCacheTest(Mode mode, const char* testName) : mode_(mode)
     {
-        name = "lumen_surface_cache_hardware_punctual";
+        name = testName;
         type = RHITestType::Rendering;
     }
 
@@ -3351,20 +3353,21 @@ public:
     {
         using namespace render;
         bench::ValidationRecorder validation;
-        auto device = bench::createTestDevice(context, {.applicationName = "Lumen hardware punctual card reference",
+        const bool hardwareRect = mode_ != Mode::Punctual;
+        auto device = bench::createTestDevice(context, {.applicationName = "Lumen hardware card reference",
             .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
             .enableBindlessDescriptorHeap = true, .enableRayTracingAccelerationStructure = true, .enableRayQuery = true,
             .enableClusterAccelerationStructure = true, .validationSink = validation.sink()});
         if (hasError(device, Error::Unsupported)) {
-            return RHITestResult::skip("Hardware punctual card lighting requires scene acceleration structures and ray queries");
+            return RHITestResult::skip("Hardware card lighting requires scene acceleration structures and ray queries");
         }
-        if (!device) { return RHITestResult::fail("Could not initialize the hardware punctual card reference device"); }
+        if (!device) { return RHITestResult::fail("Could not initialize the hardware card reference device"); }
         auto& gpu = **device;
         if (!gpu.capabilities().shaderStorageImageExtendedFormats) {
-            return RHITestResult::skip("Hardware punctual card lighting requires the R8 GDF and R16 depth storage formats");
+            return RHITestResult::skip("Hardware card lighting requires the R8 GDF and R16 depth storage formats");
         }
 
-        const auto fixture = context.outputDirectory / "LumenHardwarePunctual.gltf";
+        const auto fixture = context.outputDirectory / "LumenHardwareLights.gltf";
         std::error_code copyError;
         std::filesystem::copy_file(std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/Lumen/SingleBounce.gltf", fixture,
             std::filesystem::copy_options::overwrite_existing, copyError);
@@ -3400,10 +3403,12 @@ public:
                 {"meshCardPaths", {receiverCards.generic_string(), blockerCards.generic_string()}},
                 {"atlasSize", kAtlasEdge}, {"tileResolution", kTileEdge}, {"shadowedLighting", true},
                 {"hardwarePunctualShadows", true}, {"exportDirectIrradiance", true}, {"persistentCards", true},
-                {"maxDirectLightingCardsPerFrame", kCardsPerBox}}) ||
+                {"maxDirectLightingCardsPerFrame", kCardsPerBox},
+                {"hardwareRectShadows", hardwareRect}, {"rectLightSamples", mode_ == Mode::RectReGIR ? 1u : 0u},
+                {"maxStochasticDirectLightingCardsPerFrame", hardwareRect ? kCardCount : 0u}}) ||
             !graph.addEdge("SceneAS.accelerationStructure", "SurfaceCache.accelerationStructure") ||
             !graph.markOutput("SurfaceCache.directIrradiance")) {
-            return RHITestResult::fail("Could not configure the hardware punctual Surface Cache graph");
+            return RHITestResult::fail("Could not configure the hardware Surface Cache graph");
         }
         for (const char* name : {"pageTable", "pageAtlas", "coarseMip", "domain"}) {
             if (!graph.addEdge(makeRenderGraphFieldName("GDF", name), makeRenderGraphFieldName("SurfaceCache", name))) {
@@ -3422,7 +3427,17 @@ public:
         spot.properties.outerConeAngle = 0.5;
         spot.direction = float3(0.0f, -0.8f, -0.6f);
         scene::LightingSettings lights;
-        lights.lights = {point, spot};
+        scene::RectLight rect;
+        if (hardwareRect) {
+            rect.position = point.position;
+            rect.direction = spot.direction;
+            rect.width = rect.height = 0.30f;
+            const uint32_t rectCount = mode_ == Mode::RectReGIR ? 2u : 1u;
+            rect.luminance = 30.0f / float(rectCount);
+            lights.rectLights.assign(rectCount, rect);
+        } else {
+            lights.lights = {point, spot};
+        }
 
         RenderWorld world;
         world.setScene(&document);
@@ -3430,7 +3445,7 @@ public:
         environment::WorldEnvironment environment;
         environment.sun.enabled = environment.moon.enabled = false;
         if (!world.setWorldEnvironment(environment) || !world.setLighting(lights)) {
-            return RHITestResult::fail("Could not configure the fixture point and spot lights");
+            return RHITestResult::fail("Could not configure the fixture lights");
         }
         RenderView view;
         ViewCamera camera;
@@ -3452,7 +3467,7 @@ public:
         executor.bindRenderView(&view);
         executor.setDebugObserver(&inspector);
         if (!executor.compile(gpu, graph, kAtlasEdge, kAtlasEdge, RenderGraphCompileOptions{.enableDebugReadback = true}, log)) {
-            return RHITestResult::fail("Hardware punctual card graph compile: " + log);
+            return RHITestResult::fail("Hardware card graph compile: " + log);
         }
         const RenderGraphSubmitDesc submission{.graphicsQueue = gpu.getQueue(QueueType::Graphics), .recordingWorkerLimit = 1};
         const auto capture = [&](std::string_view stage) -> CardCapture {
@@ -3478,7 +3493,7 @@ public:
             return result;
         };
 
-        const auto open = capture("Visible point and spot");
+        const auto open = capture("Visible local lights");
         if (!open) { return RHITestResult::fail(log); }
         uint32_t receiverSlot = 0;
         for (; receiverSlot < kPersistentCardCapacity; ++receiverSlot) {
@@ -3492,19 +3507,109 @@ public:
         const auto center = cardCenterWorldPosition(
             readSurfaceValue<CapturedCard>(open->artifacts[2].bytes, receiverSlot), receiverDepth);
         const float3 toLight = point.position - float3(center[0], center[1], center[2]);
+        const auto centerIrradiance = [&](const CardCapture& frame) {
+            return readSurfaceValue<Pixel>(frame->artifacts[0].bytes, texel);
+        };
+        const auto matches = [&](const CardCapture& frame, float expected, float relativeTolerance = 0.025f) {
+            const auto actual = centerIrradiance(frame);
+            return std::ranges::all_of(std::span(actual).first<3>(), [=](float sample) {
+                return std::abs(sample - expected) <= std::max(1e-5f, expected * relativeTolerance);
+            });
+        };
+        if (hardwareRect) {
+            const auto rectCapture = [&](std::string_view stage) -> CardCapture {
+                // Include the two direct-light budgets, then allow the per-card estimate to settle.
+                CardCapture result;
+                for (uint32_t frame = 0; frame < 20u; ++frame) {
+                    result = capture(stage);
+                    if (!result) { return {}; }
+                }
+                return result;
+            };
+            // Area quadrature gives an independent irradiance reference for the unblocked Rect.
+            constexpr uint32_t strata = 16u;
+            const float3 right{1.0f, 0.0f, 0.0f};
+            const float3 up = cross(right, rect.direction);
+            float expected = 0.0f;
+            for (uint32_t y = 0; y < strata; ++y) {
+                for (uint32_t x = 0; x < strata; ++x) {
+                    const float offsetX = ((float(x) + 0.5f) / strata - 0.5f) * rect.width;
+                    const float offsetY = ((float(y) + 0.5f) / strata - 0.5f) * rect.height;
+                    const float3 sample = toLight + right * offsetX + up * offsetY;
+                    const float distanceSquared = dot(sample, sample);
+                    expected += -dot(rect.direction, sample) * sample.z / (distanceSquared * distanceSquared);
+                }
+            }
+            expected *= rect.luminance * float(lights.rectLights.size()) * rect.width * rect.height / float(strata * strata);
+            const auto unblocked = rectCapture("Open Rect");
+            if (!unblocked) { return RHITestResult::fail(log); }
+            if (!matches(unblocked, expected, 0.12f)) {
+                return RHITestResult::fail(std::format("Open Rect expected {} lx, observed {} lx",
+                    expected, centerIrradiance(unblocked)[0]));
+            }
+
+            // The x edge intersects the Rect solid angle while the center ray is inside the blocker.
+            auto blockerPartial = blockerBetween;
+            constexpr float blockerHalfWidth = 0.55f;
+            const float centerRayX = center[0] + toLight.x * ((blockerBetween.a[13] - center[1]) / toLight.y);
+            blockerPartial.a[12] = centerRayX + blockerHalfWidth - 0.015f;
+            if (!document.setObjectWorldMatrix(blocker, blockerPartial)) {
+                return RHITestResult::fail("Could not move the TLAS-only blocker onto the Rect edge");
+            }
+            const auto partial = rectCapture("Partially blocked Rect");
+            if (!partial) { return RHITestResult::fail(log); }
+            const float partialIrradiance = centerIrradiance(partial)[0];
+            if (!(partialIrradiance > 0.1f * expected && partialIrradiance < 0.9f * expected)) {
+                return RHITestResult::fail(std::format("Partial Rect occlusion must retain a fraction of {} lx, observed {} lx",
+                    expected, partialIrradiance));
+            }
+
+            if (!document.setObjectWorldMatrix(blocker, blockerBetween)) {
+                return RHITestResult::fail("Could not move the TLAS-only blocker over the Rect");
+            }
+            const auto blocked = rectCapture("Fully blocked Rect");
+            if (!blocked) { return RHITestResult::fail(log); }
+            if (!matches(blocked, 0.0f)) {
+                return RHITestResult::fail(std::format("Fully blocked Rect contributed {} lx", centerIrradiance(blocked)[0]));
+            }
+
+            auto blockerBeyond = blockerBetween;
+            const float3 beyond = rect.position + 0.5f * toLight;
+            blockerBeyond.a[12] = beyond.x;
+            blockerBeyond.a[13] = beyond.y;
+            blockerBeyond.a[14] = beyond.z;
+            if (!document.setObjectWorldMatrix(blocker, blockerBeyond)) {
+                return RHITestResult::fail("Could not move the blocker beyond the Rect");
+            }
+            const auto restored = rectCapture("Rect with the blocker beyond the light");
+            if (!restored) { return RHITestResult::fail(log); }
+            if (!matches(restored, expected, 0.12f)) {
+                return RHITestResult::fail(std::format("A blocker beyond the Rect changed receiver irradiance to {} lx",
+                    centerIrradiance(restored)[0]));
+            }
+
+            for (auto& light : lights.rectLights) { light.direction = -rect.direction; }
+            if (!world.setLighting(lights)) { return RHITestResult::fail("Could not turn the Rect away"); }
+            const auto dark = rectCapture("Back of Rect");
+            if (!dark) { return RHITestResult::fail(log); }
+            if (!matches(dark, 0.0f)) {
+                return RHITestResult::fail(std::format("A backfacing Rect contributed {} lx", centerIrradiance(dark)[0]));
+            }
+            if (validation.failed()) {
+                return RHITestResult::fail("Hardware Rect Vulkan validation: " + validation.snapshot().dump());
+            }
+            const auto summary = std::format("Rect center irradiance: {:.4f} lx visible ({:.4f} lx reference), "
+                "{:.4f} lx partially blocked, {:.4f} lx fully blocked, {:.4f} lx beyond light, {:.4f} lx backfacing.",
+                centerIrradiance(unblocked)[0], expected, partialIrradiance, centerIrradiance(blocked)[0],
+                centerIrradiance(restored)[0], centerIrradiance(dark)[0]);
+            spdlog::info("[LumenHardwareRect] {}", summary);
+            return RHITestResult::pass(summary);
+        }
+
         const float distance = std::hypot(toLight.x, toLight.y, toLight.z);
         const float ratio = distance / float(point.properties.range);
         const float expectedPoint = float(point.properties.intensity) * toLight.z *
             (1.0f - ratio * ratio * ratio * ratio) / (distance * distance * distance);
-        const auto centerIrradiance = [&](const CardCapture& frame) {
-            return readSurfaceValue<Pixel>(frame->artifacts[0].bytes, texel);
-        };
-        const auto matches = [&](const CardCapture& frame, float expected) {
-            const auto actual = centerIrradiance(frame);
-            return std::ranges::all_of(std::span(actual).first<3>(), [expected](float sample) {
-                return std::abs(sample - expected) <= std::max(1e-5f, expected * 0.025f);
-            });
-        };
         const float expectedOpen = 3.0f * expectedPoint;
         if (!matches(open, expectedOpen)) {
             return RHITestResult::fail(std::format("Point and spot expected {} lx, observed {} lx",
@@ -3574,9 +3679,30 @@ public:
 
 private:
     using Pixel = std::array<float, 4>;
+    Mode mode_;
+};
+
+class LumenHardwarePunctualSurfaceCacheTest final : public LumenHardwareSurfaceCacheTest {
+public:
+    LumenHardwarePunctualSurfaceCacheTest()
+        : LumenHardwareSurfaceCacheTest(Mode::Punctual, "lumen_surface_cache_hardware_punctual") {}
+};
+
+class LumenHardwareRectSurfaceCacheTest final : public LumenHardwareSurfaceCacheTest {
+public:
+    LumenHardwareRectSurfaceCacheTest()
+        : LumenHardwareSurfaceCacheTest(Mode::Rect, "lumen_surface_cache_hardware_rect") {}
+};
+
+class LumenHardwareRectReGIRSurfaceCacheTest final : public LumenHardwareSurfaceCacheTest {
+public:
+    LumenHardwareRectReGIRSurfaceCacheTest()
+        : LumenHardwareSurfaceCacheTest(Mode::RectReGIR, "lumen_surface_cache_hardware_rect_regir") {}
 };
 
 METALLIC_REGISTER_RHI_TEST(LumenHardwarePunctualSurfaceCacheTest);
+METALLIC_REGISTER_RHI_TEST(LumenHardwareRectSurfaceCacheTest);
+METALLIC_REGISTER_RHI_TEST(LumenHardwareRectReGIRSurfaceCacheTest);
 
 constexpr uint64_t kFastLightingPulseFrame = 6;
 constexpr uint64_t kFastLightingDisocclusionFrame = kFastLightingPulseFrame + 3;

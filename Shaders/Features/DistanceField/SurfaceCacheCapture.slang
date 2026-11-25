@@ -8,6 +8,7 @@ import GlobalDistanceField;
 import GlobalDistanceFieldPages;
 import Lighting;
 import RectLightLTC;
+import RectLightSolidAngle;
 using Metallic;
 using Metallic.DistanceField;
 using Metallic.Lighting;
@@ -217,6 +218,15 @@ void writeSurfaceCacheLighting(SurfaceCacheLightingTexture finalLightingAtlas, u
     finalLightingAtlas[texel] = float4(finalLighting, 0.0f);
 }
 
+bool selectSurfaceCacheRectLight(SurfaceCacheRectLightingParams params, StructuredBuffer<uint4> grid, bool inGrid,
+    uint slotBase, uint slotCount, inout uint seed, out uint index, out float inverseSourcePdf)
+{
+    if (inGrid) {
+        return selectReGIRLightSlot(grid, slotBase, slotCount, params.count, seed, index, inverseSourcePdf);
+    }
+    return selectLocalLightPower(resolveUniform(params.pdf), params.count, seed, index, inverseSourcePdf);
+}
+
 float3 surfaceCacheRectIrradiance(SurfaceCacheRectLightingParams params, uint2 texel, uint samplePhase,
     float3 position, float3 normal)
 {
@@ -237,13 +247,7 @@ float3 surfaceCacheRectIrradiance(SurfaceCacheRectLightingParams params, uint2 t
     for (uint sampleIndex = 0u; sampleIndex < params.sampleCount; ++sampleIndex) {
         uint index;
         float inverseSourcePdf;
-        bool selected;
-        if (inGrid) {
-            selected = selectReGIRLightSlot(grid, slotBase, slotCount, params.count, seed, index, inverseSourcePdf);
-        } else {
-            selected = selectLocalLightPower(resolveUniform(params.pdf), params.count, seed, index, inverseSourcePdf);
-        }
-        if (selected) {
+        if (selectSurfaceCacheRectLight(params, grid, inGrid, slotBase, slotCount, seed, index, inverseSourcePdf)) {
             irradiance += evaluateRectLightDiffuseIrradiance(lights[index], position, basis) * inverseSourcePdf;
         }
     }
@@ -358,8 +362,11 @@ struct SurfaceCacheShadowedLightingParams
     SurfaceCacheRectLightingParams rectLighting;
     ResourceHandle<SurfaceCacheIrradianceTexture> deterministicIrradiance;
     uint separateLighting;
-#if defined(METALLIC_SURFACE_CACHE_HARDWARE_LOCAL_SHADOWS)
+#if defined(METALLIC_SURFACE_CACHE_HARDWARE_LOCAL_SHADOWS) || defined(METALLIC_SURFACE_CACHE_HARDWARE_RECT_SHADOWS)
     uint64_t scene;
+#endif
+#if defined(METALLIC_SURFACE_CACHE_HARDWARE_RECT_SHADOWS)
+    uint samplePhase;
 #endif
 };
 
@@ -394,22 +401,18 @@ float3 shadowedSurfaceCacheLight(QuantizedGlobalDistanceFieldSampler distanceFie
     return directLighting * shadowFactor;
 }
 
-#if defined(METALLIC_SURFACE_CACHE_HARDWARE_LOCAL_SHADOWS)
-float3 hardwareShadowedSurfaceCacheLight(RaytracingAccelerationStructure scene,
-    float3 worldPosition, float3 worldNormal, PunctualLightSample light)
+#if defined(METALLIC_SURFACE_CACHE_HARDWARE_LOCAL_SHADOWS) || defined(METALLIC_SURFACE_CACHE_HARDWARE_RECT_SHADOWS)
+bool traceSurfaceCacheHardwareShadow(RaytracingAccelerationStructure scene, float3 worldPosition,
+    float3 direction, float distance, float normalCosine)
 {
-    const float normalCosine = saturate(dot(worldNormal, light.direction));
-    const float3 directLighting = light.illuminance * normalCosine;
-    if (!any(directLighting > 0.0f)) { return directLighting; }
-
     // The card shadow origin uses the UE 5.7.4 hardware bias of one centimeter.
     const float surfaceBias = 0.01f;
     const float slopeScaledSurfaceBias = 2.0f * surfaceBias;
     RayDesc ray;
-    ray.Origin = worldPosition + light.direction * (surfaceBias + slopeScaledSurfaceBias * (1.0f - normalCosine));
-    ray.Direction = light.direction;
+    ray.Origin = worldPosition + direction * (surfaceBias + slopeScaledSurfaceBias * (1.0f - normalCosine));
+    ray.Direction = direction;
     ray.TMin = 0.0f;
-    ray.TMax = min(kMaxCardShadowTraceDistance, light.distance);
+    ray.TMax = min(kMaxCardShadowTraceDistance, distance);
 
     // Metallic's CLAS TLAS uses instance flags to distinguish opaque geometry.
     const uint rayFlags = RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_CULL_FRONT_FACING_TRIANGLES |
@@ -417,7 +420,70 @@ float3 hardwareShadowedSurfaceCacheLight(RaytracingAccelerationStructure scene,
     RayQuery<rayFlags> query;
     query.TraceRayInline(scene, rayFlags, 0xffu, ray);
     while (query.Proceed()) {}
-    return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? float3(0.0f) : directLighting;
+    return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+}
+#endif
+
+#if defined(METALLIC_SURFACE_CACHE_HARDWARE_LOCAL_SHADOWS)
+float3 hardwareShadowedSurfaceCacheLight(RaytracingAccelerationStructure scene,
+    float3 worldPosition, float3 worldNormal, PunctualLightSample light)
+{
+    const float normalCosine = saturate(dot(worldNormal, light.direction));
+    const float3 directLighting = light.illuminance * normalCosine;
+    if (!any(directLighting > 0.0f)) { return directLighting; }
+    return traceSurfaceCacheHardwareShadow(scene, worldPosition, light.direction, light.distance, normalCosine) ?
+        float3(0.0f) : directLighting;
+}
+#endif
+
+#if defined(METALLIC_SURFACE_CACHE_HARDWARE_RECT_SHADOWS)
+float3 hardwareShadowedSurfaceCacheRect(RaytracingAccelerationStructure scene, GPURectLight light,
+    float3 position, float3 normal, inout uint seed)
+{
+    const float3 center = light.positionRange.xyz - position;
+    if (dot(light.direction.xyz, center) >= 0.0f) { return float3(0.0f); }
+
+    const float inverseRange = light.positionRange.w > 0.0f ? rcp(light.positionRange.w) : 0.0f;
+    const float normalizedDistanceSquared = dot(center, center) * (inverseRange * inverseRange);
+    const float fade = saturate(1.0f - normalizedDistanceSquared * normalizedDistanceSquared);
+    const float attenuation = fade * fade;
+    if (attenuation == 0.0f) { return float3(0.0f); }
+
+    const float2 random = float2(punctualSamplingRandom(seed), punctualSamplingRandom(seed));
+    const RectLightSolidAngleSample sample = sampleRectLightSolidAngle(light, center, random);
+    if (!(sample.solidAngle > 0.0f)) { return float3(0.0f); }
+    const float noL = saturate(dot(normal, sample.direction));
+    if (noL == 0.0f || traceSurfaceCacheHardwareShadow(scene, position, sample.direction, sample.distance, noL)) {
+        return float3(0.0f);
+    }
+    // NvRTX's Rect conditional PDF is 1 / solid angle, including the small-angle branch.
+    return (light.radiance.rgb * attenuation * noL) * sample.solidAngle;
+}
+
+float3 hardwareSurfaceCacheRectIrradiance(RaytracingAccelerationStructure scene,
+    SurfaceCacheRectLightingParams params, uint2 texel, uint samplePhase, float3 position, float3 normal)
+{
+    let lights = resolveUniform(params.lights);
+    uint seed = punctualSamplingHash((texel.x | (texel.y << 16u)) ^ punctualSamplingHash(samplePhase));
+    float3 irradiance = float3(0.0f);
+    if (params.sampleCount == 0u) {
+        for (uint index = 0u; index < params.count; ++index) {
+            irradiance += hardwareShadowedSurfaceCacheRect(scene, lights[index], position, normal, seed);
+        }
+        return irradiance;
+    }
+
+    let grid = resolveUniform(params.grid);
+    uint slotBase, slotCount;
+    bool inGrid = findReGIRLightCell(grid, position, seed, slotBase, slotCount);
+    for (uint sampleIndex = 0u; sampleIndex < params.sampleCount; ++sampleIndex) {
+        uint index;
+        float inverseSourcePdf;
+        if (selectSurfaceCacheRectLight(params, grid, inGrid, slotBase, slotCount, seed, index, inverseSourcePdf)) {
+            irradiance += hardwareShadowedSurfaceCacheRect(scene, lights[index], position, normal, seed) * inverseSourcePdf;
+        }
+    }
+    return irradiance / float(params.sampleCount);
 }
 #endif
 
@@ -466,7 +532,7 @@ void surfaceCacheShadowedLightingMain(uint3 threadID : SV_DispatchThreadID)
     float3 directLighting = shadowedSurfaceCacheLight(distanceField, domains, params.clipmapCount,
         worldPosition, worldNormal, sun, params.sunCastsShadow != 0u, false);
     StructuredBuffer<GPUPunctualLight> localLights = resolveUniform(params.localLights);
-#if defined(METALLIC_SURFACE_CACHE_HARDWARE_LOCAL_SHADOWS)
+#if defined(METALLIC_SURFACE_CACHE_HARDWARE_LOCAL_SHADOWS) || defined(METALLIC_SURFACE_CACHE_HARDWARE_RECT_SHADOWS)
     RaytracingAccelerationStructure scene = resolveAccelerationStructure(params.scene);
 #endif
     const uint lightCount = punctualLightCount(localLights);
@@ -480,7 +546,12 @@ void surfaceCacheShadowedLightingMain(uint3 threadID : SV_DispatchThreadID)
 #endif
     }
     if (params.rectLighting.count != 0u) {
+#if defined(METALLIC_SURFACE_CACHE_HARDWARE_RECT_SHADOWS)
+        directLighting += hardwareSurfaceCacheRectIrradiance(scene, params.rectLighting, texel,
+            params.samplePhase, worldPosition, worldNormal);
+#else
         directLighting += surfaceCacheRectIrradiance(params.rectLighting, texel, 0u, worldPosition, worldNormal);
+#endif
     }
 
     if (params.separateLighting != 0u) {
@@ -513,6 +584,9 @@ struct SurfaceCacheComposeLightingParams
     uint samplePhase;
     uint exportDirectIrradiance;
     SurfaceCacheRectLightingParams rectLighting;
+#if defined(METALLIC_SURFACE_CACHE_HARDWARE_RECT_SHADOWS)
+    uint64_t scene;
+#endif
 };
 
 [shader("compute")]
@@ -538,7 +612,7 @@ void surfaceCacheComposeLightingMain(uint3 threadID : SV_DispatchThreadID)
     }
 
     float4 history = float4(0.0f);
-    if (params.rectLighting.sampleCount != 0u) {
+    if (params.rectLighting.count != 0u) {
         uint2 tile = texel / params.tileResolution;
         uint slot = tile.x + tile.y * (params.atlasSize / params.tileResolution);
         uint flags = resolveUniform(params.cardUpdates)[slot];
@@ -550,7 +624,12 @@ void surfaceCacheComposeLightingMain(uint3 threadID : SV_DispatchThreadID)
             float2 uv = (float2(texel - tile * params.tileResolution) + 0.5f) / float(params.tileResolution);
             float3 position = surfaceCacheWorldPosition(card, uv, depth);
             float3 normal = decodeSurfaceCacheNormal(card, resolveUniform(params.normal).Load(int3(texel, 0)).xy);
+#if defined(METALLIC_SURFACE_CACHE_HARDWARE_RECT_SHADOWS)
+            float3 estimate = hardwareSurfaceCacheRectIrradiance(resolveAccelerationStructure(params.scene),
+                params.rectLighting, texel, params.samplePhase, position, normal);
+#else
             float3 estimate = surfaceCacheRectIrradiance(params.rectLighting, texel, params.samplePhase, position, normal);
+#endif
             estimate = select(isFiniteSurfaceCacheValue(estimate), estimate, 0.0f);
             const float count = min(history.w + 1.0f, 32.0f);
             history = float4(lerp(history.xyz, estimate, 1.0f / count), count);
