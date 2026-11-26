@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 namespace metallic::environment {
@@ -22,8 +23,16 @@ struct LocalFogVolume {
     std::array<float, 3> albedo{1.0f, 1.0f, 1.0f};
     std::array<float, 3> emissive{};
     int sortPriority = 0;
+    uint64_t stableId = 0; // Assigned by SceneDocument, omitted from render state comparisons.
 
-    bool operator==(const LocalFogVolume&) const = default;
+    bool operator==(const LocalFogVolume& other) const
+    {
+        return enabled == other.enabled && centerMeters == other.centerMeters && rotationDegrees == other.rotationDegrees &&
+            radiusMeters == other.radiusMeters && radialExtinction == other.radialExtinction &&
+            heightExtinction == other.heightExtinction && heightFalloff == other.heightFalloff &&
+            heightOffset == other.heightOffset && albedo == other.albedo && emissive == other.emissive &&
+            sortPriority == other.sortPriority;
+    }
 };
 
 inline bool validLocalFogVolume(const LocalFogVolume& volume)

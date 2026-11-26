@@ -5,6 +5,7 @@
 #include "Editor/EditorApplication.h"
 #include "Editor/NsightLaunchOptions.h"
 #include "Editor/StreamSceneOpen.h"
+#include "Editor/WorldItemBounds.h"
 #include "Runtime/Render/Profiling/TracyProfiler.h"
 
 #include "Runtime/Render/GAPI/RHI.h"
@@ -1140,6 +1141,142 @@ bool clipViewportEdge(float4& start, float4& end)
     if (exit < 1.0f) { end = start + delta * exit; }
     if (enter > 0.0f) { start += delta * enter; }
     return start.w > 0.0f && end.w > 0.0f;
+}
+
+bool drawFogVolumeProperties(environment::LocalFogVolume& volume)
+{
+    bool changed = false;
+    changed |= ImGui::Checkbox("Enabled", &volume.enabled);
+    changed |= ImGui::DragFloat3("Center (m)", volume.centerMeters.data(), 0.1f);
+    changed |= ImGui::DragFloat3("Rotation XYZ (deg)", volume.rotationDegrees.data(), 0.5f);
+    changed |= ImGui::InputFloat("Radius (m)", &volume.radiusMeters);
+    changed |= ImGui::InputFloat("Radial extinction", &volume.radialExtinction);
+    changed |= ImGui::InputFloat("Height extinction", &volume.heightExtinction);
+    changed |= ImGui::InputFloat("Height falloff", &volume.heightFalloff);
+    changed |= ImGui::InputFloat("Unit-sphere height offset", &volume.heightOffset);
+    changed |= ImGui::ColorEdit3("Albedo", volume.albedo.data(), ImGuiColorEditFlags_Float);
+    changed |= ImGui::ColorEdit3("Emissive", volume.emissive.data(), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+    changed |= ImGui::SliderInt("Sort priority", &volume.sortPriority, -127, 127);
+    return changed;
+}
+
+bool drawPunctualLightProperties(scene::PunctualLight& light)
+{
+    bool changed = false;
+    auto& p = light.properties;
+    if (light.imported.has_value()) {
+        ImGui::TextDisabled("Imported source: %s / node %d",
+            light.imported->sourceId.empty() ? "<scene>" : light.imported->sourceId.c_str(),
+            light.imported->sourceNodeIndex);
+        ImGui::TextWrapped("Pose follows the source hierarchy. World-space edits are stored as local offsets.");
+    }
+    changed |= ImGui::Checkbox("Enabled", &light.enabled);
+    float color[] = {p.color.x, p.color.y, p.color.z};
+    if (ImGui::ColorEdit3("Linear Rec.709 color", color, ImGuiColorEditFlags_Float)) {
+        p.color = float3(color[0], color[1], color[2]);
+        changed = true;
+    }
+    const bool spot = p.type == "spot";
+    scene::LightUnit unit = p.intensityUnit;
+    if (ImGui::BeginCombo("Unit", scene::lightUnitName(unit))) {
+        for (scene::LightUnit candidate : {scene::LightUnit::Lux, scene::LightUnit::Candela,
+                 scene::LightUnit::Lumens, scene::LightUnit::EV100}) {
+            if (!scene::validLightUnit(p.type, candidate)) { continue; }
+            if (ImGui::Selectable(scene::lightUnitName(candidate), candidate == unit)) {
+                double si = scene::lightIntensitySI(p.type, unit, p.intensity, p.innerConeAngle, p.outerConeAngle);
+                // Zero cannot be represented logarithmically; keep an off light off.
+                if (candidate != scene::LightUnit::EV100 || si > 0.0) {
+                    p.intensity = scene::lightIntensityFromSI(p.type, candidate, si, p.innerConeAngle, p.outerConeAngle);
+                    p.intensityUnit = candidate;
+                    changed = true;
+                }
+            }
+        }
+        ImGui::EndCombo();
+    }
+    const double minIntensity = p.intensityUnit == scene::LightUnit::EV100 ? -32.0 : 0.0;
+    const double maxIntensity = p.intensityUnit == scene::LightUnit::EV100 ? 38.0 : 1e12;
+    changed |= ImGui::DragScalar("Intensity", ImGuiDataType_Double, &p.intensity,
+        0.1f, &minIntensity, &maxIntensity, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    {
+        float position[] = {light.position.x, light.position.y, light.position.z};
+        if (ImGui::DragFloat3("Position (m)", position, 0.01f)) {
+            light.position = float3(position[0], position[1], position[2]);
+            changed = true;
+        }
+        const double minRange = 0.0;
+        changed |= ImGui::DragScalar("Range (m; 0 = infinite)", ImGuiDataType_Double,
+            &p.range, 0.1f, &minRange, nullptr, "%.2f");
+        const double maxSourceRadius = 10000.0;
+        changed |= ImGui::DragScalar("Shadow source radius (m)", ImGuiDataType_Double,
+            &p.sourceRadius, 0.01f, &minRange, &maxSourceRadius, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        const double maxScattering = 65504.0;
+        changed |= ImGui::DragScalar("Volumetric scattering intensity", ImGuiDataType_Double,
+            &p.volumetricScatteringIntensity, 0.02f, &minRange, &maxScattering, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        changed |= ImGui::Checkbox("Cast volumetric shadow", &p.castVolumetricShadow);
+    }
+    if (spot) {
+        float direction[] = {light.direction.x, light.direction.y, light.direction.z};
+        if (ImGui::DragFloat3("Emission direction", direction, 0.01f)) {
+            light.direction = float3(direction[0], direction[1], direction[2]);
+            changed = true;
+        }
+    }
+    if (spot) {
+        float outer = static_cast<float>(p.outerConeAngle * 57.295779513);
+        float inner = static_cast<float>(p.innerConeAngle * 57.295779513);
+        if (ImGui::SliderFloat("Outer cone (deg)", &outer, 0.1f, 90.0f)) {
+            p.outerConeAngle = double(outer) / 57.295779513;
+            p.innerConeAngle = std::min(p.innerConeAngle, p.outerConeAngle - 1e-5);
+            changed = true;
+        }
+        if (ImGui::SliderFloat("Inner cone (deg)", &inner, 0.0f, outer - 0.001f)) {
+            p.innerConeAngle = double(inner) / 57.295779513;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+bool drawRectLightProperties(scene::RectLight& light)
+{
+    bool changed = false;
+    changed |= ImGui::Checkbox("Enabled", &light.enabled);
+    float color[]{light.color.x, light.color.y, light.color.z};
+    if (ImGui::ColorEdit3("Linear Rec.709 color", color, ImGuiColorEditFlags_Float)) {
+        light.color = float3(color[0], color[1], color[2]);
+        changed = true;
+    }
+    float position[]{light.position.x, light.position.y, light.position.z};
+    if (ImGui::DragFloat3("Position (m)", position, 0.01f)) {
+        light.position = float3(position[0], position[1], position[2]);
+        changed = true;
+    }
+    float direction[]{light.direction.x, light.direction.y, light.direction.z};
+    if (ImGui::DragFloat3("Emission direction", direction, 0.01f)) {
+        light.direction = float3(direction[0], direction[1], direction[2]);
+        changed = true;
+    }
+    changed |= ImGui::DragFloat("Width (m)", &light.width, 0.01f, 0.001f, 1e6f,
+        "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::DragFloat("Height (m)", &light.height, 0.01f, 0.001f, 1e6f,
+        "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::DragFloat("Roll (deg)", &light.rollDegrees, 0.5f);
+    changed |= ImGui::DragFloat("Luminance (cd/m²)", &light.luminance, 1.0f, 0.0f, 1e12f,
+        "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::DragFloat("Range (m; 0 = infinite)", &light.range, 0.1f, 0.0f, 1e6f,
+        "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    return changed;
+}
+
+const char* worldItemTypeLabel(scene::WorldItemType type)
+{
+    switch (type) {
+    case scene::WorldItemType::LocalFogVolume: return "Fog Volume";
+    case scene::WorldItemType::PunctualLight: return "Light";
+    case scene::WorldItemType::RectLight: return "Rect Light";
+    }
+    return "";
 }
 
 CameraViewDimensions cameraViewDimensions(
@@ -3896,19 +4033,33 @@ void EditorApplication::drawSceneGraphTab()
     ImGui::TableHeadersRow();
 
     const auto& graph = scene_.sceneGraph();
-    SceneDecalChildren decalChildren;
+    SceneGraphAttachmentMap attachments;
     for (const auto& decal : scene_.decals()) {
-        decalChildren[scene_.decalSceneGraphParent(decal.id)].push_back(&decal);
+        attachments[scene_.decalSceneGraphParent(decal.id)].decals.push_back(&decal);
     }
+    const auto addWorldItem = [&](scene::WorldItemType type, uint64_t id) {
+        const scene::WorldItemId item{type, id};
+        attachments[scene_.worldItemSceneGraphParent(item)].worldItems.push_back(item);
+    };
+    for (const auto& volume : scene_.worldEnvironment().volumetricFog.localVolumes) {
+        addWorldItem(scene::WorldItemType::LocalFogVolume, volume.stableId);
+    }
+    const auto& lighting = scene_.lighting();
+    for (const auto& light : lighting.lights) {
+        if (!light.imported) { addWorldItem(scene::WorldItemType::PunctualLight, light.stableId); }
+    }
+    for (const auto& light : lighting.rectLights) { addWorldItem(scene::WorldItemType::RectLight, light.stableId); }
     const auto* decal = selectedDecal();
-    const auto selected = decal ? graph.object(scene_.decalSceneGraphParent(decal->id)) : selectedSceneObject();
+    const auto worldItem = selectedWorldItem();
+    const auto selected = decal ? graph.object(scene_.decalSceneGraphParent(decal->id)) :
+        worldItem ? graph.object(scene_.worldItemSceneGraphParent(*worldItem)) : selectedSceneObject();
     const bool revealSelection = selected && (sceneTreeSelection_ != selected.entity() ||
         sceneTreeSelectionLifetime_ != graph.lifetimeRevision());
     sceneTreeSelection_ = selected.entity();
     sceneTreeSelectionLifetime_ = graph.lifetimeRevision();
     std::vector<scene::SceneEntity> revealPath;
     if (revealSelection) {
-        if (decal || selectedRenderNode()) { revealPath.push_back(selected.entity()); }
+        if (decal || worldItem || selectedRenderNode()) { revealPath.push_back(selected.entity()); }
         for (auto parent = selected.getComponent<scene::RelationshipComponent>().parent;
             parent != scene::kNullSceneEntity; parent = graph.object(parent).getComponent<scene::RelationshipComponent>().parent) {
             revealPath.push_back(parent);
@@ -3936,18 +4087,23 @@ void EditorApplication::drawSceneGraphTab()
     }
     if (sceneOpen) {
         for (const scene::SceneEntity root : graph.roots()) {
-            drawSceneNode(root, revealPath, decalChildren);
+            drawSceneNode(root, revealPath, attachments);
         }
-        if (const auto ungrouped = decalChildren.find(scene::kNullSceneEntity); ungrouped != decalChildren.end()) {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            const bool open = ImGui::TreeNodeEx("Decals", ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth);
-            ImGui::TableNextColumn();
-            ImGui::Text("%zu decals", ungrouped->second.size());
-            if (open) {
-                for (const auto* child : ungrouped->second) { drawSceneDecal(*child); }
-                ImGui::TreePop();
-            }
+        if (const auto ungrouped = attachments.find(scene::kNullSceneEntity); ungrouped != attachments.end()) {
+            const auto drawGroup = [](const char* label, const auto& rows, const auto& draw) {
+                if (rows.empty()) { return; }
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                const bool open = ImGui::TreeNodeEx(label, ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth);
+                ImGui::TableNextColumn();
+                ImGui::Text("%zu items", rows.size());
+                if (open) {
+                    for (const auto& row : rows) { draw(row); }
+                    ImGui::TreePop();
+                }
+            };
+            drawGroup("Decals", ungrouped->second.decals, [this](const auto* row) { drawSceneDecal(*row); });
+            drawGroup("Fog & Lights", ungrouped->second.worldItems, [this](auto row) { drawSceneWorldItem(row); });
         }
         ImGui::TreePop();
     }
@@ -4184,6 +4340,11 @@ void EditorApplication::drawInspectorPanel()
         ImGui::End();
         return;
     }
+    if (const auto item = selectedWorldItem()) {
+        drawWorldItemInspector(*item);
+        ImGui::End();
+        return;
+    }
     if (const auto* decal = selectedDecal()) {
         const auto name = scene_.decalName(decal->id);
         if (name.empty()) { ImGui::Text("Decal #%u", decal->id); }
@@ -4356,6 +4517,7 @@ void EditorApplication::drawInspectorPanel()
         ImGui::Text("Embedded bytes: %zu", image.encodedData.size());
         break;
     }
+    case SceneSelectionType::WorldItem:
     case SceneSelectionType::Decal:
     case SceneSelectionType::None:
         break;
@@ -5011,17 +5173,7 @@ void EditorApplication::drawEnvironmentControls()
                 ImGui::PushID(static_cast<int>(index));
                 const bool open = ImGui::TreeNode("volume", "Volume %zu", index + 1);
                 if (open) {
-                    celestialChanged |= ImGui::Checkbox("Enabled", &volume.enabled);
-                    celestialChanged |= ImGui::DragFloat3("Center (m)", volume.centerMeters.data(), 0.1f);
-                    celestialChanged |= ImGui::DragFloat3("Rotation XYZ (deg)", volume.rotationDegrees.data(), 0.5f);
-                    celestialChanged |= ImGui::InputFloat("Radius (m)", &volume.radiusMeters);
-                    celestialChanged |= ImGui::InputFloat("Radial extinction", &volume.radialExtinction);
-                    celestialChanged |= ImGui::InputFloat("Height extinction", &volume.heightExtinction);
-                    celestialChanged |= ImGui::InputFloat("Height falloff", &volume.heightFalloff);
-                    celestialChanged |= ImGui::InputFloat("Unit-sphere height offset", &volume.heightOffset);
-                    celestialChanged |= ImGui::ColorEdit3("Albedo", volume.albedo.data(), ImGuiColorEditFlags_Float);
-                    celestialChanged |= ImGui::ColorEdit3("Emissive", volume.emissive.data(), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
-                    celestialChanged |= ImGui::SliderInt("Sort priority", &volume.sortPriority, -127, 127);
+                    celestialChanged |= drawFogVolumeProperties(volume);
                     const bool remove = ImGui::Button("Remove volume");
                     ImGui::TreePop();
                     if (remove) {
@@ -5078,10 +5230,13 @@ void EditorApplication::drawEnvironmentControls()
         ImGui::TreePop();
     }
     if (celestialChanged) {
+        const bool removedVolume = celestialEnvironment.volumetricFog.localVolumes.size() <
+            scene_.worldEnvironment().volumetricFog.localVolumes.size();
         if (!environment::validWorldEnvironment(celestialEnvironment)) {
             renderGraphStatus_ = "World environment edit rejected: invalid clock, location, medium or weather; "
                 "active clouds must fit inside the atmosphere. Previous values were preserved.";
         } else if (scene_.setWorldEnvironment(celestialEnvironment)) {
+            if (removedVolume) { discardRemovedWorldItemEdits(); }
             renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
             sceneNonTransformDirty_ = true;
             updateSceneDirtyState();
@@ -5118,7 +5273,8 @@ void EditorApplication::drawLightingControls()
     ImGui::TextUnformatted("Physical Lighting (metres)");
     ImGui::BeginDisabled(!scene_.valid());
     ImGui::PushID("WorldLighting");
-    scene::LightingSettings lighting = scene_.lighting();
+    const auto& originalLighting = scene_.lighting();
+    auto lighting = originalLighting;
     auto& exposure = lighting.autoExposure;
     const bool hasExposurePass = std::any_of(renderGraph_.nodes().begin(), renderGraph_.nodes().end(),
         [](const auto& node) { return node.type == "AutoExposurePass"; });
@@ -5168,80 +5324,9 @@ void EditorApplication::drawLightingControls()
     }
     for (size_t i = 0; i < lighting.lights.size();) {
         auto& light = lighting.lights[i];
-        auto& p = light.properties;
         ImGui::PushID(static_cast<int>(i));
         if (ImGui::TreeNode("Light", "%s #%zu", light.name.c_str(), i + 1)) {
-            if (light.imported.has_value()) {
-                ImGui::TextDisabled("Imported source: %s / node %d",
-                    light.imported->sourceId.empty() ? "<scene>" : light.imported->sourceId.c_str(),
-                    light.imported->sourceNodeIndex);
-                ImGui::TextWrapped("Pose follows the source hierarchy. World-space edits are stored as local offsets.");
-            }
-            changed |= ImGui::Checkbox("Enabled", &light.enabled);
-            float color[] = {p.color.x, p.color.y, p.color.z};
-            if (ImGui::ColorEdit3("Linear Rec.709 color", color, ImGuiColorEditFlags_Float)) {
-                p.color = float3(color[0], color[1], color[2]);
-                changed = true;
-            }
-            const bool spot = p.type == "spot";
-            scene::LightUnit unit = p.intensityUnit;
-            if (ImGui::BeginCombo("Unit", scene::lightUnitName(unit))) {
-                for (scene::LightUnit candidate : {scene::LightUnit::Lux, scene::LightUnit::Candela,
-                         scene::LightUnit::Lumens, scene::LightUnit::EV100}) {
-                    if (!scene::validLightUnit(p.type, candidate)) { continue; }
-                    if (ImGui::Selectable(scene::lightUnitName(candidate), candidate == unit)) {
-                        double si = scene::lightIntensitySI(p.type, unit, p.intensity, p.innerConeAngle, p.outerConeAngle);
-                        // Zero cannot be represented logarithmically; keep an off light off.
-                        if (candidate != scene::LightUnit::EV100 || si > 0.0) {
-                            p.intensity = scene::lightIntensityFromSI(p.type, candidate, si, p.innerConeAngle, p.outerConeAngle);
-                            p.intensityUnit = candidate;
-                            changed = true;
-                        }
-                    }
-                }
-                ImGui::EndCombo();
-            }
-            const double minIntensity = p.intensityUnit == scene::LightUnit::EV100 ? -32.0 : 0.0;
-            const double maxIntensity = p.intensityUnit == scene::LightUnit::EV100 ? 38.0 : 1e12;
-            changed |= ImGui::DragScalar("Intensity", ImGuiDataType_Double, &p.intensity,
-                0.1f, &minIntensity, &maxIntensity, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-            {
-                float position[] = {light.position.x, light.position.y, light.position.z};
-                if (ImGui::DragFloat3("Position (m)", position, 0.01f)) {
-                    light.position = float3(position[0], position[1], position[2]);
-                    changed = true;
-                }
-                const double minRange = 0.0;
-                changed |= ImGui::DragScalar("Range (m; 0 = infinite)", ImGuiDataType_Double,
-                    &p.range, 0.1f, &minRange, nullptr, "%.2f");
-                const double maxSourceRadius = 10000.0;
-                changed |= ImGui::DragScalar("Shadow source radius (m)", ImGuiDataType_Double,
-                    &p.sourceRadius, 0.01f, &minRange, &maxSourceRadius, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-                const double maxScattering = 65504.0;
-                changed |= ImGui::DragScalar("Volumetric scattering intensity", ImGuiDataType_Double,
-                    &p.volumetricScatteringIntensity, 0.02f, &minRange, &maxScattering, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-                changed |= ImGui::Checkbox("Cast volumetric shadow", &p.castVolumetricShadow);
-            }
-            if (spot) {
-                float direction[] = {light.direction.x, light.direction.y, light.direction.z};
-                if (ImGui::DragFloat3("Emission direction", direction, 0.01f)) {
-                    light.direction = float3(direction[0], direction[1], direction[2]);
-                    changed = true;
-                }
-            }
-            if (spot) {
-                float outer = static_cast<float>(p.outerConeAngle * 57.295779513);
-                float inner = static_cast<float>(p.innerConeAngle * 57.295779513);
-                if (ImGui::SliderFloat("Outer cone (deg)", &outer, 0.1f, 90.0f)) {
-                    p.outerConeAngle = double(outer) / 57.295779513;
-                    p.innerConeAngle = std::min(p.innerConeAngle, p.outerConeAngle - 1e-5);
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Inner cone (deg)", &inner, 0.0f, outer - 0.001f)) {
-                    p.innerConeAngle = double(inner) / 57.295779513;
-                    changed = true;
-                }
-            }
+            changed |= drawPunctualLightProperties(light);
             const bool remove = ImGui::Button("Remove light");
             ImGui::TreePop();
             if (remove) {
@@ -5265,31 +5350,7 @@ void EditorApplication::drawLightingControls()
             ImGui::PushID(static_cast<int>(i));
             bool remove = false;
             if (ImGui::TreeNode("RectLight", "%s #%zu", light.name.c_str(), i + 1)) {
-                changed |= ImGui::Checkbox("Enabled", &light.enabled);
-                float color[]{light.color.x, light.color.y, light.color.z};
-                if (ImGui::ColorEdit3("Linear Rec.709 color", color, ImGuiColorEditFlags_Float)) {
-                    light.color = float3(color[0], color[1], color[2]);
-                    changed = true;
-                }
-                float position[]{light.position.x, light.position.y, light.position.z};
-                if (ImGui::DragFloat3("Position (m)", position, 0.01f)) {
-                    light.position = float3(position[0], position[1], position[2]);
-                    changed = true;
-                }
-                float direction[]{light.direction.x, light.direction.y, light.direction.z};
-                if (ImGui::DragFloat3("Emission direction", direction, 0.01f)) {
-                    light.direction = float3(direction[0], direction[1], direction[2]);
-                    changed = true;
-                }
-                changed |= ImGui::DragFloat("Width (m)", &light.width, 0.01f, 0.001f, 1e6f,
-                    "%.3f", ImGuiSliderFlags_AlwaysClamp);
-                changed |= ImGui::DragFloat("Height (m)", &light.height, 0.01f, 0.001f, 1e6f,
-                    "%.3f", ImGuiSliderFlags_AlwaysClamp);
-                changed |= ImGui::DragFloat("Roll (deg)", &light.rollDegrees, 0.5f);
-                changed |= ImGui::DragFloat("Luminance (cd/m²)", &light.luminance, 1.0f, 0.0f, 1e12f,
-                    "%.2f", ImGuiSliderFlags_AlwaysClamp);
-                changed |= ImGui::DragFloat("Range (m; 0 = infinite)", &light.range, 0.1f, 0.0f, 1e6f,
-                    "%.2f", ImGuiSliderFlags_AlwaysClamp);
+                changed |= drawRectLightProperties(light);
                 remove = ImGui::Button("Remove light");
                 ImGui::TreePop();
             }
@@ -5305,13 +5366,49 @@ void EditorApplication::drawLightingControls()
     }
     ImGui::PopID();
     ImGui::EndDisabled();
+    const bool removedLight = lighting.lights.size() < originalLighting.lights.size() ||
+        lighting.rectLights.size() < originalLighting.rectLights.size();
     if (changed && scene_.setLighting(lighting)) {
+        if (removedLight) { discardRemovedWorldItemEdits(); }
         renderWorld_.setLighting(scene_.lighting());
         renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
         sceneNonTransformDirty_ = true;
         updateSceneDirtyState();
         viewportPreviewNeedsRender_ = true;
     }
+}
+
+void EditorApplication::drawWorldItemInspector(scene::WorldItemId item)
+{
+    const size_t index = *findWorldItemIndex(item);
+    const auto name = scene_.worldItemName(item);
+    if (name.empty()) { ImGui::TextUnformatted(worldItemTypeLabel(item.type)); }
+    else { ImGui::TextUnformatted(name.data(), name.data() + name.size()); }
+    ImGui::Separator();
+
+    if (item.type == scene::WorldItemType::LocalFogVolume) {
+        auto environment = scene_.worldEnvironment();
+        if (!drawFogVolumeProperties(environment.volumetricFog.localVolumes[index])) { return; }
+        if (!scene_.setWorldEnvironment(std::move(environment))) {
+            sceneStatus_ = "Local fog volume edit rejected.";
+            return;
+        }
+    } else {
+        auto lighting = scene_.lighting();
+        const bool edited = item.type == scene::WorldItemType::PunctualLight
+            ? drawPunctualLightProperties(lighting.lights[index])
+            : drawRectLightProperties(lighting.rectLights[index]);
+        if (!edited) { return; }
+        if (!scene_.setLighting(std::move(lighting))) {
+            sceneStatus_ = "Light edit rejected.";
+            return;
+        }
+        renderWorld_.setLighting(scene_.lighting());
+    }
+    renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
+    sceneNonTransformDirty_ = true;
+    updateSceneDirtyState();
+    viewportPreviewNeedsRender_ = true;
 }
 
 void EditorApplication::drawDecalControls()
@@ -5452,7 +5549,7 @@ void EditorApplication::applyViewportCameraProperties(render::RenderGraphPropert
 }
 
 void EditorApplication::drawSceneNode(scene::SceneEntity entity, std::span<const scene::SceneEntity> revealPath,
-    const SceneDecalChildren& decalChildren)
+    const SceneGraphAttachmentMap& attachments)
 {
     const auto& graph = scene_.sceneGraph();
     const auto object = graph.object(entity);
@@ -5493,8 +5590,8 @@ void EditorApplication::drawSceneNode(scene::SceneEntity entity, std::span<const
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth |
         (sourceMount ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_OpenOnArrow);
     const bool hasPrimitives = mesh != nullptr && !mesh->renderNodeIndices.empty();
-    const auto decals = decalChildren.find(entity);
-    const bool leaf = relationship.children.empty() && !hasPrimitives && decals == decalChildren.end();
+    const auto attached = attachments.find(entity);
+    const bool leaf = relationship.children.empty() && !hasPrimitives && attached == attachments.end();
     if (leaf) {
         flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
     }
@@ -5506,7 +5603,8 @@ void EditorApplication::drawSceneNode(scene::SceneEntity entity, std::span<const
     const bool reveal = !revealPath.empty() && revealPath.back() == entity;
     if (reveal) { ImGui::SetNextItemOpen(true); }
     const bool probeRow = gizmoSmokeInput_ && gizmoSmokeInput_->sceneTreeProbe == entity &&
-        gizmoSmokeInput_->sceneTreePrimitiveProbe == scene::kInvalidSceneIndex && !gizmoSmokeInput_->sceneTreeDecalProbe;
+        gizmoSmokeInput_->sceneTreePrimitiveProbe == scene::kInvalidSceneIndex &&
+        !gizmoSmokeInput_->sceneTreeDecalProbe && !gizmoSmokeInput_->sceneTreeWorldItemProbe;
     if (probeRow) { gizmoSmokeInput_->sceneTreeDepth = ImGui::GetCurrentWindow()->DC.TreeDepth; }
     const bool open = ImGui::TreeNodeEx(
         reinterpret_cast<void*>(static_cast<intptr_t>(entity)),
@@ -5555,10 +5653,11 @@ void EditorApplication::drawSceneNode(scene::SceneEntity entity, std::span<const
             }
         }
         for (const scene::SceneEntity child : relationship.children) {
-            drawSceneNode(child, childRevealPath, decalChildren);
+            drawSceneNode(child, childRevealPath, attachments);
         }
-        if (decals != decalChildren.end()) {
-            for (const auto* decal : decals->second) { drawSceneDecal(*decal); }
+        if (attached != attachments.end()) {
+            for (const auto* decal : attached->second.decals) { drawSceneDecal(*decal); }
+            for (const auto item : attached->second.worldItems) { drawSceneWorldItem(item); }
         }
         ImGui::TreePop();
     }
@@ -5642,6 +5741,41 @@ void EditorApplication::drawSceneDecal(const scene::RenderDecal& decal)
     ImGui::PopID();
 }
 
+void EditorApplication::drawSceneWorldItem(scene::WorldItemId item)
+{
+    const auto lifetime = scene_.sceneGraph().lifetimeRevision();
+    const auto name = scene_.worldItemName(item);
+    const char* tag = worldItemTypeLabel(item.type);
+    const auto label = name.empty() ? std::string(tag) + " " + std::to_string(*findWorldItemIndex(item) + 1) : std::string(name);
+    const bool selected = sceneSelection_.sceneLifetimeRevision == lifetime && sceneSelection_.worldItem == item;
+    const auto flags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen |
+        ImGuiTreeNodeFlags_SpanAvailWidth | (selected ? ImGuiTreeNodeFlags_Selected : 0);
+    ImGui::PushID(tag);
+    ImGui::PushID(reinterpret_cast<const void*>(static_cast<uintptr_t>(item.id)));
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TreeNodeEx("WorldItem", flags, "%s", label.c_str());
+    if (gizmoSmokeInput_ && gizmoSmokeInput_->sceneTreeWorldItemProbe == item) {
+        const auto min = ImGui::GetItemRectMin();
+        const auto max = ImGui::GetItemRectMax();
+        gizmoSmokeInput_->sceneTreeDepth = ImGui::GetCurrentWindow()->DC.TreeDepth;
+        gizmoSmokeInput_->sceneTreeRow = std::array{
+            min.x + ImGui::GetTreeNodeToLabelSpacing() + 2.0f, (min.y + max.y) * 0.5f};
+    }
+    if (ImGui::IsItemClicked()) {
+        sceneSelection_ = SceneSelection{
+            .type = SceneSelectionType::WorldItem,
+            .sceneLifetimeRevision = lifetime,
+            .worldItem = item,
+        };
+        gizmoOperation_ = GizmoOperation::Translate;
+    }
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(tag);
+    ImGui::PopID();
+    ImGui::PopID();
+}
+
 scene::ConstSceneObject EditorApplication::selectedSceneObject() const
 {
     if (!scene_.valid() || sceneSelection_.object == scene::kNullSceneEntity ||
@@ -5676,6 +5810,78 @@ const scene::RenderDecal* EditorApplication::selectedDecal() const
 {
     return sceneSelection_.decalId && sceneSelection_.sceneLifetimeRevision == scene_.sceneGraph().lifetimeRevision()
         ? findDecal(*sceneSelection_.decalId) : nullptr;
+}
+
+std::optional<size_t> EditorApplication::findWorldItemIndex(scene::WorldItemId item) const
+{
+    const auto find = [item](const auto& items) -> std::optional<size_t> {
+        const auto it = std::ranges::find_if(items, [item](const auto& value) { return value.stableId == item.id; });
+        if (it == items.end()) { return std::nullopt; }
+        return static_cast<size_t>(it - items.begin());
+    };
+    switch (item.type) {
+    case scene::WorldItemType::LocalFogVolume: return find(scene_.worldEnvironment().volumetricFog.localVolumes);
+    case scene::WorldItemType::PunctualLight: return find(scene_.lighting().lights);
+    case scene::WorldItemType::RectLight: return find(scene_.lighting().rectLights);
+    }
+    return std::nullopt;
+}
+
+std::optional<scene::WorldItemId> EditorApplication::selectedWorldItem() const
+{
+    const auto item = sceneSelection_.worldItem;
+    if (item && sceneSelection_.sceneLifetimeRevision == scene_.sceneGraph().lifetimeRevision() && findWorldItemIndex(*item)) {
+        return item;
+    }
+    return std::nullopt;
+}
+
+std::optional<float3> EditorApplication::worldItemPosition(scene::WorldItemId item) const
+{
+    const auto index = findWorldItemIndex(item);
+    if (!index) { return std::nullopt; }
+    switch (item.type) {
+    case scene::WorldItemType::LocalFogVolume: {
+        const auto& center = scene_.worldEnvironment().volumetricFog.localVolumes[*index].centerMeters;
+        return float3(center[0], center[1], center[2]);
+    }
+    case scene::WorldItemType::PunctualLight: return scene_.lighting().lights[*index].position;
+    case scene::WorldItemType::RectLight: return scene_.lighting().rectLights[*index].position;
+    }
+    return std::nullopt;
+}
+
+bool EditorApplication::setWorldItemPosition(scene::WorldItemId item, const float3& position)
+{
+    const auto index = findWorldItemIndex(item);
+    if (!index) { return false; }
+    if (const auto previous = worldItemPosition(item); previous && length(*previous - position) <= 0.000001f) { return true; }
+    if (item.type == scene::WorldItemType::LocalFogVolume) {
+        auto environment = scene_.worldEnvironment();
+        environment.volumetricFog.localVolumes[*index].centerMeters = {position.x, position.y, position.z};
+        if (!scene_.setWorldEnvironment(std::move(environment))) { return false; }
+    } else {
+        auto lighting = scene_.lighting();
+        if (item.type == scene::WorldItemType::PunctualLight) { lighting.lights[*index].position = position; }
+        else { lighting.rectLights[*index].position = position; }
+        if (!scene_.setLighting(std::move(lighting))) { return false; }
+        renderWorld_.setLighting(scene_.lighting());
+    }
+    renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
+    viewportPreviewNeedsRender_ = true;
+    return true;
+}
+
+void EditorApplication::discardRemovedWorldItemEdits()
+{
+    if (sceneSelection_.worldItem && !findWorldItemIndex(*sceneSelection_.worldItem)) { sceneSelection_ = {}; }
+    for (size_t i = transformCommands_.size(); i > 0; --i) {
+        const auto* edit = std::get_if<WorldItemMoveEditValue>(&transformCommands_[i - 1].before);
+        if (edit == nullptr || findWorldItemIndex(edit->item)) { continue; }
+        transformCommands_.erase(transformCommands_.begin() + static_cast<ptrdiff_t>(i - 1));
+        if (i <= transformCommandCursor_) { --transformCommandCursor_; }
+        if (static_cast<int64_t>(i) <= savedTransformCommandCursor_) { --savedTransformCommandCursor_; }
+    }
 }
 
 int32_t EditorApplication::selectedNodeIndex() const
@@ -5749,6 +5955,11 @@ bool EditorApplication::setSelectedObjectWorldMatrix(
     const float4x4& worldMatrix,
     std::string& reason)
 {
+    if (const auto item = selectedWorldItem()) {
+        if (setWorldItemPosition(*item, float3(worldMatrix.a03, worldMatrix.a13, worldMatrix.a23))) { return true; }
+        reason = "The fog or light position edit was rejected.";
+        return false;
+    }
     if (const auto* decal = selectedDecal()) {
         if (setDecalWorldMatrix(*decal, worldMatrix)) { return true; }
         reason = "The decal requires a finite, invertible projector transform.";
@@ -5838,6 +6049,10 @@ void EditorApplication::pushSceneEditCommand(
         const auto* afterDecal = std::get_if<DecalTransformEditValue>(&after);
         valuesEqual = afterDecal != nullptr && beforeDecal->id == afterDecal->id &&
             scene::matrixNearlyEqual(beforeDecal->worldMatrix, afterDecal->worldMatrix);
+    } else if (const auto* beforeItem = std::get_if<WorldItemMoveEditValue>(&before)) {
+        const auto* afterItem = std::get_if<WorldItemMoveEditValue>(&after);
+        valuesEqual = afterItem && beforeItem->item == afterItem->item &&
+            length(beforeItem->position - afterItem->position) <= 0.000001f;
     }
     const auto* beforeMaterial = std::get_if<MaterialEditValue>(&before);
     const auto* afterMaterial = std::get_if<MaterialEditValue>(&after);
@@ -5849,6 +6064,9 @@ void EditorApplication::pushSceneEditCommand(
     } else if (const auto* beforeDecal = std::get_if<DecalTransformEditValue>(&before)) {
         const auto* afterDecal = std::get_if<DecalTransformEditValue>(&after);
         validTarget = afterDecal && afterDecal->id == beforeDecal->id && findDecal(beforeDecal->id);
+    } else if (const auto* beforeItem = std::get_if<WorldItemMoveEditValue>(&before)) {
+        const auto* afterItem = std::get_if<WorldItemMoveEditValue>(&after);
+        validTarget = afterItem && beforeItem->item == afterItem->item && findWorldItemIndex(beforeItem->item);
     } else {
         validTarget = object != scene::kNullSceneEntity && scene_.sceneGraph().object(object);
     }
@@ -5969,6 +6187,9 @@ bool EditorApplication::applySceneEditValue(
     scene::SceneEntity object,
     const SceneEditValue& value)
 {
+    if (const auto* move = std::get_if<WorldItemMoveEditValue>(&value)) {
+        return setWorldItemPosition(move->item, move->position);
+    }
     if (const auto* transform = std::get_if<DecalTransformEditValue>(&value)) {
         const auto* decal = findDecal(transform->id);
         return decal && setDecalWorldMatrix(*decal, transform->worldMatrix);
@@ -6040,6 +6261,11 @@ void EditorApplication::finishViewportGizmoTransaction()
             if (const auto* decal = findDecal(before->id)) {
                 pushSceneEditCommand(scene::kNullSceneEntity, gizmoEditingSceneLifetime_, gizmoStartValue_,
                     DecalTransformEditValue{decal->id, decal->worldFromDecal});
+            }
+        } else if (const auto* before = std::get_if<WorldItemMoveEditValue>(&gizmoStartValue_)) {
+            if (const auto after = worldItemPosition(before->item)) {
+                pushSceneEditCommand(scene::kNullSceneEntity, gizmoEditingSceneLifetime_, gizmoStartValue_,
+                    WorldItemMoveEditValue{before->item, *after});
             }
         } else if (const auto* transform = editedObject.tryGetComponent<scene::TransformComponent>()) {
             pushSceneEditCommand(gizmoEditingObject_, gizmoEditingSceneLifetime_, gizmoStartValue_, transform->localMatrix);
@@ -6860,19 +7086,22 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
     const scene::ConstSceneObject object = selectedSceneObject();
     const auto* instance = selectedRenderNode();
     const auto* decal = selectedDecal();
+    const auto worldItem = selectedWorldItem();
     const auto* editingPrimitive = std::get_if<PrimitiveMoveEditValue>(&gizmoStartValue_);
     const auto* editingDecal = std::get_if<DecalTransformEditValue>(&gizmoStartValue_);
+    const auto* editingWorldItem = std::get_if<WorldItemMoveEditValue>(&gizmoStartValue_);
     const int32_t editingRenderNodeIndex = editingPrimitive ? editingPrimitive->renderNodeIndex : scene::kInvalidSceneIndex;
 
     if (gizmoWasUsing_ &&
         (gizmoEditingObject_ != object.entity() ||
             editingRenderNodeIndex != sceneSelection_.renderNodeIndex ||
             (editingDecal ? sceneSelection_.decalId != editingDecal->id : decal != nullptr) ||
+            (editingWorldItem ? worldItem != editingWorldItem->item : worldItem.has_value()) ||
             gizmoEditingSceneLifetime_ != scene_.sceneGraph().lifetimeRevision())) {
         finishViewportGizmoTransaction();
     }
     if (!viewportInteractionEnabled_ || inspectorTransformEditing_ ||
-        inspectorPropertyEditing_ || (!decal && (!object ||
+        inspectorPropertyEditing_ || (!decal && !worldItem && (!object ||
             object.hasComponent<scene::GeneratedComponent>() ||
             !object.hasComponent<scene::SourceNodeComponent>()))) {
         finishViewportGizmoTransaction();
@@ -6881,12 +7110,15 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
 
     const scene::TransformComponent* transform =
         object.tryGetComponent<scene::TransformComponent>();
-    if (!decal && transform == nullptr) {
+    if (!decal && !worldItem && transform == nullptr) {
         finishViewportGizmoTransaction();
         return;
     }
-    const auto& local = decal ? decal->worldFromDecal : transform->localMatrix;
-    const auto& world = decal ? decal->worldFromDecal : (instance ? instance->worldMatrix : transform->worldMatrix);
+    float4x4 itemTransform;
+    if (worldItem) { itemTransform.SetupByTranslation(*worldItemPosition(*worldItem)); }
+    const auto& local = worldItem ? itemTransform : decal ? decal->worldFromDecal : transform->localMatrix;
+    const auto& world = worldItem ? itemTransform :
+        decal ? decal->worldFromDecal : instance ? instance->worldMatrix : transform->worldMatrix;
     const float minimumDeterminant = decal ? 0.0f : 0.0000001f;
     const float localDeterminant = affineDeterminant(local);
     const bool singular = !matrixIsFinite(local) ||
@@ -6921,7 +7153,7 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
             }
         }
     }
-    const auto gizmoOperation = instance ? GizmoOperation::Translate : gizmoOperation_;
+    const auto gizmoOperation = instance || worldItem ? GizmoOperation::Translate : gizmoOperation_;
     const bool editsLinearTransform = gizmoOperation != GizmoOperation::Translate;
     const bool unsafeLinearEdit = editsLinearTransform &&
         (shear || reflection || worldShear || worldReflection ||
@@ -6978,7 +7210,7 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
     } else if (gizmoOperation == GizmoOperation::Scale) {
         operation = ImGuizmo::SCALE;
     }
-    const ImGuizmo::MODE mode = gizmoOperation == GizmoOperation::Scale || gizmoLocal_
+    const ImGuizmo::MODE mode = gizmoOperation == GizmoOperation::Scale || (!worldItem && gizmoLocal_)
         ? ImGuizmo::LOCAL
         : ImGuizmo::WORLD;
     const bool useSnap = snapEnabled_ || ImGui::GetIO().KeyCtrl;
@@ -6993,8 +7225,13 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
     const bool cameraDragging = viewportCameraDragButton_ != kNoViewportCameraDragButton;
     if (cameraDragging) { ImGuizmo::Enable(false); }
     const int firstVertex = drawList->VtxBuffer.Size;
-    if (decal) { ImGuizmo::PushID("DecalProjector"); }
-    ImGuizmo::PushID(decal ? static_cast<int>(decal->id) : static_cast<int>(object.entity()));
+    if (worldItem) {
+        ImGuizmo::PushID(worldItemTypeLabel(worldItem->type));
+        ImGuizmo::PushID(reinterpret_cast<const void*>(static_cast<uintptr_t>(worldItem->id)));
+    } else {
+        if (decal) { ImGuizmo::PushID("DecalProjector"); }
+        ImGuizmo::PushID(decal ? static_cast<int>(decal->id) : static_cast<int>(object.entity()));
+    }
     if (instance) { ImGuizmo::PushID(sceneSelection_.renderNodeIndex); }
     const bool manipulated = ImGuizmo::Manipulate(
         matrices.view.a,
@@ -7008,11 +7245,13 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
     const bool overNow = !cameraDragging && ImGuizmo::IsOver();
     if (instance) { ImGuizmo::PopID(); }
     ImGuizmo::PopID();
-    if (decal) { ImGuizmo::PopID(); }
+    if (decal || worldItem) { ImGuizmo::PopID(); }
     if (cameraDragging) { ImGuizmo::Enable(true); }
     if (gizmoSmokeInput_) { gizmoSmokeInput_->drewGizmo = drawList->VtxBuffer.Size != firstVertex; }
     if (usingNow && !gizmoWasUsing_) {
-        if (decal) {
+        if (worldItem) {
+            gizmoStartValue_ = WorldItemMoveEditValue{*worldItem, origin};
+        } else if (decal) {
             gizmoStartValue_ = DecalTransformEditValue{decal->id, decal->worldFromDecal};
         } else if (instance) {
             gizmoStartValue_ = PrimitiveMoveEditValue{sceneSelection_.renderNodeIndex, instance->localOffset};
@@ -7043,9 +7282,25 @@ void EditorApplication::drawViewportGizmoBounds(const ImVec2& min, const ImVec2&
     if (!gizmoBoundsVisible_ || !viewportInteractionEnabled_) { return; }
 
     scene::Bounds bounds;
+    std::vector<WorldItemBoundsEdge> worldEdges;
     float4x4 worldFromBounds = float4x4::Identity();
     ImU32 color = IM_COL32(124, 209, 255, 235);
-    if (const auto* decal = selectedDecal()) {
+    if (const auto item = selectedWorldItem()) {
+        const size_t index = *findWorldItemIndex(*item);
+        color = IM_COL32(255, 178, 106, 235);
+        switch (item->type) {
+        case scene::WorldItemType::LocalFogVolume:
+            appendWorldItemBounds(worldEdges, scene_.worldEnvironment().volumetricFog.localVolumes[index]);
+            color = IM_COL32(191, 163, 255, 235);
+            break;
+        case scene::WorldItemType::PunctualLight:
+            appendWorldItemBounds(worldEdges, scene_.lighting().lights[index]);
+            break;
+        case scene::WorldItemType::RectLight:
+            appendWorldItemBounds(worldEdges, scene_.lighting().rectLights[index]);
+            break;
+        }
+    } else if (const auto* decal = selectedDecal()) {
         bounds = {.min = float3(-0.5f), .max = float3(0.5f), .valid = true};
         worldFromBounds = decal->worldFromDecal;
         color = IM_COL32(255, 207, 92, 240);
@@ -7055,41 +7310,44 @@ void EditorApplication::drawViewportGizmoBounds(const ImVec2& min, const ImVec2&
     } else if (const auto object = selectedSceneObject()) {
         includeSceneObjectBounds(scene_, object, bounds);
     }
-    if (!bounds.valid) { return; }
+    if (!bounds.valid && worldEdges.empty()) { return; }
 
     auto properties = viewportCameraProperties();
     ensureCameraProperties(properties, scene_.bounds());
     const auto matrices = viewportCameraMatrices(properties["camera"],
         static_cast<float>(viewportView_.renderWidth(viewportTextureWidth_)),
         static_cast<float>(viewportView_.renderHeight(viewportTextureHeight_)));
-    const auto clipFromBounds = matrices.projection * matrices.view * worldFromBounds;
-    std::array<float4, 8> corners;
-    for (uint32_t i = 0; i < corners.size(); ++i) {
-        corners[i] = clipFromBounds * boundsCorner(bounds, i);
-    }
-
-    constexpr std::array<std::array<uint32_t, 2>, 12> edges{{
-        {0, 1}, {2, 3}, {4, 5}, {6, 7},
-        {0, 2}, {1, 3}, {4, 6}, {5, 7},
-        {0, 4}, {1, 5}, {2, 6}, {3, 7},
-    }};
+    const auto clipFromWorld = matrices.projection * matrices.view;
     const auto project = [&](const float4& clip) {
         return viewportPosition(std::clamp(clip.x / clip.w, -1.0f, 1.0f),
             std::clamp(clip.y / clip.w, -1.0f, 1.0f), min, max);
     };
     auto* drawList = ImGui::GetWindowDrawList();
     drawList->PushClipRect(min, max, true);
-    for (const auto& [first, second] : edges) {
-        auto start = corners[first];
-        auto end = corners[second];
-        if (!clipViewportEdge(start, end)) { continue; }
+    const auto drawEdge = [&](float4 start, float4 end) {
+        if (!clipViewportEdge(start, end)) { return; }
         const auto a = project(start);
         const auto b = project(end);
         if (!std::isfinite(a.x) || !std::isfinite(a.y) || !std::isfinite(b.x) || !std::isfinite(b.y) ||
-            (a.x == b.x && a.y == b.y)) { continue; }
+            (a.x == b.x && a.y == b.y)) { return; }
         drawList->AddLine(a, b, IM_COL32(19, 22, 29, 200), 3.5f * mainScale_);
         drawList->AddLine(a, b, color, 1.5f * mainScale_);
         if (gizmoSmokeInput_) { gizmoSmokeInput_->boundsEdges.push_back({a.x, a.y, b.x, b.y}); }
+    };
+    if (bounds.valid) {
+        const auto clipFromBounds = clipFromWorld * worldFromBounds;
+        std::array<float4, 8> corners;
+        for (uint32_t i = 0; i < corners.size(); ++i) { corners[i] = clipFromBounds * boundsCorner(bounds, i); }
+        constexpr std::array<std::array<uint32_t, 2>, 12> edges{{
+            {0, 1}, {2, 3}, {4, 5}, {6, 7},
+            {0, 2}, {1, 3}, {4, 6}, {5, 7},
+            {0, 4}, {1, 5}, {2, 6}, {3, 7},
+        }};
+        for (const auto& [first, second] : edges) { drawEdge(corners[first], corners[second]); }
+    } else {
+        for (const auto& edge : worldEdges) {
+            drawEdge(clipFromWorld * float4(edge.start, 1.0f), clipFromWorld * float4(edge.end, 1.0f));
+        }
     }
     drawList->PopClipRect();
 }
@@ -7397,7 +7655,8 @@ void EditorApplication::drawViewportPanel()
     }
     ImGui::Begin("Viewport");
 
-    const bool primitiveSelected = selectedRenderNode() != nullptr;
+    const bool worldItemSelected = selectedWorldItem().has_value();
+    const bool translationOnly = selectedRenderNode() != nullptr || worldItemSelected;
     const bool gizmoTransactionActive = inspectorTransformEditing_ ||
         inspectorPropertyEditing_ || gizmoWasUsing_ ||
         ImGuizmo::IsUsingAny();
@@ -7416,19 +7675,21 @@ void EditorApplication::drawViewportPanel()
     };
     drawToolButton("W Move", GizmoOperation::Translate);
     ImGui::SameLine();
-    ImGui::BeginDisabled(primitiveSelected);
+    ImGui::BeginDisabled(translationOnly);
     drawToolButton("E Rotate", GizmoOperation::Rotate);
     ImGui::SameLine();
     drawToolButton("R Scale", GizmoOperation::Scale);
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button(gizmoLocal_ ? "Local" : "World")) {
+    ImGui::BeginDisabled(worldItemSelected);
+    if (ImGui::Button(!worldItemSelected && gizmoLocal_ ? "Local" : "World")) {
         gizmoLocal_ = !gizmoLocal_;
     }
     ImGui::EndDisabled();
+    ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::Checkbox("Bounds", &gizmoBoundsVisible_);
-    ImGui::SetItemTooltip("Show the selected mesh bounds or decal projection volume.");
+    ImGui::SetItemTooltip("Show the selected object's bounds or influence volume.");
     ImGui::SameLine();
     ImGui::Checkbox("Snap", &snapEnabled_);
     ImGui::SameLine();
@@ -7662,11 +7923,11 @@ void EditorApplication::drawViewportPanel()
         !cameraGestureActive && !transformEditing) {
         if (ImGui::IsKeyPressed(ImGuiKey_W, false)) {
             gizmoOperation_ = GizmoOperation::Translate;
-        } else if (!primitiveSelected && ImGui::IsKeyPressed(ImGuiKey_E, false)) {
+        } else if (!translationOnly && ImGui::IsKeyPressed(ImGuiKey_E, false)) {
             gizmoOperation_ = GizmoOperation::Rotate;
-        } else if (!primitiveSelected && ImGui::IsKeyPressed(ImGuiKey_R, false)) {
+        } else if (!translationOnly && ImGui::IsKeyPressed(ImGuiKey_R, false)) {
             gizmoOperation_ = GizmoOperation::Scale;
-        } else if (ImGui::IsKeyPressed(ImGuiKey_X, false)) {
+        } else if (!worldItemSelected && ImGui::IsKeyPressed(ImGuiKey_X, false)) {
             gizmoLocal_ = !gizmoLocal_;
         }
     }

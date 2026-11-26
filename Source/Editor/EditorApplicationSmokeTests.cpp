@@ -757,11 +757,12 @@ bool EditorApplication::runGizmoSmokeTest()
         return waitForFrameSlotBeforeInput() && renderFrame() && viewportPreviewValid_;
     };
     auto& input = *gizmoSmokeInput_;
-    const auto boundsEdgesDrawn = [&](size_t edgeCount) {
-        return input.boundsEdges.size() == edgeCount && std::ranges::all_of(input.boundsEdges, [](const auto& edge) {
-            return std::ranges::all_of(edge, [](float coordinate) { return std::isfinite(coordinate); }) &&
-                (edge[0] != edge[2] || edge[1] != edge[3]);
-        });
+    const auto boundsEdgesDrawn = [&](std::optional<size_t> edgeCount = std::nullopt) {
+        return !input.boundsEdges.empty() && (!edgeCount || input.boundsEdges.size() == *edgeCount) &&
+            std::ranges::all_of(input.boundsEdges, [](const auto& edge) {
+                return std::ranges::all_of(edge, [](float coordinate) { return std::isfinite(coordinate); }) &&
+                    (edge[0] != edge[2] || edge[1] != edge[3]);
+            });
     };
     const auto boundsMatch = [&](const auto& expected) {
         return std::ranges::equal(input.boundsEdges, expected, [](const auto& actual, const auto& reference) {
@@ -791,6 +792,14 @@ bool EditorApplication::runGizmoSmokeTest()
         }
         return depth;
     };
+    const auto clickTreeAt = [&](const std::array<float, 2>& position) {
+        treeFrame(false, position);
+        treeFrame(true, position);
+        treeFrame(false, position);
+    };
+    const auto treeArrow = [](const std::array<float, 2>& row) {
+        return std::array{row[0] - 2.0f - ImGui::GetTreeNodeToLabelSpacing() * 0.5f, row[1]};
+    };
     const auto selectTreeRow = [&](const scene::ConstSceneObject& object, int32_t renderNodeIndex) {
         const int expectedDepth = nodeDepth(object) + (renderNodeIndex == scene::kInvalidSceneIndex ? 0 : 1);
         input.sceneTreeProbe = object.entity();
@@ -803,11 +812,9 @@ bool EditorApplication::runGizmoSmokeTest()
         if (!expect(input.sceneTreeRow && input.sceneTreeDepth == expectedDepth,
                 "Scene Graph reveals the selection at its hierarchy depth")) { return false; }
 
-        const auto row = input.sceneTreeRow;
+        const auto row = *input.sceneTreeRow;
         sceneSelection_ = {};
-        treeFrame(false, row);
-        treeFrame(true, row);
-        treeFrame(false, row);
+        clickTreeAt(row);
         input.sceneTreeProbe = scene::kNullSceneEntity;
         input.sceneTreePrimitiveProbe = scene::kInvalidSceneIndex;
         return expect(selectedSceneObject().entity() == object.entity() && sceneSelection_.renderNodeIndex == renderNodeIndex,
@@ -823,8 +830,7 @@ bool EditorApplication::runGizmoSmokeTest()
         if (!expect(input.sceneTreeRow && input.sceneTreeDepth == nodeDepth(group),
                 "Find the Floor Decals parent row")) { return false; }
 
-        const auto [labelX, rowY] = *input.sceneTreeRow;
-        const std::array arrow{labelX - 2.0f - ImGui::GetTreeNodeToLabelSpacing() * 0.5f, rowY};
+        const auto arrow = treeArrow(*input.sceneTreeRow);
         input.sceneTreeProbe = scene::kNullSceneEntity;
         input.sceneTreeDecalProbe = decalId;
         treeFrame(false, arrow);
@@ -840,14 +846,128 @@ bool EditorApplication::runGizmoSmokeTest()
         }
         input.sceneTreeDecalProbe = decalId;
         treeFrame(false);
-        const auto row = input.sceneTreeRow;
+        const auto row = *input.sceneTreeRow;
         sceneSelection_ = {};
-        treeFrame(false, row);
-        treeFrame(true, row);
-        treeFrame(false, row);
+        clickTreeAt(row);
         input.sceneTreeDecalProbe.reset();
         const auto* selected = selectedDecal();
         return expect(selected && selected->id == decalId, "Click the Floor Medallion in the Scene Graph");
+    };
+    const auto checkShowcaseWorldItems = [&] {
+        using scene::WorldItemId;
+        using scene::WorldItemType;
+        const auto& cameras = scene_.cameras();
+        const auto camera = std::ranges::find(cameras, "Fog & Rect Lights", &scene::RenderCamera::name);
+        if (!expect(camera != cameras.end(), "Find the Fog & Rect Lights showcase camera")) { return false; }
+        const scene::ConstSceneObject group = scene_.objectForNode(camera->nodeIndex);
+        const auto groupWorldMatrix = group.getComponent<scene::TransformComponent>().worldMatrix;
+
+        std::vector<WorldItemId> children;
+        const auto appendChildren = [&](WorldItemType type, const auto& items) {
+            for (const auto& item : items) {
+                const WorldItemId id{.type = type, .id = item.stableId};
+                if (scene_.worldItemSceneGraphParent(id) == group.entity()) { children.push_back(id); }
+            }
+        };
+        appendChildren(WorldItemType::LocalFogVolume, scene_.worldEnvironment().volumetricFog.localVolumes);
+        appendChildren(WorldItemType::PunctualLight, scene_.lighting().lights);
+        appendChildren(WorldItemType::RectLight, scene_.lighting().rectLights);
+        if (!expect(children.size() == 4 &&
+                std::ranges::count(children, WorldItemType::LocalFogVolume, &WorldItemId::type) == 1 &&
+                std::ranges::count(children, WorldItemType::PunctualLight, &WorldItemId::type) == 1 &&
+                std::ranges::count(children, WorldItemType::RectLight, &WorldItemId::type) == 2,
+                "The showcase camera groups a fog volume, a punctual light and two rect lights")) { return false; }
+        const auto captureItem = *std::ranges::find(children, WorldItemType::RectLight, &WorldItemId::type);
+        const int childDepth = nodeDepth(group) + 1;
+        input.sceneTreeProbe = group.entity();
+        sceneSelection_ = {};
+        treeFrame(false);
+        if (!expect(input.sceneTreeRow && input.sceneTreeDepth == childDepth - 1,
+                "Find the Fog & Rect Lights row at its hierarchy depth")) { return false; }
+        const auto arrow = treeArrow(*input.sceneTreeRow);
+        input.sceneTreeProbe = scene::kNullSceneEntity;
+        input.sceneTreeWorldItemProbe = children.front();
+        treeFrame(false, arrow);
+        if (!expect(!input.sceneTreeRow, "Collapsed Fog & Rect Lights hides its child rows")) { return false; }
+        clickTreeAt(arrow);
+
+        const auto positionMatches = [](const std::optional<float3>& actual, const float3& expected) {
+            return actual && length(*actual - expected) < 0.000001f;
+        };
+        std::vector<float3> originalPositions;
+        for (const auto item : children) {
+            const auto position = worldItemPosition(item);
+            if (!expect(position.has_value(), "Get the child world-space position")) { return false; }
+            originalPositions.push_back(*position);
+        }
+        constexpr int kDragFrames = 4;
+        for (size_t i = 0; i < children.size(); ++i) {
+            const auto item = children[i];
+            input.sceneTreeWorldItemProbe = item;
+            treeFrame(false);
+            if (!expect(input.sceneTreeRow && input.sceneTreeDepth == childDepth,
+                    "Expanding Fog & Rect Lights reveals each world item")) { return false; }
+            const auto row = *input.sceneTreeRow;
+            clickTreeAt(row);
+            input.sceneTreeWorldItemProbe.reset();
+            if (!expect(selectedWorldItem() == item, "Click the individual fog volume or light row")) { return false; }
+
+            resetTransformHistory();
+            const auto position = originalPositions[i];
+            applySceneCamera(scene::RenderCamera{
+                .eye = position + float3(7.2f, 3.0f, 1.2f),
+                .center = position,
+                .yfov = 1.047197551196598,
+                .znear = 0.05,
+                .zfar = 100.0,
+            });
+            input.pointer.reset();
+            if (!render() || !expect(input.center && input.drewGizmo && boundsEdgesDrawn(),
+                    "Each world item has its own gizmo and visible bounds")) { return false; }
+            const auto beforeBounds = input.boundsEdges;
+            const auto cameraBefore = viewportView_.camera();
+            const auto [centerX, centerY] = *input.center;
+            input.pointer = std::array{centerX, centerY};
+            if (!render() || !expect(viewportGizmoCapturingMouse_, "Hover the world-item translation handle")) {
+                return false;
+            }
+            input.mouseDown = true;
+            if (!render() || !expect(gizmoWasUsing_, "Start the world-item drag")) { return false; }
+            auto moved = position;
+            for (int frame = 1; frame <= kDragFrames; ++frame) {
+                const auto previousBounds = input.boundsEdges;
+                input.pointer = std::array{centerX + 2.0f * float(frame), centerY};
+                if (!render()) { return false; }
+                const auto current = worldItemPosition(item);
+                if (!expect(gizmoWasUsing_ && current && !positionMatches(current, moved) &&
+                        boundsEdgesDrawn() && !boundsMatch(previousBounds),
+                        "World-item bounds follow the gizmo in the same frame")) { return false; }
+                moved = *current;
+            }
+            input.mouseDown = false;
+            if (!render() || !expect(!gizmoWasUsing_ && transformCommands_.size() == 1 && scene_.dirty() &&
+                    viewportView_.camera() == cameraBefore && scene::matrixNearlyEqual(groupWorldMatrix,
+                        group.getComponent<scene::TransformComponent>().worldMatrix),
+                    "World-item drag commits once and leaves both cameras in place")) { return false; }
+            for (size_t sibling = 0; sibling < children.size(); ++sibling) {
+                if (sibling != i && !expect(positionMatches(worldItemPosition(children[sibling]), originalPositions[sibling]),
+                        "World-item drag leaves sibling items in place")) { return false; }
+            }
+            const auto afterBounds = input.boundsEdges;
+            undoTransform();
+            if (!render() || !expect(positionMatches(worldItemPosition(item), position) && !scene_.dirty() &&
+                    boundsMatch(beforeBounds), "Undo restores the world item and its bounds")) { return false; }
+            redoTransform();
+            if (!render() || !expect(positionMatches(worldItemPosition(item), moved) && scene_.dirty() && boundsMatch(afterBounds),
+                    "Redo restores the moved world item and its bounds")) { return false; }
+            if (const char* path = std::getenv("METALLIC_FOG_LIGHT_GIZMO_SMOKE_CAPTURE");
+                item == captureItem && path && *path &&
+                !expect(exportSmokeMainViewport(path), "Export the rect light bounds frame as a PPM image")) { return false; }
+            undoTransform();
+            const auto name = scene_.worldItemName(item);
+            spdlog::info("[Smoke Gizmo] worldItem='{}' frames={} boundEdges={}", name, kDragFrames, afterBounds.size());
+        }
+        return true;
     };
     const auto drag = [&](int32_t nodeIndex, std::string name, bool geometry,
                           int32_t renderNodeIndex = scene::kInvalidSceneIndex,
@@ -1041,6 +1161,7 @@ bool EditorApplication::runGizmoSmokeTest()
         if (!viewportView_.setCamera(perspective)) { return false; }
         undoTransform();
         spdlog::info("[Smoke Gizmo] Decal bounds follow drag, undo and redo, and respect the toggle and near-plane clipping");
+        if (!checkShowcaseWorldItems()) { return false; }
     }
     const auto& nodes = scene_.nodes();
     const auto mesh = std::ranges::find(nodes, "Sponza Opaque", &scene::SceneNode::name);

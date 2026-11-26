@@ -425,6 +425,11 @@ its gizmo moves that projector independently. Set
 `METALLIC_DECAL_GIZMO_SMOKE_CAPTURE` to an output `.ppm` path to capture the
 viewport after the decal drag and redo.
 
+The showcase test also opens `Fog & Rect Lights` and checks the bounds and
+independent gizmo movement of its fog volume and three lights. Set
+`METALLIC_FOG_LIGHT_GIZMO_SMOKE_CAPTURE` to a `.ppm` path to capture the
+rectangular light after its drag and redo.
+
 ## Release and optimized debugging
 
 Native configure and build presets provide both optimized configurations:

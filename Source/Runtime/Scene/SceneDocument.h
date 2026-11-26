@@ -8,8 +8,17 @@
 #include <string>
 #include <string_view>
 #include <map>
+#include <utility>
 
 namespace metallic::scene {
+
+enum class WorldItemType : uint8_t { LocalFogVolume, PunctualLight, RectLight };
+
+struct WorldItemId {
+    WorldItemType type;
+    uint64_t id;
+    bool operator==(const WorldItemId&) const = default;
+};
 
 class SceneDocument : public Scene {
 public:
@@ -37,6 +46,8 @@ public:
     bool removeDecal(uint32_t id);
     SceneEntity decalSceneGraphParent(uint32_t id) const;
     std::string_view decalName(uint32_t id) const;
+    SceneEntity worldItemSceneGraphParent(WorldItemId item) const;
+    std::string_view worldItemName(WorldItemId item) const;
     bool setMaterialAsset(int32_t materialIndex, std::string_view uri,
         const std::filesystem::path& assetRoot, std::string& error);
     bool reloadMaterialAsset(int32_t materialIndex, std::string& error);
@@ -70,6 +81,7 @@ private:
         bool deferMeshletBuild, bool streamMetadata);
     bool applySidecar(const std::filesystem::path& path);
     void importVirtualLights();
+    void pruneWorldItemPresentations();
 
     std::filesystem::path sourcePath_;
     std::filesystem::path documentPath_;
@@ -87,14 +99,15 @@ private:
         bool ownsValueProgram = false;
     };
     std::map<int32_t, MaterialAssetBinding> materialAssets_;
-    struct DecalPresentation
+    struct SceneGraphPresentation
     {
         std::string name;
         std::string parentSourceId;
         int32_t parentNodeIndex = kInvalidSceneIndex;
         SceneEntity parent = kNullSceneEntity;
     };
-    std::map<uint32_t, DecalPresentation> decalPresentations_;
+    std::map<uint32_t, SceneGraphPresentation> decalPresentations_;
+    std::map<std::pair<WorldItemType, uint64_t>, SceneGraphPresentation> worldItemPresentations_;
     bool sidecarLoaded_ = false;
     bool hasEnvironmentSettings_ = false;
     bool compositionDocument_ = false;

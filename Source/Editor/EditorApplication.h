@@ -94,12 +94,18 @@ private:
     void drawLightingControls();
     void drawDecalControls();
     bool drawDecalInspector(scene::RenderDecal decal);
+    void drawWorldItemInspector(scene::WorldItemId item);
     void beginEnvironmentEdit();
-    using SceneDecalChildren = std::unordered_map<scene::SceneEntity, std::vector<const scene::RenderDecal*>>;
+    struct SceneGraphAttachments {
+        std::vector<const scene::RenderDecal*> decals;
+        std::vector<scene::WorldItemId> worldItems;
+    };
+    using SceneGraphAttachmentMap = std::unordered_map<scene::SceneEntity, SceneGraphAttachments>;
     void drawSceneNode(scene::SceneEntity entity, std::span<const scene::SceneEntity> revealPath,
-        const SceneDecalChildren& decalChildren);
+        const SceneGraphAttachmentMap& attachments);
     void drawScenePrimitive(int32_t renderNodeIndex);
     void drawSceneDecal(const scene::RenderDecal& decal);
+    void drawSceneWorldItem(scene::WorldItemId item);
     void drawSceneGraphTab();
     void drawSceneListTab();
     void drawSceneListSelectable(const char* label, int32_t index, int32_t type);
@@ -132,6 +138,11 @@ private:
     const scene::RenderNode* selectedRenderNode() const;
     const scene::RenderDecal* findDecal(uint32_t id) const;
     const scene::RenderDecal* selectedDecal() const;
+    std::optional<scene::WorldItemId> selectedWorldItem() const;
+    std::optional<size_t> findWorldItemIndex(scene::WorldItemId item) const;
+    std::optional<float3> worldItemPosition(scene::WorldItemId item) const;
+    bool setWorldItemPosition(scene::WorldItemId item, const float3& position);
+    void discardRemovedWorldItemEdits();
     int32_t selectedNodeIndex() const;
     bool setSelectedObjectWorldMatrix(const float4x4& worldMatrix, std::string& reason);
     void notifySceneTransformChanged(bool geometryChanged);
@@ -151,13 +162,18 @@ private:
         uint32_t id;
         float4x4 worldMatrix;
     };
+    struct WorldItemMoveEditValue {
+        scene::WorldItemId item;
+        float3 position;
+    };
     using SceneEditValue = std::variant<
         float4x4,
         scene::CameraProperties,
         scene::LightProperties,
         MaterialEditValue,
         PrimitiveMoveEditValue,
-        DecalTransformEditValue>;
+        DecalTransformEditValue,
+        WorldItemMoveEditValue>;
     void pushSceneEditCommand(
         scene::SceneEntity object,
         uint64_t sceneLifetimeRevision,
@@ -244,6 +260,7 @@ private:
         Camera,
         Light,
         Decal,
+        WorldItem,
         Texture,
         Image,
     };
@@ -258,6 +275,7 @@ private:
         int32_t primitiveIndex = scene::kInvalidSceneIndex;
         int32_t renderNodeIndex = scene::kInvalidSceneIndex;
         std::optional<uint32_t> decalId;
+        std::optional<scene::WorldItemId> worldItem;
     };
 
     enum class GizmoOperation : uint8_t {
@@ -380,6 +398,7 @@ private:
         scene::SceneEntity sceneTreeProbe = scene::kNullSceneEntity;
         int32_t sceneTreePrimitiveProbe = scene::kInvalidSceneIndex;
         std::optional<uint32_t> sceneTreeDecalProbe;
+        std::optional<scene::WorldItemId> sceneTreeWorldItemProbe;
         std::optional<std::array<float, 2>> sceneTreeRow;
         int sceneTreeDepth = 0;
     };

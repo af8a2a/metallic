@@ -53,6 +53,7 @@ struct RectLight {
     float luminance = 1000.0f; // cd/m²
     float range = 0.0f; // Metres; zero is unbounded.
     bool enabled = true;
+    uint64_t stableId = 0; // Assigned by SceneDocument.
 };
 
 struct AutoExposureSettings {

@@ -23,6 +23,8 @@
                 "directionalScatteringIntensity": 2.0,
                 "localVolumes": [
                     {
+                        "name": "Local fog bank",
+                        "sceneGraphParent": {"sourceId": "view", "nodeIndex": 2},
                         "centerMeters": [-4.25, 0.95, -0.65],
                         "radiusMeters": 2.7,
                         "radialExtinction": 0.43,
@@ -40,6 +42,7 @@
                 {
                     "type": "point",
                     "name": "Amber lamp in the fog bank",
+                    "sceneGraphParent": {"sourceId": "view", "nodeIndex": 2},
                     "position": [-4.0, 1.82, -0.75],
                     "color": [1.0, 0.52, 0.24],
                     "intensity": 12.0,
@@ -52,6 +55,7 @@
             "rectLights": [
                 {
                     "name": "Warm floor wash",
+                    "sceneGraphParent": {"sourceId": "view", "nodeIndex": 2},
                     "position": [0.8, 2.65, -1.18],
                     "direction": [0.32, -0.90, 0.29],
                     "color": [1.0, 0.67, 0.38],
@@ -62,6 +66,7 @@
                 },
                 {
                     "name": "Cool arcade wash",
+                    "sceneGraphParent": {"sourceId": "view", "nodeIndex": 2},
                     "position": [-6.15, 2.45, 1.12],
                     "direction": [-0.17, -0.90, -0.40],
                     "color": [0.30, 0.59, 1.0],

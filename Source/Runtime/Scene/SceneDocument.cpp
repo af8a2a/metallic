@@ -3,6 +3,7 @@
 #include "Runtime/Material/MaterialAssetFields.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <fstream>
@@ -28,6 +29,19 @@ constexpr int kSceneDocumentVersion = 4;
 constexpr int kSingleSourceSceneDocumentVersion = 3;
 constexpr int kOldestSceneDocumentVersion = 1;
 constexpr std::string_view kSceneDocumentSuffix = ".metallic_scene.json";
+
+template <typename Item>
+void normalizeWorldItemIdentities(std::vector<Item>& items)
+{
+    static std::atomic<uint64_t> nextId{1};
+    std::unordered_set<uint64_t> identities;
+    for (auto& item : items) {
+        if (item.stableId == 0 || !identities.insert(item.stableId).second) {
+            do { item.stableId = nextId.fetch_add(1, std::memory_order_relaxed); }
+            while (!identities.insert(item.stableId).second);
+        }
+    }
+}
 
 bool nearlyEqual(double lhs, double rhs)
 {
@@ -1343,6 +1357,7 @@ bool SceneDocument::loadInternalInPlace(
         !applySidecar(documentPath_)) {
         Scene::clear();
         decalPresentations_.clear();
+        worldItemPresentations_.clear();
         sourcePath_.clear();
         documentPath_.clear();
         compositionDocument_ = false;
@@ -1359,6 +1374,7 @@ bool SceneDocument::loadInternalInPlace(
         })) {
         Scene::clear();
         decalPresentations_.clear();
+        worldItemPresentations_.clear();
         sourcePath_.clear();
         documentPath_.clear();
         compositionDocument_ = false;
@@ -1391,6 +1407,7 @@ void SceneDocument::clear()
     importedMaterials_.clear();
     materialAssets_.clear();
     decalPresentations_.clear();
+    worldItemPresentations_.clear();
     sidecarLoaded_ = false;
     hasEnvironmentSettings_ = false;
     compositionDocument_ = false;
@@ -1475,6 +1492,45 @@ std::string_view SceneDocument::decalName(uint32_t id) const
 {
     const auto presentation = decalPresentations_.find(id);
     return presentation == decalPresentations_.end() ? std::string_view{} : presentation->second.name;
+}
+
+SceneEntity SceneDocument::worldItemSceneGraphParent(WorldItemId item) const
+{
+    const auto presentation = worldItemPresentations_.find({item.type, item.id});
+    return presentation == worldItemPresentations_.end() ? kNullSceneEntity : presentation->second.parent;
+}
+
+std::string_view SceneDocument::worldItemName(WorldItemId item) const
+{
+    const auto findName = [id = item.id](const auto& lights) -> std::string_view {
+        const auto found = std::ranges::find(lights, id, &std::ranges::range_value_t<decltype(lights)>::stableId);
+        return found == lights.end() ? std::string_view{} : found->name;
+    };
+    switch (item.type) {
+    case WorldItemType::PunctualLight: return findName(lighting_.lights);
+    case WorldItemType::RectLight: return findName(lighting_.rectLights);
+    case WorldItemType::LocalFogVolume: {
+        const auto presentation = worldItemPresentations_.find({item.type, item.id});
+        return presentation == worldItemPresentations_.end() ? std::string_view{} : presentation->second.name;
+    }
+    }
+    return {};
+}
+
+void SceneDocument::pruneWorldItemPresentations()
+{
+    std::erase_if(worldItemPresentations_, [&](const auto& entry) {
+        const auto [type, id] = entry.first;
+        const auto missing = [id](const auto& items) {
+            return std::ranges::find(items, id, &std::ranges::range_value_t<decltype(items)>::stableId) == items.end();
+        };
+        switch (type) {
+        case WorldItemType::LocalFogVolume: return missing(worldEnvironment_.volumetricFog.localVolumes);
+        case WorldItemType::PunctualLight: return missing(lighting_.lights);
+        case WorldItemType::RectLight: return missing(lighting_.rectLights);
+        }
+        return false;
+    });
 }
 
 bool SceneDocument::setMaterialAsset(int32_t materialIndex, std::string_view uri,
@@ -1603,7 +1659,13 @@ bool SceneDocument::setEnvironment(EnvironmentSettings environment)
 
 bool SceneDocument::setWorldEnvironment(environment::WorldEnvironment environment)
 {
-    if (!environment::validWorldEnvironment(environment) || worldEnvironment_ == environment) {
+    if (!environment::validWorldEnvironment(environment)) {
+        return false;
+    }
+    auto& volumes = environment.volumetricFog.localVolumes;
+    normalizeWorldItemIdentities(volumes);
+    if (worldEnvironment_ == environment && std::ranges::equal(worldEnvironment_.volumetricFog.localVolumes, volumes,
+            std::ranges::equal_to{}, &LocalFogVolume::stableId, &LocalFogVolume::stableId)) {
         return false;
     }
     const auto previous = worldEnvironment_.snapshot();
@@ -1621,6 +1683,7 @@ bool SceneDocument::setWorldEnvironment(environment::WorldEnvironment environmen
     }
     if (!(worldEnvironment_.weather == environment.weather)) { ++weatherRevision_; }
     worldEnvironment_ = std::move(environment);
+    pruneWorldItemPresentations();
     ++environmentLightingRevision_;
     dirty_ = true;
     return true;
@@ -1632,6 +1695,7 @@ bool SceneDocument::setLighting(LightingSettings lighting)
         return false;
     }
     normalizePunctualLightIdentities(lighting);
+    normalizeWorldItemIdentities(lighting.rectLights);
     // Validate and resolve every binding before publishing any edits. The UI
     // edits world poses; only changed poses need an inverse source transform.
     const auto& current = this->lighting();
@@ -1679,6 +1743,7 @@ bool SceneDocument::setLighting(LightingSettings lighting)
         }
     }
     lighting_ = std::move(lighting);
+    pruneWorldItemPresentations();
     ++environmentLightingRevision_;
     dirty_ = true;
     return true;
@@ -1831,6 +1896,31 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
             appendWarning(documentWarning_, "Ignored a non-object world setting.");
         } else {
             const nlohmann::json& world = document["world"];
+            const auto readPresentation = [&](const nlohmann::json& value, WorldItemId item, const char* description) {
+                SceneGraphPresentation presentation;
+                if (item.type == WorldItemType::LocalFogVolume) {
+                    if (const auto name = value.find("name"); name != value.end()) {
+                        if (name->is_string()) { presentation.name = name->get<std::string>(); }
+                        else { appendWarning(documentWarning_, "Skipped invalid name for local fog volume."); }
+                    }
+                }
+                if (const auto parent = value.find("sceneGraphParent"); parent != value.end()) {
+                    if (!parent->is_object() || !parent->contains("sourceId") || !(*parent)["sourceId"].is_string() ||
+                        (*parent)["sourceId"].get_ref<const std::string&>().empty() || !parent->contains("nodeIndex") ||
+                        !readInteger((*parent)["nodeIndex"], presentation.parentNodeIndex) || presentation.parentNodeIndex < 0) {
+                        appendWarning(documentWarning_, std::string("Skipped invalid Scene Graph parent for ") + description + '.');
+                    } else {
+                        presentation.parentSourceId = (*parent)["sourceId"].get<std::string>();
+                        presentation.parent = objectForSourceNode(presentation.parentSourceId, presentation.parentNodeIndex).entity();
+                        if (presentation.parent == kNullSceneEntity) {
+                            appendWarning(documentWarning_, std::string("Scene Graph parent is unavailable for ") + description + '.');
+                        }
+                    }
+                }
+                if (!presentation.name.empty() || !presentation.parentSourceId.empty()) {
+                    worldItemPresentations_.emplace(std::pair{item.type, item.id}, std::move(presentation));
+                }
+            };
             if (const auto settings = world.find("realtimeGI"); settings != world.end()) {
                 realtimeGI_ = parseRealtimeGI(*settings, path.parent_path(), documentWarning_);
                 if (!realtimeGI_) { return false; }
@@ -1949,6 +2039,9 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                             }
                             legacySun = std::move(light);
                         } else {
+                            if (!light.imported) {
+                                readPresentation(value, {WorldItemType::PunctualLight, light.stableId}, "punctual light");
+                            }
                             lighting_.lights.push_back(std::move(light));
                         }
                     }
@@ -1962,6 +2055,11 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                             return false;
                         }
                         lighting_.rectLights.push_back(std::move(light));
+                    }
+                    normalizeWorldItemIdentities(lighting_.rectLights);
+                    for (size_t index = 0; index < lighting_.rectLights.size(); ++index) {
+                        readPresentation(lighting["rectLights"][index],
+                            {WorldItemType::RectLight, lighting_.rectLights[index].stableId}, "rect light");
                     }
                 }
                 normalizePunctualLightIdentities(lighting_);
@@ -1999,9 +2097,16 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                     }
                     if (environment.contains("volumetricFog")) {
                         std::string reason;
-                        if (!parseVolumetricFog(environment["volumetricFog"], worldEnvironment_.volumetricFog, reason)) {
+                        const auto& value = environment["volumetricFog"];
+                        if (!parseVolumetricFog(value, worldEnvironment_.volumetricFog, reason)) {
                             documentWarning_ = "Invalid world.environment.volumetricFog: " + reason;
                             return false;
+                        }
+                        auto& volumes = worldEnvironment_.volumetricFog.localVolumes;
+                        normalizeWorldItemIdentities(volumes);
+                        for (size_t index = 0; index < volumes.size(); ++index) {
+                            readPresentation(value["localVolumes"][index],
+                                {WorldItemType::LocalFogVolume, volumes[index].stableId}, "local fog volume");
                         }
                     }
                     if (environment.contains("time")) {
@@ -2353,7 +2458,7 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
         }
         for (const auto& value : values) {
             const auto id = value["id"].get<uint32_t>();
-            DecalPresentation presentation;
+            SceneGraphPresentation presentation;
             if (const auto name = value.find("name"); name != value.end()) {
                 if (name->is_string()) {
                     presentation.name = name->get<std::string>();
@@ -2587,6 +2692,15 @@ bool SceneDocument::save(std::string& message)
         }
     }
     document["materials"] = std::move(materialOverrides);
+    const auto writePresentation = [&](nlohmann::json& value, WorldItemId item) {
+        const auto presentation = worldItemPresentations_.find({item.type, item.id});
+        if (presentation == worldItemPresentations_.end()) { return; }
+        const auto& metadata = presentation->second;
+        if (!metadata.name.empty()) { value["name"] = metadata.name; }
+        if (!metadata.parentSourceId.empty()) {
+            value["sceneGraphParent"] = {{"sourceId", metadata.parentSourceId}, {"nodeIndex", metadata.parentNodeIndex}};
+        }
+    };
     nlohmann::json serializedLights = nlohmann::json::array();
     for (const PunctualLight& light : lighting().lights) {
         nlohmann::json value = serializeLightProperties(light.properties);
@@ -2595,11 +2709,14 @@ bool SceneDocument::save(std::string& message)
         value["position"] = {light.position.x, light.position.y, light.position.z};
         value["direction"] = {light.direction.x, light.direction.y, light.direction.z};
         if (light.imported) { value["source"] = serializeImportedSource(*light.imported, true); }
+        else { writePresentation(value, {WorldItemType::PunctualLight, light.stableId}); }
         serializedLights.push_back(std::move(value));
     }
     nlohmann::json serializedRectLights = nlohmann::json::array();
     for (const RectLight& light : lighting().rectLights) {
-        serializedRectLights.push_back(serializeRectLight(light));
+        auto value = serializeRectLight(light);
+        writePresentation(value, {WorldItemType::RectLight, light.stableId});
+        serializedRectLights.push_back(std::move(value));
     }
     nlohmann::json serializedImportedSources = nlohmann::json::array();
     for (const auto& source : importedLightSources_) {
@@ -2639,7 +2756,12 @@ bool SceneDocument::save(std::string& message)
         }},
     };
     if (!(worldEnvironment_.volumetricFog == environment::VolumetricFogState{})) {
-        document["world"]["environment"]["volumetricFog"] = serializeVolumetricFog(worldEnvironment_.volumetricFog);
+        const auto& fog = worldEnvironment_.volumetricFog;
+        auto value = serializeVolumetricFog(fog);
+        for (size_t index = 0; index < fog.localVolumes.size(); ++index) {
+            writePresentation(value["localVolumes"][index], {WorldItemType::LocalFogVolume, fog.localVolumes[index].stableId});
+        }
+        document["world"]["environment"]["volumetricFog"] = std::move(value);
     }
     if (!decals().empty()) {
         auto values = serializeDecals(*this, documentPath_.parent_path());

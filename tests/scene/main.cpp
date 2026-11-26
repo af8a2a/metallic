@@ -5423,6 +5423,122 @@ TEST(SceneEditing, DecalSceneGraphParentRoundTrip)
     EXPECT_TRUE(document.decalName(1).empty());
 }
 
+TEST(SceneEditing, WorldItemSceneGraphParentRoundTrip)
+{
+    using namespace metallic::scene;
+    const auto directory = prepareOutputDirectory() / "world_item_scene_graph";
+    std::filesystem::create_directories(directory);
+    writeFullScene(directory);
+    const auto manifest = directory / "world.metallic_scene.json";
+    writeTextFile(manifest, R"json({
+        "version": 4,
+        "sources": [
+            {"id": "other", "path": "scene.gltf"},
+            {"id": "view", "path": "scene.gltf"}
+        ],
+        "world": {
+            "environment": {"volumetricFog": {"localVolumes": [
+                {"name": "Fog bank", "sceneGraphParent": {"sourceId": "view", "nodeIndex": 2}},
+                {}
+            ]}},
+            "lighting": {
+                "lights": [{"type": "point", "name": "Amber lamp", "sceneGraphParent": {"sourceId": "view", "nodeIndex": 2}}],
+                "rectLights": [
+                    {"name": "Warm wash", "sceneGraphParent": {"sourceId": "view", "nodeIndex": 2}},
+                    {"name": "Missing group", "sceneGraphParent": {"sourceId": "view", "nodeIndex": 99}}
+                ]
+            }
+        }
+    })json");
+
+    SceneDocument document;
+    ASSERT_TRUE(document.load(manifest)) << document.documentWarning();
+    const auto view = document.objectForSourceNode("view", 2);
+    ASSERT_TRUE(view && view.hasComponent<CameraComponent>());
+    const auto& volumes = document.worldEnvironment().volumetricFog.localVolumes;
+    const auto& lighting = document.lighting();
+    ASSERT_EQ(volumes.size(), 2u);
+    ASSERT_EQ(lighting.lights.size(), 3u);
+    ASSERT_EQ(lighting.rectLights.size(), 2u);
+    ASSERT_FALSE(lighting.lights[0].imported);
+    ASSERT_TRUE(lighting.lights[1].imported);
+    const WorldItemId fogItem{WorldItemType::LocalFogVolume, volumes[0].stableId};
+    const WorldItemId ungroupedFog{WorldItemType::LocalFogVolume, volumes[1].stableId};
+    const WorldItemId pointItem{WorldItemType::PunctualLight, lighting.lights[0].stableId};
+    const WorldItemId rectItem{WorldItemType::RectLight, lighting.rectLights[0].stableId};
+    const WorldItemId missingGroup{WorldItemType::RectLight, lighting.rectLights[1].stableId};
+    EXPECT_NE(fogItem.id, 0u);
+    EXPECT_NE(ungroupedFog.id, fogItem.id);
+    EXPECT_NE(rectItem.id, 0u);
+    EXPECT_NE(missingGroup.id, rectItem.id);
+    EXPECT_EQ(document.worldItemName(fogItem), "Fog bank");
+    EXPECT_EQ(document.worldItemName(pointItem), "Amber lamp");
+    EXPECT_EQ(document.worldItemName(rectItem), "Warm wash");
+    for (const auto item : {fogItem, pointItem, rectItem}) {
+        EXPECT_EQ(document.worldItemSceneGraphParent(item), view.entity());
+    }
+    EXPECT_EQ(document.worldItemSceneGraphParent(ungroupedFog), kNullSceneEntity);
+    EXPECT_EQ(document.worldItemSceneGraphParent(missingGroup), kNullSceneEntity);
+    EXPECT_EQ(document.worldItemSceneGraphParent({WorldItemType::PunctualLight, lighting.lights[1].stableId}), kNullSceneEntity);
+    EXPECT_NE(document.documentWarning().find("Scene Graph parent is unavailable for rect light"), std::string::npos);
+
+    auto cameraTransform = view.getComponent<TransformComponent>().localMatrix;
+    cameraTransform.a03 += 10.0f;
+    ASSERT_TRUE(document.setObjectLocalMatrix(view.entity(), cameraTransform));
+    EXPECT_FLOAT_EQ(volumes[0].centerMeters[0], 0.0f);
+    EXPECT_FLOAT_EQ(lighting.lights[0].position.x, 0.0f);
+    EXPECT_FLOAT_EQ(lighting.rectLights[0].position.x, 0.0f);
+
+    auto world = document.worldEnvironment();
+    auto& editedVolumes = world.volumetricFog.localVolumes;
+    std::swap(editedVolumes[0], editedVolumes[1]);
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    EXPECT_EQ(volumes[0].stableId, ungroupedFog.id);
+    EXPECT_EQ(volumes[1].stableId, fogItem.id);
+    editedVolumes[1].centerMeters[0] = 3.0f;
+    const auto duplicateFog = editedVolumes[1];
+    editedVolumes.push_back(duplicateFog);
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    EXPECT_NE(volumes[2].stableId, fogItem.id);
+    EXPECT_EQ(document.worldItemSceneGraphParent({WorldItemType::LocalFogVolume, volumes[2].stableId}), kNullSceneEntity);
+
+    auto editedLighting = document.lighting();
+    editedLighting.lights[0].position.x = 4.0f;
+    std::swap(editedLighting.rectLights[0], editedLighting.rectLights[1]);
+    editedLighting.rectLights[1].position.x = 5.0f;
+    ASSERT_TRUE(document.setLighting(editedLighting));
+    EXPECT_EQ(document.lighting().lights[0].stableId, pointItem.id);
+    EXPECT_EQ(document.lighting().rectLights[1].stableId, rectItem.id);
+
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    ASSERT_TRUE(document.load(manifest)) << document.documentWarning();
+    const auto parent = document.objectForSourceNode("view", 2).entity();
+    const auto& reloadedVolumes = document.worldEnvironment().volumetricFog.localVolumes;
+    const auto& reloadedLighting = document.lighting();
+    ASSERT_EQ(reloadedVolumes.size(), 3u);
+    ASSERT_EQ(reloadedLighting.lights.size(), 3u);
+    ASSERT_EQ(reloadedLighting.rectLights.size(), 2u);
+    const WorldItemId reloadedFog{WorldItemType::LocalFogVolume, reloadedVolumes[1].stableId};
+    EXPECT_EQ(document.worldItemName(reloadedFog), "Fog bank");
+    EXPECT_EQ(document.worldItemSceneGraphParent(reloadedFog), parent);
+    EXPECT_EQ(document.worldItemSceneGraphParent({WorldItemType::PunctualLight, reloadedLighting.lights[0].stableId}), parent);
+    EXPECT_EQ(document.worldItemSceneGraphParent({WorldItemType::RectLight, reloadedLighting.rectLights[1].stableId}), parent);
+    EXPECT_FLOAT_EQ(reloadedVolumes[1].centerMeters[0], 3.0f);
+    EXPECT_FLOAT_EQ(reloadedLighting.lights[0].position.x, 4.0f);
+    EXPECT_FLOAT_EQ(reloadedLighting.rectLights[1].position.x, 5.0f);
+
+    auto withoutGroupedFog = document.worldEnvironment();
+    auto& remaining = withoutGroupedFog.volumetricFog.localVolumes;
+    const auto deleted = remaining[1];
+    remaining.erase(remaining.begin() + 1);
+    ASSERT_TRUE(document.setWorldEnvironment(withoutGroupedFog));
+    remaining.push_back(deleted);
+    ASSERT_TRUE(document.setWorldEnvironment(withoutGroupedFog));
+    EXPECT_TRUE(document.worldItemName(reloadedFog).empty());
+    EXPECT_EQ(document.worldItemSceneGraphParent(reloadedFog), kNullSceneEntity);
+}
+
 TEST(SceneEditing, EnvironmentColorSpaceDeclarationRoundTrip)
 {
     using namespace metallic::scene;
