@@ -406,6 +406,16 @@ float3 matrixTranslation(const float4x4& matrix)
     return float3(matrix.a03, matrix.a13, matrix.a23);
 }
 
+float4x4 renderNodeWorldMatrix(const float4x4& ownerWorldMatrix, const float3& localOffset)
+{
+    if (localOffset.x == 0.0f && localOffset.y == 0.0f && localOffset.z == 0.0f) {
+        return ownerWorldMatrix;
+    }
+    float4x4 translation;
+    translation.SetupByTranslation(localOffset);
+    return ownerWorldMatrix * translation;
+}
+
 Bounds transformBounds(const Bounds& bounds, const float4x4& matrix)
 {
     Bounds result;
@@ -5403,6 +5413,43 @@ bool Scene::setObjectWorldMatrix(SceneEntity object, const float4x4& worldMatrix
     return true;
 }
 
+bool Scene::setRenderNodeLocalOffset(int32_t renderNodeIndex, const float3& localOffset)
+{
+    if (!validIndex(renderNodeIndex, renderNodes_.size()) ||
+        !std::isfinite(localOffset.x) || !std::isfinite(localOffset.y) || !std::isfinite(localOffset.z)) {
+        return false;
+    }
+    RenderNode& renderNode = renderNodes_[static_cast<size_t>(renderNodeIndex)];
+    if (renderNode.localOffset.x == localOffset.x && renderNode.localOffset.y == localOffset.y &&
+        renderNode.localOffset.z == localOffset.z) {
+        return false;
+    }
+    const float4x4 worldMatrix = renderNodeWorldMatrix(
+        nodes_[static_cast<size_t>(renderNode.nodeIndex)].worldMatrix, localOffset);
+    if (!std::ranges::all_of(worldMatrix.a, [](float component) { return std::isfinite(component); })) {
+        return false;
+    }
+    sceneGraph_.advanceRenderNodeTransformRevision();
+    renderNode.localOffset = localOffset;
+    renderNode.worldMatrix = worldMatrix;
+    renderNode.transformRevision = transformRevision();
+    refreshTransforms();
+    return true;
+}
+
+bool Scene::setRenderNodeWorldPosition(int32_t renderNodeIndex, const float3& worldPosition)
+{
+    if (!validIndex(renderNodeIndex, renderNodes_.size())) {
+        return false;
+    }
+    const RenderNode& renderNode = renderNodes_[static_cast<size_t>(renderNodeIndex)];
+    float4x4 worldToOwner = nodes_[static_cast<size_t>(renderNode.nodeIndex)].worldMatrix;
+    if (!SceneGraph::tryInvertAffineMatrix(worldToOwner)) {
+        return false;
+    }
+    return setRenderNodeLocalOffset(renderNodeIndex, transformPoint(worldToOwner, worldPosition));
+}
+
 bool Scene::setObjectVisible(SceneEntity object, bool visible)
 {
     if (!valid() || !sceneGraph_.setVisible(object, visible)) {
@@ -5558,8 +5605,9 @@ void Scene::refreshTransforms()
             continue;
         }
         const SceneNode& node = nodes_[static_cast<size_t>(renderNode.nodeIndex)];
-        if (!matrixNearlyEqual(renderNode.worldMatrix, node.worldMatrix)) {
-            renderNode.worldMatrix = node.worldMatrix;
+        const float4x4 worldMatrix = renderNodeWorldMatrix(node.worldMatrix, renderNode.localOffset);
+        if (!matrixNearlyEqual(renderNode.worldMatrix, worldMatrix)) {
+            renderNode.worldMatrix = worldMatrix;
             renderNode.transformRevision = revision;
         }
         renderNode.visible = node.visible;

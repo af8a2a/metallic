@@ -23,8 +23,10 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -91,8 +93,13 @@ private:
     void drawEnvironmentControls();
     void drawLightingControls();
     void drawDecalControls();
+    bool drawDecalInspector(scene::RenderDecal decal);
     void beginEnvironmentEdit();
-    void drawSceneNode(int32_t nodeIndex);
+    using SceneDecalChildren = std::unordered_map<scene::SceneEntity, std::vector<const scene::RenderDecal*>>;
+    void drawSceneNode(scene::SceneEntity entity, std::span<const scene::SceneEntity> revealPath,
+        const SceneDecalChildren& decalChildren);
+    void drawScenePrimitive(int32_t renderNodeIndex);
+    void drawSceneDecal(const scene::RenderDecal& decal);
     void drawSceneGraphTab();
     void drawSceneListTab();
     void drawSceneListSelectable(const char* label, int32_t index, int32_t type);
@@ -113,6 +120,7 @@ private:
     void handleViewportCameraControls(const ImVec2& min, const ImVec2& max);
     void drawViewportObjectHandles(const ImVec2& min, const ImVec2& max);
     void drawViewportGizmo(const ImVec2& min, const ImVec2& max);
+    void drawViewportGizmoBounds(const ImVec2& min, const ImVec2& max);
     void selectViewportObject(const ImVec2& min, const ImVec2& max);
     void drawSelectedNodeTransformInspector();
     void drawSelectedCameraComponentInspector();
@@ -121,20 +129,35 @@ private:
     void drawSelectedMaterialInspector();
     void drawMaterialInspector(int32_t materialIndex);
     scene::ConstSceneObject selectedSceneObject() const;
+    const scene::RenderNode* selectedRenderNode() const;
+    const scene::RenderDecal* findDecal(uint32_t id) const;
+    const scene::RenderDecal* selectedDecal() const;
     int32_t selectedNodeIndex() const;
     bool setSelectedObjectWorldMatrix(const float4x4& worldMatrix, std::string& reason);
     void notifySceneTransformChanged(bool geometryChanged);
     void notifyScenePropertiesChanged();
+    bool setDecalWorldMatrix(const scene::RenderDecal& decal, const float4x4& worldMatrix);
+    void notifyDecalsChanged();
     void notifySceneMaterialsChanged(bool invalidateAccelerationStructure = false);
     struct MaterialEditValue {
         int32_t materialIndex = scene::kInvalidSceneIndex;
         scene::RenderMaterial properties;
     };
+    struct PrimitiveMoveEditValue {
+        int32_t renderNodeIndex = scene::kInvalidSceneIndex;
+        float3 localOffset{0.0f};
+    };
+    struct DecalTransformEditValue {
+        uint32_t id;
+        float4x4 worldMatrix;
+    };
     using SceneEditValue = std::variant<
         float4x4,
         scene::CameraProperties,
         scene::LightProperties,
-        MaterialEditValue>;
+        MaterialEditValue,
+        PrimitiveMoveEditValue,
+        DecalTransformEditValue>;
     void pushSceneEditCommand(
         scene::SceneEntity object,
         uint64_t sceneLifetimeRevision,
@@ -152,6 +175,7 @@ private:
     void finishActiveInspectorPropertyTransaction();
     bool applySceneEditValue(scene::SceneEntity object, const SceneEditValue& value);
     void updateSceneDirtyState();
+    void finishViewportGizmoTransaction();
     void finishActiveTransformTransactions();
     void undoTransform();
     void redoTransform();
@@ -219,6 +243,7 @@ private:
         Material,
         Camera,
         Light,
+        Decal,
         Texture,
         Image,
     };
@@ -231,6 +256,8 @@ private:
         int32_t nodeIndex = scene::kInvalidSceneIndex;
         int32_t meshIndex = scene::kInvalidSceneIndex;
         int32_t primitiveIndex = scene::kInvalidSceneIndex;
+        int32_t renderNodeIndex = scene::kInvalidSceneIndex;
+        std::optional<uint32_t> decalId;
     };
 
     enum class GizmoOperation : uint8_t {
@@ -346,9 +373,15 @@ private:
     struct GizmoSmokeInput {
         std::optional<std::array<float, 2>> pointer;
         std::optional<std::array<float, 2>> center;
+        std::vector<std::array<float, 4>> boundsEdges;
         bool mouseDown = false;
         bool rightMouseDown = false;
         bool drewGizmo = false;
+        scene::SceneEntity sceneTreeProbe = scene::kNullSceneEntity;
+        int32_t sceneTreePrimitiveProbe = scene::kInvalidSceneIndex;
+        std::optional<uint32_t> sceneTreeDecalProbe;
+        std::optional<std::array<float, 2>> sceneTreeRow;
+        int sceneTreeDepth = 0;
     };
     std::optional<GizmoSmokeInput> gizmoSmokeInput_;
     bool waitForGraphicsDebugger_ = false;
@@ -378,6 +411,7 @@ private:
     bool graphEditorPositionsInitialized_ = false;
     bool snapEnabled_ = false;
     bool gizmoLocal_ = false;
+    bool gizmoBoundsVisible_ = true;
     bool gizmoWasUsing_ = false;
     bool viewportHovered_ = false;
     bool viewportInteractionEnabled_ = false;
@@ -395,13 +429,15 @@ private:
     float scaleSnap_ = 0.1f;
     float viewportCameraSpeed_ = 1.0f;
     scene::SceneEntity viewportHoveredObject_ = scene::kNullSceneEntity;
+    scene::SceneEntity sceneTreeSelection_ = scene::kNullSceneEntity;
+    uint64_t sceneTreeSelectionLifetime_ = 0;
     scene::SceneEntity gizmoEditingObject_ = scene::kNullSceneEntity;
     uint64_t gizmoEditingSceneLifetime_ = 0;
     scene::SceneEntity inspectorEditingObject_ = scene::kNullSceneEntity;
     uint64_t inspectorEditingSceneLifetime_ = 0;
     scene::SceneEntity inspectorPropertyEditingObject_ = scene::kNullSceneEntity;
     uint64_t inspectorPropertyEditingSceneLifetime_ = 0;
-    float4x4 gizmoStartLocalMatrix_ = float4x4::Identity();
+    SceneEditValue gizmoStartValue_ = float4x4::Identity();
     float4x4 inspectorStartLocalMatrix_ = float4x4::Identity();
     SceneEditValue inspectorPropertyStartValue_ = float4x4::Identity();
     std::vector<SceneEditCommand> transformCommands_;

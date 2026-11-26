@@ -27,12 +27,16 @@ public:
     bool revert(std::string& message);
     bool setObjectLocalMatrix(SceneEntity object, const float4x4& localMatrix);
     bool setObjectWorldMatrix(SceneEntity object, const float4x4& worldMatrix);
+    bool setRenderNodeLocalOffset(int32_t renderNodeIndex, const float3& localOffset);
+    bool setRenderNodeWorldPosition(int32_t renderNodeIndex, const float3& worldPosition);
     bool setObjectCameraProperties(SceneEntity object, const CameraProperties& properties);
     bool setObjectLightProperties(SceneEntity object, const LightProperties& properties);
     bool setMaterialProperties(int32_t materialIndex, const RenderMaterial& properties);
     bool setDecal(RenderDecal decal, const std::filesystem::path& baseColorFile = {},
         const std::filesystem::path& roughnessFile = {});
     bool removeDecal(uint32_t id);
+    SceneEntity decalSceneGraphParent(uint32_t id) const;
+    std::string_view decalName(uint32_t id) const;
     bool setMaterialAsset(int32_t materialIndex, std::string_view uri,
         const std::filesystem::path& assetRoot, std::string& error);
     bool reloadMaterialAsset(int32_t materialIndex, std::string& error);
@@ -83,6 +87,14 @@ private:
         bool ownsValueProgram = false;
     };
     std::map<int32_t, MaterialAssetBinding> materialAssets_;
+    struct DecalPresentation
+    {
+        std::string name;
+        std::string parentSourceId;
+        int32_t parentNodeIndex = kInvalidSceneIndex;
+        SceneEntity parent = kNullSceneEntity;
+    };
+    std::map<uint32_t, DecalPresentation> decalPresentations_;
     bool sidecarLoaded_ = false;
     bool hasEnvironmentSettings_ = false;
     bool compositionDocument_ = false;

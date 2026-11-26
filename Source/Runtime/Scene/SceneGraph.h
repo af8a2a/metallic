@@ -63,7 +63,11 @@ public:
     const entt::registry& registry() const { return registry_; }
 
 private:
+    friend class Scene;
+
     static void incrementRevision(uint64_t& revision);
+    static bool tryInvertAffineMatrix(float4x4& matrix);
+    void advanceRenderNodeTransformRevision() { incrementRevision(transformRevision_); }
     bool isAncestor(SceneEntity candidate, SceneEntity object) const;
     void addRoot(SceneEntity object);
     void removeRoot(SceneEntity object);

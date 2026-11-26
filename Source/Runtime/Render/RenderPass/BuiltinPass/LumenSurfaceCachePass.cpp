@@ -749,6 +749,12 @@ Result<> LumenSurfaceCachePass::gather(const scene::Scene& scene, std::vector<Su
         first = last;
         if (!node.visible || field == fields_.end() || field->second.empty()) { continue; }
 
+        const auto objectSections = std::span(nodes).subspan(firstNode, last - firstNode);
+        // The card layout was baked with every section sharing the same placement.
+        if (std::ranges::any_of(objectSections.subspan(1), [&](const auto& section) {
+                return !std::ranges::equal(node.worldMatrix.a, section.worldMatrix.a);
+            })) { continue; }
+
         const auto& m = node.worldMatrix.a;
         const InstanceTransform transform{{m[0], m[1], m[2]}, {m[4], m[5], m[6]}, {m[8], m[9], m[10]}, {m[12], m[13], m[14]}};
         const float determinant = dot(transform.x, cross(transform.y, transform.z));
@@ -763,7 +769,7 @@ Result<> LumenSurfaceCachePass::gather(const scene::Scene& scene, std::vector<Su
         }
 
         const uint32_t beginSection = uint32_t(sections.size());
-        for (const auto& sectionNode : std::span(nodes).subspan(firstNode, last - firstNode)) {
+        for (const auto& sectionNode : objectSections) {
             const auto& part = scene.renderPrimitives()[sectionNode.renderPrimitiveIndex];
             const size_t vertexCount = part.indices.empty() ? part.positions.size() : part.indices.size();
             if (vertexCount > UINT32_MAX - vertices.size()) { return makeError(Error::Unsupported); }

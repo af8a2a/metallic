@@ -10,7 +10,6 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
-#include <unordered_set>
 #include <spdlog/spdlog.h>
 
 namespace metallic::render {
@@ -313,12 +312,13 @@ Result<std::unique_ptr<Buffer>> MeshDistanceFieldGPU::uploadInstances(const scen
     std::vector<MeshDistanceFieldGPUObject> gridObjects;
     std::vector<std::array<float, 8>> localBounds;
     std::vector<MeshDistanceFieldGPUMotion> previousTransforms;
-    std::unordered_set<scene::SceneEntity> objects;
     unsupportedTransforms = 0;
     if (updateInstances) { updateInstances->clear(); }
     const auto& renderNodes = scene.renderNodes();
-    for (uint32_t renderNodeIndex = 0; renderNodeIndex < renderNodes.size(); ++renderNodeIndex) {
+    for (uint32_t next = 0; next < renderNodes.size();) {
+        const uint32_t renderNodeIndex = next++;
         const auto& node = renderNodes[renderNodeIndex];
+        while (next < renderNodes.size() && renderNodes[next].object == node.object) { ++next; }
         if (!node.visible) { continue; }
         const auto& primitive = scene.renderPrimitives()[node.renderPrimitiveIndex];
         const auto asset = std::ranges::find(assets_, primitive.meshIndex, &Asset::meshIndex);
@@ -329,7 +329,19 @@ Result<std::unique_ptr<Buffer>> MeshDistanceFieldGPU::uploadInstances(const scen
             }
             continue;
         }
-        if (!objects.insert(node.object).second) { continue; }
+        const auto otherSections = std::span(renderNodes).subspan(renderNodeIndex + 1, next - renderNodeIndex - 1);
+        // The bake describes the whole mesh, so it only represents a rigidly placed set of sections.
+        if (std::ranges::any_of(otherSections, [&](const auto& section) {
+                return !std::ranges::equal(node.worldMatrix.a, section.worldMatrix.a);
+            })) {
+            ++unsupportedTransforms;
+            if (validationBounds) {
+                spdlog::error("Mesh SDF verification requires a shared transform for all sections of object {}",
+                    static_cast<uint32_t>(node.object));
+                return makeError(Error::Unsupported);
+            }
+            continue;
+        }
 
         const auto& center = asset->localCenter;
         const auto& extent = asset->normalizedExtent;

@@ -5366,6 +5366,63 @@ TEST(SceneEditing, DecalDocumentRoundTrip)
     EXPECT_TRUE(loaded.decals().empty());
 }
 
+TEST(SceneEditing, DecalSceneGraphParentRoundTrip)
+{
+    using namespace metallic::scene;
+    const auto directory = prepareOutputDirectory() / "decal_scene_graph";
+    std::filesystem::create_directories(directory);
+    writeFullScene(directory);
+    const auto manifest = directory / "world.metallic_scene.json";
+    writeTextFile(manifest, R"json({
+        "version": 4,
+        "sources": [
+            {"id": "other", "path": "scene.gltf"},
+            {"id": "view", "path": "scene.gltf"}
+        ],
+        "world": {"decals": [
+            {"id": 1, "name": "Floor Medallion", "sceneGraphParent": {"sourceId": "view", "nodeIndex": 2}},
+            {"id": 2},
+            {"id": 3, "name": "Wall Emblem", "sceneGraphParent": {"sourceId": "view", "nodeIndex": 99}}
+        ]}
+    })json");
+
+    SceneDocument document;
+    ASSERT_TRUE(document.load(manifest)) << document.documentWarning();
+    ASSERT_EQ(document.decals().size(), 3u);
+    const auto view = document.objectForSourceNode("view", 2);
+    ASSERT_TRUE(view && view.hasComponent<CameraComponent>());
+    EXPECT_EQ(document.decalSceneGraphParent(1), view.entity());
+    EXPECT_EQ(document.decalName(1), "Floor Medallion");
+    EXPECT_EQ(document.decalSceneGraphParent(2), kNullSceneEntity);
+    EXPECT_TRUE(document.decalName(2).empty());
+    EXPECT_EQ(document.decalSceneGraphParent(3), kNullSceneEntity);
+    EXPECT_EQ(document.decalName(3), "Wall Emblem");
+    EXPECT_NE(document.documentWarning().find("Scene Graph parent is unavailable for decal 3"), std::string::npos);
+
+    auto cameraTransform = view.getComponent<TransformComponent>().localMatrix;
+    cameraTransform.a03 += 10.0f;
+    ASSERT_TRUE(document.setObjectLocalMatrix(view.entity(), cameraTransform));
+    EXPECT_TRUE(matrixNearlyEqual(document.decals()[0].worldFromDecal, float4x4::Identity()));
+    RenderDecal moved = document.decals()[0];
+    moved.worldFromDecal.a03 = 2.0f;
+    ASSERT_TRUE(document.setDecal(moved));
+    EXPECT_EQ(document.decalSceneGraphParent(1), view.entity());
+
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    ASSERT_TRUE(document.load(manifest)) << document.documentWarning();
+    ASSERT_EQ(document.decals().size(), 3u);
+    EXPECT_EQ(document.decalSceneGraphParent(1), document.objectForSourceNode("view", 2).entity());
+    EXPECT_EQ(document.decalName(1), "Floor Medallion");
+    EXPECT_FLOAT_EQ(document.decals()[0].worldFromDecal.a03, 2.0f);
+    EXPECT_NE(document.documentWarning().find("Scene Graph parent is unavailable for decal 3"), std::string::npos);
+
+    ASSERT_TRUE(document.removeDecal(1));
+    ASSERT_TRUE(document.setDecal(moved));
+    EXPECT_EQ(document.decalSceneGraphParent(1), kNullSceneEntity);
+    EXPECT_TRUE(document.decalName(1).empty());
+}
+
 TEST(SceneEditing, EnvironmentColorSpaceDeclarationRoundTrip)
 {
     using namespace metallic::scene;
@@ -6775,6 +6832,92 @@ TEST(SceneEditing, ComponentPropertyRoundTrip)
 TEST(SceneEditing, CompositeDocumentRoundTrip)
 {
     testCompositeSceneDocumentRoundTrip(prepareOutputDirectory());
+}
+
+TEST(SceneEditing, PrimitiveInstanceOffsetRoundTrip)
+{
+    using namespace metallic::scene;
+    const auto directory = prepareOutputDirectory() / "primitive_instance_offset";
+    std::filesystem::create_directories(directory);
+    const auto sourcePath = writeFullScene(directory);
+    nlohmann::json source;
+    {
+        std::ifstream stream(sourcePath);
+        ASSERT_TRUE(stream.good());
+        stream >> source;
+    }
+    auto& primitives = source["meshes"][0]["primitives"];
+    const auto sibling = primitives[0];
+    primitives.push_back(sibling);
+    writeTextFile(sourcePath, source.dump(2));
+
+    const auto manifestPath = directory / "world.metallic_scene.json";
+    writeTextFile(manifestPath, nlohmann::json{
+        {"version", 4},
+        {"sources", {{{"id", "main"}, {"path", "scene.gltf"}}}},
+    }.dump(2));
+
+    SceneDocument document;
+    ASSERT_TRUE(document.load(manifestPath)) << document.lastLoadResult().error;
+    ASSERT_EQ(document.renderNodes().size(), 2u);
+    const auto owner = document.objectForSourceNode("main", 1);
+    ASSERT_TRUE(owner);
+    float4x4 ownerLocal = owner.getComponent<TransformComponent>().localMatrix;
+    ownerLocal.a00 = 0.0f;
+    ownerLocal.a10 = 2.0f;
+    ownerLocal.a01 = -3.0f;
+    ownerLocal.a11 = 0.0f;
+    ASSERT_TRUE(document.setObjectLocalMatrix(owner.entity(), ownerLocal));
+
+    const auto translation = [](const float4x4& matrix) {
+        return float3(matrix.a03, matrix.a13, matrix.a23);
+    };
+    const uint64_t sceneRevision = document.transformRevision();
+    const uint64_t siblingRevision = document.renderNodes()[1].transformRevision;
+    const float3 targetPosition(8.0f, 6.0f, 3.0f);
+    ASSERT_TRUE(document.setRenderNodeWorldPosition(0, targetPosition));
+    ASSERT_GT(document.transformRevision(), sceneRevision);
+    EXPECT_EQ(document.geometryTransformRevision(), document.transformRevision());
+    EXPECT_EQ(document.renderNodes()[1].transformRevision, siblingRevision);
+    expectVec3(document.renderNodes()[0].localOffset, float3(2.0f, -1.0f, 0.0f), "local offset");
+    expectVec3(translation(document.renderNodes()[0].worldMatrix), targetPosition, "moved primitive");
+    expectVec3(translation(document.renderNodes()[1].worldMatrix), float3(5.0f, 2.0f, 3.0f), "sibling");
+    expectVec3(translation(owner.getComponent<TransformComponent>().worldMatrix),
+        float3(5.0f, 2.0f, 3.0f), "owning node");
+    expectVec3(document.bounds().max, float3(8.0f, 8.0f, 3.0f), "scene bounds");
+
+    ownerLocal.a03 += 10.0f;
+    ASSERT_TRUE(document.setObjectLocalMatrix(owner.entity(), ownerLocal));
+    expectVec3(translation(document.renderNodes()[0].worldMatrix),
+        float3(18.0f, 6.0f, 3.0f), "primitive follows the owning node");
+
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    ASSERT_TRUE(document.load(manifestPath)) << document.lastLoadResult().error;
+    EXPECT_TRUE(document.documentWarning().empty()) << document.documentWarning();
+    EXPECT_FALSE(document.dirty());
+    ASSERT_EQ(document.renderNodes().size(), 2u);
+    expectVec3(document.renderNodes()[0].localOffset, float3(2.0f, -1.0f, 0.0f), "saved local offset");
+    expectVec3(translation(document.renderNodes()[0].worldMatrix),
+        float3(18.0f, 6.0f, 3.0f), "saved primitive position");
+    expectVec3(translation(document.renderNodes()[1].worldMatrix),
+        float3(15.0f, 2.0f, 3.0f), "saved sibling position");
+
+    ASSERT_TRUE(document.setRenderNodeLocalOffset(0, float3(0.0f, 0.0f, 0.0f)));
+    EXPECT_TRUE(document.dirty());
+    ASSERT_TRUE(document.save(message)) << message;
+    ASSERT_TRUE(document.load(manifestPath)) << document.lastLoadResult().error;
+    ASSERT_EQ(document.renderNodes().size(), 2u);
+    EXPECT_TRUE(matrixNearlyEqual(document.renderNodes()[0].worldMatrix, document.renderNodes()[1].worldMatrix));
+
+    const auto reloadedOwner = document.objectForSourceNode("main", 1);
+    ownerLocal.a10 = 0.0f;
+    ASSERT_TRUE(document.setObjectLocalMatrix(reloadedOwner.entity(), ownerLocal));
+    const uint64_t singularRevision = document.transformRevision();
+    EXPECT_FALSE(document.setRenderNodeWorldPosition(0, targetPosition));
+    EXPECT_EQ(document.transformRevision(), singularRevision);
+    expectVec3(document.renderNodes()[0].localOffset,
+        float3(0.0f, 0.0f, 0.0f), "offset after rejected singular owner");
 }
 
 TEST(SceneEditing, CompositeDocumentValidation)

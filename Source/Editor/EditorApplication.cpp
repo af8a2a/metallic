@@ -1057,6 +1057,13 @@ bool isWithinViewportDepth(float viewDepth, const ViewportCameraMatrices& matric
     return viewDepth >= matrices.nearPlane && viewDepth <= matrices.farPlane;
 }
 
+ImVec2 viewportPosition(float normalizedX, float normalizedY, const ImVec2& min, const ImVec2& max)
+{
+    return ImVec2(
+        min.x + (normalizedX * 0.5f + 0.5f) * (max.x - min.x),
+        min.y + (1.0f - (normalizedY * 0.5f + 0.5f)) * (max.y - min.y));
+}
+
 bool projectWorldToViewport(
     const float3& worldPosition,
     const ViewportCameraMatrices& matrices,
@@ -1079,10 +1086,60 @@ bool projectWorldToViewport(
         normalizedY < -1.0f || normalizedY > 1.0f) {
         return false;
     }
-    screenPosition = ImVec2(
-        min.x + (normalizedX * 0.5f + 0.5f) * (max.x - min.x),
-        min.y + (1.0f - (normalizedY * 0.5f + 0.5f)) * (max.y - min.y));
+    screenPosition = viewportPosition(normalizedX, normalizedY, min, max);
     return true;
+}
+
+float4 boundsCorner(const scene::Bounds& bounds, uint32_t index)
+{
+    return float4(
+        (index & 1u) ? bounds.max.x : bounds.min.x,
+        (index & 2u) ? bounds.max.y : bounds.min.y,
+        (index & 4u) ? bounds.max.z : bounds.min.z,
+        1.0f);
+}
+
+void includeSceneObjectBounds(const scene::Scene& scene, const scene::ConstSceneObject& object, scene::Bounds& bounds)
+{
+    if (const auto* mesh = object.tryGetComponent<scene::MeshComponent>()) {
+        for (const int32_t index : mesh->renderNodeIndices) {
+            const auto& instance = scene.renderNodes()[index];
+            const auto& localBounds = scene.renderPrimitives()[instance.renderPrimitiveIndex].localBounds;
+            if (!localBounds.valid) { continue; }
+            for (uint32_t corner = 0; corner < 8; ++corner) {
+                const auto point = instance.worldMatrix * boundsCorner(localBounds, corner);
+                bounds.include(float3(point.x, point.y, point.z));
+            }
+        }
+    }
+    for (const auto child : object.getComponent<scene::RelationshipComponent>().children) {
+        includeSceneObjectBounds(scene, scene.sceneGraph().object(child), bounds);
+    }
+}
+
+bool clipViewportEdge(float4& start, float4& end)
+{
+    const auto distances = [](const float4& point) {
+        return std::array{point.w + point.x, point.w - point.x, point.w + point.y, point.w - point.y,
+            point.z - ML_NDC_NEAR_NO_REVERSE * point.w, point.w - point.z};
+    };
+    const auto startDistances = distances(start);
+    const auto endDistances = distances(end);
+    float enter = 0.0f;
+    float exit = 1.0f;
+    // Clip before dividing by w so edges crossing the near plane retain their visible segment.
+    for (size_t plane = 0; plane < startDistances.size(); ++plane) {
+        const float a = startDistances[plane];
+        const float b = endDistances[plane];
+        if (a < 0.0f && b < 0.0f) { return false; }
+        if (a < 0.0f) { enter = std::max(enter, a / (a - b)); }
+        else if (b < 0.0f) { exit = std::min(exit, a / (a - b)); }
+    }
+    if (enter >= exit) { return false; }
+    const float4 delta = end - start;
+    if (exit < 1.0f) { end = start + delta * exit; }
+    if (enter > 0.0f) { start += delta * enter; }
+    return start.w > 0.0f && end.w > 0.0f;
 }
 
 CameraViewDimensions cameraViewDimensions(
@@ -3249,6 +3306,7 @@ bool EditorApplication::renderFrame()
         ImGui_ImplSDL3_NewFrame();
         if (gizmoSmokeInput_) {
             gizmoSmokeInput_->center.reset();
+            gizmoSmokeInput_->boundsEdges.clear();
             gizmoSmokeInput_->drewGizmo = false;
             if (gizmoSmokeInput_->pointer) {
                 const auto [x, y] = *gizmoSmokeInput_->pointer;
@@ -3837,11 +3895,32 @@ void EditorApplication::drawSceneGraphTab()
     ImGui::TableSetupColumn("Tags", ImGuiTableColumnFlags_WidthFixed, 112.0f * mainScale_);
     ImGui::TableHeadersRow();
 
+    const auto& graph = scene_.sceneGraph();
+    SceneDecalChildren decalChildren;
+    for (const auto& decal : scene_.decals()) {
+        decalChildren[scene_.decalSceneGraphParent(decal.id)].push_back(&decal);
+    }
+    const auto* decal = selectedDecal();
+    const auto selected = decal ? graph.object(scene_.decalSceneGraphParent(decal->id)) : selectedSceneObject();
+    const bool revealSelection = selected && (sceneTreeSelection_ != selected.entity() ||
+        sceneTreeSelectionLifetime_ != graph.lifetimeRevision());
+    sceneTreeSelection_ = selected.entity();
+    sceneTreeSelectionLifetime_ = graph.lifetimeRevision();
+    std::vector<scene::SceneEntity> revealPath;
+    if (revealSelection) {
+        if (decal || selectedRenderNode()) { revealPath.push_back(selected.entity()); }
+        for (auto parent = selected.getComponent<scene::RelationshipComponent>().parent;
+            parent != scene::kNullSceneEntity; parent = graph.object(parent).getComponent<scene::RelationshipComponent>().parent) {
+            revealPath.push_back(parent);
+        }
+    }
+
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     const std::string sceneLabel = scene_.sources().size() > 1u
         ? scene_.sceneName()
         : "Scene-" + std::to_string(scene_.sceneIndex()) + " " + scene_.sceneName();
+    if (revealSelection) { ImGui::SetNextItemOpen(true); }
     const bool sceneOpen = ImGui::TreeNodeEx(
         "SceneRoot",
         ImGuiTreeNodeFlags_DefaultOpen |
@@ -3850,10 +3929,25 @@ void EditorApplication::drawSceneGraphTab()
         "%s",
         sceneLabel.c_str());
     ImGui::TableNextColumn();
-    ImGui::Text("%zu roots", scene_.rootNodeIndices().size());
+    if (scene_.isComposed()) {
+        ImGui::Text("%zu sources", scene_.sources().size());
+    } else {
+        ImGui::Text("%zu roots", scene_.rootNodeIndices().size());
+    }
     if (sceneOpen) {
-        for (const int32_t rootNodeIndex : scene_.rootNodeIndices()) {
-            drawSceneNode(rootNodeIndex);
+        for (const scene::SceneEntity root : graph.roots()) {
+            drawSceneNode(root, revealPath, decalChildren);
+        }
+        if (const auto ungrouped = decalChildren.find(scene::kNullSceneEntity); ungrouped != decalChildren.end()) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            const bool open = ImGui::TreeNodeEx("Decals", ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth);
+            ImGui::TableNextColumn();
+            ImGui::Text("%zu decals", ungrouped->second.size());
+            if (open) {
+                for (const auto* child : ungrouped->second) { drawSceneDecal(*child); }
+                ImGui::TreePop();
+            }
         }
         ImGui::TreePop();
     }
@@ -4013,18 +4107,19 @@ void EditorApplication::drawSceneListTab()
 void EditorApplication::drawInspectorPanel()
 {
     const scene::ConstSceneObject currentObject = selectedSceneObject();
+    const auto* instance = selectedRenderNode();
     const auto* materialEdit = std::get_if<MaterialEditValue>(&inspectorPropertyStartValue_);
     const auto selectedMaterials = selectedMaterialIndices();
     const bool editedTargetSelected = materialEdit != nullptr
         ? std::find(selectedMaterials.begin(), selectedMaterials.end(), materialEdit->materialIndex) != selectedMaterials.end()
-        : currentObject && inspectorPropertyEditingObject_ == currentObject.entity();
+        : !instance && currentObject && inspectorPropertyEditingObject_ == currentObject.entity();
     if (inspectorPropertyEditing_ &&
         (!inspectorOpen_ || !editedTargetSelected ||
             inspectorPropertyEditingSceneLifetime_ != scene_.sceneGraph().lifetimeRevision())) {
         finishActiveInspectorPropertyTransaction();
     }
     if (inspectorTransformEditing_ &&
-        (!inspectorOpen_ || !currentObject ||
+        (!inspectorOpen_ || instance || !currentObject ||
             inspectorEditingObject_ != currentObject.entity() ||
             inspectorEditingSceneLifetime_ != scene_.sceneGraph().lifetimeRevision())) {
         const scene::ConstSceneObject editedObject =
@@ -4089,6 +4184,15 @@ void EditorApplication::drawInspectorPanel()
         ImGui::End();
         return;
     }
+    if (const auto* decal = selectedDecal()) {
+        const auto name = scene_.decalName(decal->id);
+        if (name.empty()) { ImGui::Text("Decal #%u", decal->id); }
+        else { ImGui::TextUnformatted(name.data(), name.data() + name.size()); }
+        ImGui::Separator();
+        drawDecalInspector(*decal);
+        ImGui::End();
+        return;
+    }
     const scene::ConstSceneObject selectedObject = currentObject;
     if (sceneSelection_.type == SceneSelectionType::None ||
         (sceneSelection_.index < 0 && !selectedObject)) {
@@ -4101,7 +4205,10 @@ void EditorApplication::drawInspectorPanel()
 
     drawSelectedMaterialInspector();
 
-    if (selectedObject) {
+    if (instance) {
+        ImGui::Text("Local offset: %s", scene::formatVec3(instance->localOffset).c_str());
+        ImGui::Separator();
+    } else if (selectedObject) {
         drawSelectedNodeTransformInspector();
         ImGui::Separator();
 
@@ -4168,7 +4275,7 @@ void EditorApplication::drawInspectorPanel()
         ImGui::Separator();
         ImGui::Text("Mesh: %d", primitive.meshIndex);
         ImGui::Text("Primitive: %d", primitive.primitiveIndex);
-        ImGui::Text("Material: %d", primitive.materialIndex);
+        ImGui::Text("Material: %d", instance ? instance->materialIndex : primitive.materialIndex);
         ImGui::Text("Vertices: %llu", static_cast<unsigned long long>(primitive.vertexCount));
         ImGui::Text("Indices: %llu", static_cast<unsigned long long>(primitive.indexCount));
         ImGui::Text("Triangles: %llu", static_cast<unsigned long long>(primitive.triangleCount));
@@ -4249,6 +4356,7 @@ void EditorApplication::drawInspectorPanel()
         ImGui::Text("Embedded bytes: %zu", image.encodedData.size());
         break;
     }
+    case SceneSelectionType::Decal:
     case SceneSelectionType::None:
         break;
     }
@@ -5209,7 +5317,6 @@ void EditorApplication::drawLightingControls()
 void EditorApplication::drawDecalControls()
 {
     ImGui::PushID("SceneDecals");
-    bool changed = false;
     if (ImGui::Button("Add decal")) {
         scene::RenderDecal decal;
         decal.id = 1;
@@ -5223,8 +5330,28 @@ void EditorApplication::drawDecalControls()
         decal.worldFromDecal.a03 = position.x;
         decal.worldFromDecal.a13 = position.y;
         decal.worldFromDecal.a23 = position.z;
-        changed = scene_.setDecal(decal);
+        if (scene_.setDecal(decal)) {
+            sceneNonTransformDirty_ = true;
+            updateSceneDirtyState();
+            notifyDecalsChanged();
+        }
     }
+    for (size_t i = 0; i < scene_.decals().size(); ++i) {
+        const auto& decal = scene_.decals()[i];
+        ImGui::PushID(static_cast<int>(decal.id));
+        bool removed = false;
+        if (ImGui::TreeNode("Projector", "Decal #%u", decal.id)) {
+            removed = drawDecalInspector(decal);
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+        if (removed) { break; }
+    }
+    ImGui::PopID();
+}
+
+bool EditorApplication::drawDecalInspector(scene::RenderDecal decal)
+{
     const auto drawTexture = [&](const char* label, int32_t& index, std::filesystem::path& file) {
         const auto textureName = [&](int32_t slot) {
             return slot < 0 ? std::string("None") :
@@ -5248,62 +5375,60 @@ void EditorApplication::drawDecalControls()
         }
         return selected;
     };
-    for (size_t i = 0; i < scene_.decals().size(); ++i) {
-        auto decal = scene_.decals()[i];
-        ImGui::PushID(static_cast<int>(decal.id));
-        bool remove = false;
-        if (ImGui::TreeNode("Projector", "Decal #%u", decal.id)) {
-            bool edited = ImGui::Checkbox("Enabled", &decal.enabled);
-            float position[3], rotation[3], size[3];
-            ImGuizmo::DecomposeMatrixToComponents(decal.worldFromDecal.a, position, rotation, size);
-            if (ImGui::DragFloat3("Position (m)", position, 0.01f)) {
-                decal.worldFromDecal.a03 = position[0];
-                decal.worldFromDecal.a13 = position[1];
-                decal.worldFromDecal.a23 = position[2];
-                edited = true;
+    bool edited = ImGui::Checkbox("Enabled", &decal.enabled);
+    float position[3], rotation[3], size[3];
+    ImGuizmo::DecomposeMatrixToComponents(decal.worldFromDecal.a, position, rotation, size);
+    if (ImGui::DragFloat3("Position (m)", position, 0.01f)) {
+        decal.worldFromDecal.a03 = position[0];
+        decal.worldFromDecal.a13 = position[1];
+        decal.worldFromDecal.a23 = position[2];
+        edited = true;
+    }
+    const bool shearedOrReflected = matrixHasShear(decal.worldFromDecal) || affineDeterminant(decal.worldFromDecal) < 0.0f;
+    ImGui::BeginDisabled(shearedOrReflected);
+    bool shapeChanged = ImGui::DragFloat3("Rotation (deg)", rotation, 0.25f);
+    shapeChanged |= ImGui::DragFloat3("Size (m)", size, 0.01f, 0.0001f, 1e6f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::EndDisabled();
+    if (shearedOrReflected) { ImGui::TextDisabled("Rotation and size require an unreflected TRS transform."); }
+    if (shapeChanged) {
+        ImGuizmo::RecomposeMatrixFromComponents(position, rotation, size, decal.worldFromDecal.a);
+        edited = true;
+    }
+    edited |= ImGui::InputInt("Priority", &decal.priority);
+    edited |= ImGui::InputScalar("Receiver mask", ImGuiDataType_U32, &decal.receiverMask);
+    edited |= ImGui::ColorEdit4("Color and opacity", decal.baseColor.a, ImGuiColorEditFlags_Float);
+    std::filesystem::path colorFile, roughnessFile;
+    edited |= drawTexture("Color texture", decal.baseColorTexture, colorFile);
+    edited |= ImGui::SliderFloat("Roughness", &decal.roughness, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    edited |= ImGui::SliderFloat("Roughness opacity", &decal.roughnessOpacity, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    edited |= drawTexture("Roughness texture (R)", decal.roughnessTexture, roughnessFile);
+    const bool remove = ImGui::Button("Remove decal");
+    bool changed = false;
+    if (remove) {
+        if (gizmoWasUsing_) { finishViewportGizmoTransaction(); }
+        changed = scene_.removeDecal(decal.id);
+        if (changed) {
+            if (sceneSelection_.decalId == decal.id) { sceneSelection_ = {}; }
+            for (size_t i = transformCommands_.size(); i > 0; --i) {
+                const auto* edit = std::get_if<DecalTransformEditValue>(&transformCommands_[i - 1].before);
+                if (edit == nullptr || edit->id != decal.id) { continue; }
+                transformCommands_.erase(transformCommands_.begin() + static_cast<ptrdiff_t>(i - 1));
+                if (i <= transformCommandCursor_) { --transformCommandCursor_; }
+                if (static_cast<int64_t>(i) <= savedTransformCommandCursor_) { --savedTransformCommandCursor_; }
             }
-            const bool shearedOrReflected = matrixHasShear(decal.worldFromDecal) || affineDeterminant(decal.worldFromDecal) < 0.0f;
-            ImGui::BeginDisabled(shearedOrReflected);
-            bool shapeChanged = ImGui::DragFloat3("Rotation (deg)", rotation, 0.25f);
-            shapeChanged |= ImGui::DragFloat3("Size (m)", size, 0.01f, 0.0001f, 1e6f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
-            ImGui::EndDisabled();
-            if (shearedOrReflected) { ImGui::TextDisabled("Rotation and size require an unreflected TRS transform."); }
-            if (shapeChanged) {
-                ImGuizmo::RecomposeMatrixFromComponents(position, rotation, size, decal.worldFromDecal.a);
-                edited = true;
-            }
-            edited |= ImGui::InputInt("Priority", &decal.priority);
-            edited |= ImGui::InputScalar("Receiver mask", ImGuiDataType_U32, &decal.receiverMask);
-            edited |= ImGui::ColorEdit4("Color and opacity", decal.baseColor.a, ImGuiColorEditFlags_Float);
-            std::filesystem::path colorFile, roughnessFile;
-            edited |= drawTexture("Color texture", decal.baseColorTexture, colorFile);
-            edited |= ImGui::SliderFloat("Roughness", &decal.roughness, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-            edited |= ImGui::SliderFloat("Roughness opacity", &decal.roughnessOpacity, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-            edited |= drawTexture("Roughness texture (R)", decal.roughnessTexture, roughnessFile);
-            remove = ImGui::Button("Remove decal");
-            if (edited && !remove) {
-                if (scene_.setDecal(decal, colorFile, roughnessFile)) { changed = true; }
-                else if (!colorFile.empty() || !roughnessFile.empty()) {
-                    sceneStatus_ = "Could not bind decal texture " + (colorFile.empty() ? roughnessFile : colorFile).string();
-                }
-            }
-            ImGui::TreePop();
         }
-        ImGui::PopID();
-        if (remove) {
-            changed |= scene_.removeDecal(decal.id);
-            break;
+    } else if (edited) {
+        changed = scene_.setDecal(decal, colorFile, roughnessFile);
+        if (!changed && (!colorFile.empty() || !roughnessFile.empty())) {
+            sceneStatus_ = "Could not bind decal texture " + (colorFile.empty() ? roughnessFile : colorFile).string();
         }
     }
-    ImGui::PopID();
     if (changed) {
         sceneNonTransformDirty_ = true;
         updateSceneDirtyState();
-        renderWorld_.notifySceneChanged(render::RenderChangeBits::InvalidateTemporalHistory);
-        historyResources_.invalidateAll();
-        historyFrameIndex_ = 0;
-        viewportPreviewNeedsRender_ = true;
+        notifyDecalsChanged();
     }
+    return remove && changed;
 }
 
 void EditorApplication::beginEnvironmentEdit()
@@ -5326,68 +5451,93 @@ void EditorApplication::applyViewportCameraProperties(render::RenderGraphPropert
     if (status != nullptr) { renderGraphStatus_ = status; }
 }
 
-void EditorApplication::drawSceneNode(int32_t nodeIndex)
+void EditorApplication::drawSceneNode(scene::SceneEntity entity, std::span<const scene::SceneEntity> revealPath,
+    const SceneDecalChildren& decalChildren)
 {
-    const std::vector<scene::SceneNode>& nodes = scene_.nodes();
-    if (nodeIndex < 0 || static_cast<size_t>(nodeIndex) >= nodes.size()) {
-        return;
-    }
+    const auto& graph = scene_.sceneGraph();
+    const auto object = graph.object(entity);
+    const auto* sourceNode = object.tryGetComponent<scene::SourceNodeComponent>();
+    const bool sourceMount = object.hasComponent<scene::SceneSourceComponent>();
+    if (sourceNode == nullptr && !sourceMount) { return; }
 
-    const scene::SceneNode& node = nodes[static_cast<size_t>(nodeIndex)];
-    const std::string label = "[" + std::to_string(nodeIndex) + "] " + node.name;
+    const auto& name = object.getComponent<scene::TagComponent>().name;
+    const auto& relationship = object.getComponent<scene::RelationshipComponent>();
+    const auto* mesh = object.tryGetComponent<scene::MeshComponent>();
+    const std::string label = sourceMount ? name : "[" + std::to_string(sourceNode->nodeIndex) + "] " + name;
     std::string tags;
-    if (node.meshIndex >= 0) {
+    if (sourceMount) {
+        tags = "Source ";
+    }
+    if (mesh != nullptr && mesh->meshIndex >= 0) {
         tags += "M";
-        tags += std::to_string(node.meshIndex);
+        tags += std::to_string(mesh->meshIndex);
         tags += " ";
     }
-    if (node.cameraIndex >= 0) {
+    if (const auto* camera = object.tryGetComponent<scene::CameraComponent>(); camera != nullptr && camera->cameraIndex >= 0) {
         tags += "C";
-        tags += std::to_string(node.cameraIndex);
+        tags += std::to_string(camera->cameraIndex);
         tags += " ";
     }
-    if (node.lightIndex >= 0) {
+    if (const auto* light = object.tryGetComponent<scene::LightComponent>(); light != nullptr && light->lightIndex >= 0) {
         tags += "L";
-        tags += std::to_string(node.lightIndex);
+        tags += std::to_string(light->lightIndex);
         tags += " ";
     }
-    if (!node.visible) {
+    if (!object.getComponent<scene::VisibilityComponent>().worldVisible) {
         tags += "hidden";
     }
 
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
 
-    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
-    const bool leaf = node.children.empty();
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth |
+        (sourceMount ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_OpenOnArrow);
+    const bool hasPrimitives = mesh != nullptr && !mesh->renderNodeIndices.empty();
+    const auto decals = decalChildren.find(entity);
+    const bool leaf = relationship.children.empty() && !hasPrimitives && decals == decalChildren.end();
     if (leaf) {
         flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
     }
-    if (selectedNodeIndex() == nodeIndex) {
+    if (sceneSelection_.object == entity && sceneSelection_.sceneLifetimeRevision == graph.lifetimeRevision() &&
+        sceneSelection_.renderNodeIndex == scene::kInvalidSceneIndex) {
         flags |= ImGuiTreeNodeFlags_Selected;
     }
 
+    const bool reveal = !revealPath.empty() && revealPath.back() == entity;
+    if (reveal) { ImGui::SetNextItemOpen(true); }
+    const bool probeRow = gizmoSmokeInput_ && gizmoSmokeInput_->sceneTreeProbe == entity &&
+        gizmoSmokeInput_->sceneTreePrimitiveProbe == scene::kInvalidSceneIndex && !gizmoSmokeInput_->sceneTreeDecalProbe;
+    if (probeRow) { gizmoSmokeInput_->sceneTreeDepth = ImGui::GetCurrentWindow()->DC.TreeDepth; }
     const bool open = ImGui::TreeNodeEx(
-        reinterpret_cast<void*>(static_cast<intptr_t>(nodeIndex)),
+        reinterpret_cast<void*>(static_cast<intptr_t>(entity)),
         flags,
         "%s",
         label.c_str());
-    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+    if (probeRow) {
+        const auto min = ImGui::GetItemRectMin();
+        const auto max = ImGui::GetItemRectMax();
+        gizmoSmokeInput_->sceneTreeRow = std::array{
+            min.x + ImGui::GetTreeNodeToLabelSpacing() + 2.0f, (min.y + max.y) * 0.5f};
+    }
+    if (sourceNode != nullptr && ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
         sceneSelection_ = SceneSelection{
             .type = SceneSelectionType::Node,
-            .object = scene_.objectForNode(nodeIndex).entity(),
-            .sceneLifetimeRevision = scene_.sceneGraph().lifetimeRevision(),
-            .index = nodeIndex,
-            .nodeIndex = nodeIndex,
-            .meshIndex = node.meshIndex,
+            .object = entity,
+            .sceneLifetimeRevision = graph.lifetimeRevision(),
+            .index = sourceNode->nodeIndex,
+            .nodeIndex = sourceNode->nodeIndex,
+            .meshIndex = mesh != nullptr ? mesh->meshIndex : scene::kInvalidSceneIndex,
         };
     }
     if (ImGui::IsItemHovered()) {
-        const float3 translation(node.worldMatrix.a03, node.worldMatrix.a13, node.worldMatrix.a23);
+        const auto& world = object.getComponent<scene::TransformComponent>().worldMatrix;
+        const float3 translation(world.a03, world.a13, world.a23);
+        const char* parentName = relationship.parent != scene::kNullSceneEntity
+            ? graph.object(relationship.parent).getComponent<scene::TagComponent>().name.c_str()
+            : "Scene";
         ImGui::SetTooltip(
-            "Node %d\nParent: %d\nWorld translation: %s",
-            nodeIndex,
-            node.parent,
+            "Parent: %s\nWorld translation: %s",
+            parentName,
             scene::formatVec3(translation).c_str());
     }
     ImGui::TableNextColumn();
@@ -5398,11 +5548,98 @@ void EditorApplication::drawSceneNode(int32_t nodeIndex)
     }
 
     if (open && !leaf) {
-        for (const int32_t child : node.children) {
-            drawSceneNode(child);
+        const auto childRevealPath = reveal ? revealPath.first(revealPath.size() - 1) : std::span<const scene::SceneEntity>{};
+        if (hasPrimitives) {
+            for (const int32_t renderNodeIndex : mesh->renderNodeIndices) {
+                drawScenePrimitive(renderNodeIndex);
+            }
+        }
+        for (const scene::SceneEntity child : relationship.children) {
+            drawSceneNode(child, childRevealPath, decalChildren);
+        }
+        if (decals != decalChildren.end()) {
+            for (const auto* decal : decals->second) { drawSceneDecal(*decal); }
         }
         ImGui::TreePop();
     }
+}
+
+void EditorApplication::drawScenePrimitive(int32_t renderNodeIndex)
+{
+    const auto& instance = scene_.renderNodes()[renderNodeIndex];
+    const auto& primitive = scene_.renderPrimitives()[instance.renderPrimitiveIndex];
+    const std::string label = "Primitive " + std::to_string(primitive.primitiveIndex);
+    const auto lifetime = scene_.sceneGraph().lifetimeRevision();
+    ImGui::PushID(renderNodeIndex);
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    const bool selected = sceneSelection_.sceneLifetimeRevision == lifetime &&
+        sceneSelection_.renderNodeIndex == renderNodeIndex;
+    const auto flags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen |
+        ImGuiTreeNodeFlags_SpanAvailWidth | (selected ? ImGuiTreeNodeFlags_Selected : 0);
+    ImGui::TreeNodeEx("PrimitiveInstance", flags, "%s", label.c_str());
+    if (gizmoSmokeInput_ && gizmoSmokeInput_->sceneTreePrimitiveProbe == renderNodeIndex) {
+        const auto min = ImGui::GetItemRectMin();
+        const auto max = ImGui::GetItemRectMax();
+        gizmoSmokeInput_->sceneTreeDepth = ImGui::GetCurrentWindow()->DC.TreeDepth;
+        gizmoSmokeInput_->sceneTreeRow = std::array{
+            min.x + ImGui::GetTreeNodeToLabelSpacing() + 2.0f, (min.y + max.y) * 0.5f};
+    }
+    if (ImGui::IsItemClicked()) {
+        sceneSelection_ = SceneSelection{
+            .type = SceneSelectionType::RenderPrimitive,
+            .object = instance.object,
+            .sceneLifetimeRevision = lifetime,
+            .index = instance.renderPrimitiveIndex,
+            .nodeIndex = instance.nodeIndex,
+            .meshIndex = primitive.meshIndex,
+            .primitiveIndex = primitive.primitiveIndex,
+            .renderNodeIndex = renderNodeIndex,
+        };
+        gizmoOperation_ = GizmoOperation::Translate;
+    }
+    ImGui::SetItemTooltip("%s", primitive.name.c_str());
+    ImGui::TableNextColumn();
+    if (instance.materialIndex >= 0) {
+        const auto& material = scene_.materials()[instance.materialIndex].name;
+        ImGui::TextUnformatted(material.c_str());
+        ImGui::SetItemTooltip("%s", material.c_str());
+    }
+    ImGui::PopID();
+}
+
+void EditorApplication::drawSceneDecal(const scene::RenderDecal& decal)
+{
+    const auto lifetime = scene_.sceneGraph().lifetimeRevision();
+    const auto name = scene_.decalName(decal.id);
+    const auto label = name.empty() ? "Decal #" + std::to_string(decal.id) : std::string(name);
+    const bool selected = sceneSelection_.sceneLifetimeRevision == lifetime && sceneSelection_.decalId == decal.id;
+    const auto flags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen |
+        ImGuiTreeNodeFlags_SpanAvailWidth | (selected ? ImGuiTreeNodeFlags_Selected : 0);
+    ImGui::PushID("SceneDecal");
+    ImGui::PushID(static_cast<int>(decal.id));
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TreeNodeEx("Projector", flags, "%s", label.c_str());
+    if (gizmoSmokeInput_ && gizmoSmokeInput_->sceneTreeDecalProbe == decal.id) {
+        const auto min = ImGui::GetItemRectMin();
+        const auto max = ImGui::GetItemRectMax();
+        gizmoSmokeInput_->sceneTreeDepth = ImGui::GetCurrentWindow()->DC.TreeDepth;
+        gizmoSmokeInput_->sceneTreeRow = std::array{
+            min.x + ImGui::GetTreeNodeToLabelSpacing() + 2.0f, (min.y + max.y) * 0.5f};
+    }
+    if (ImGui::IsItemClicked()) {
+        sceneSelection_ = SceneSelection{
+            .type = SceneSelectionType::Decal,
+            .sceneLifetimeRevision = lifetime,
+            .decalId = decal.id,
+        };
+        gizmoOperation_ = GizmoOperation::Translate;
+    }
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(decal.enabled ? "Decal" : "Decal (disabled)");
+    ImGui::PopID();
+    ImGui::PopID();
 }
 
 scene::ConstSceneObject EditorApplication::selectedSceneObject() const
@@ -5416,6 +5653,29 @@ scene::ConstSceneObject EditorApplication::selectedSceneObject() const
     return object && object.hasComponent<scene::ActiveSceneComponent>()
         ? object
         : scene::ConstSceneObject{};
+}
+
+const scene::RenderNode* EditorApplication::selectedRenderNode() const
+{
+    const auto index = sceneSelection_.renderNodeIndex;
+    if (index < 0 || static_cast<size_t>(index) >= scene_.renderNodes().size() ||
+        sceneSelection_.sceneLifetimeRevision != scene_.sceneGraph().lifetimeRevision()) {
+        return nullptr;
+    }
+    return &scene_.renderNodes()[index];
+}
+
+const scene::RenderDecal* EditorApplication::findDecal(uint32_t id) const
+{
+    const auto& decals = scene_.decals();
+    const auto found = std::ranges::find(decals, id, &scene::RenderDecal::id);
+    return found != decals.end() ? &*found : nullptr;
+}
+
+const scene::RenderDecal* EditorApplication::selectedDecal() const
+{
+    return sceneSelection_.decalId && sceneSelection_.sceneLifetimeRevision == scene_.sceneGraph().lifetimeRevision()
+        ? findDecal(*sceneSelection_.decalId) : nullptr;
 }
 
 int32_t EditorApplication::selectedNodeIndex() const
@@ -5467,10 +5727,33 @@ void EditorApplication::notifyScenePropertiesChanged()
     viewportPreviewNeedsRender_ = true;
 }
 
+void EditorApplication::notifyDecalsChanged()
+{
+    renderWorld_.notifySceneChanged(render::RenderChangeBits::InvalidateTemporalHistory);
+    historyResources_.invalidateAll();
+    historyFrameIndex_ = 0;
+    viewportPreviewNeedsRender_ = true;
+}
+
+bool EditorApplication::setDecalWorldMatrix(const scene::RenderDecal& decal, const float4x4& worldMatrix)
+{
+    if (scene::matrixNearlyEqual(decal.worldFromDecal, worldMatrix)) { return true; }
+    auto edited = decal;
+    edited.worldFromDecal = worldMatrix;
+    if (!scene_.setDecal(edited)) { return false; }
+    notifyDecalsChanged();
+    return true;
+}
+
 bool EditorApplication::setSelectedObjectWorldMatrix(
     const float4x4& worldMatrix,
     std::string& reason)
 {
+    if (const auto* decal = selectedDecal()) {
+        if (setDecalWorldMatrix(*decal, worldMatrix)) { return true; }
+        reason = "The decal requires a finite, invertible projector transform.";
+        return false;
+    }
     const scene::ConstSceneObject object = selectedSceneObject();
     if (!object || !matrixIsFinite(worldMatrix)) {
         reason = "Selected transform is invalid.";
@@ -5483,6 +5766,16 @@ bool EditorApplication::setSelectedObjectWorldMatrix(
     if (!object.hasComponent<scene::SourceNodeComponent>()) {
         reason = "Runtime-only scene objects are read-only until document serialization is available.";
         return false;
+    }
+    if (const auto* instance = selectedRenderNode()) {
+        if (scene::matrixNearlyEqual(instance->worldMatrix, worldMatrix)) { return true; }
+        if (!scene_.setRenderNodeWorldPosition(sceneSelection_.renderNodeIndex,
+                float3(worldMatrix.a03, worldMatrix.a13, worldMatrix.a23))) {
+            reason = "The primitive position could not be converted through its owning node.";
+            return false;
+        }
+        notifySceneTransformChanged(true);
+        return true;
     }
     const scene::TransformComponent* transform =
         object.tryGetComponent<scene::TransformComponent>();
@@ -5537,14 +5830,28 @@ void EditorApplication::pushSceneEditCommand(
         const auto* afterMaterial = std::get_if<MaterialEditValue>(&after);
         valuesEqual = afterMaterial != nullptr && beforeMaterial->materialIndex == afterMaterial->materialIndex &&
             scene::materialPropertiesEqual(beforeMaterial->properties, afterMaterial->properties);
+    } else if (const auto* beforeMove = std::get_if<PrimitiveMoveEditValue>(&before)) {
+        const auto* afterMove = std::get_if<PrimitiveMoveEditValue>(&after);
+        valuesEqual = afterMove != nullptr && beforeMove->renderNodeIndex == afterMove->renderNodeIndex &&
+            length(beforeMove->localOffset - afterMove->localOffset) <= 0.000001f;
+    } else if (const auto* beforeDecal = std::get_if<DecalTransformEditValue>(&before)) {
+        const auto* afterDecal = std::get_if<DecalTransformEditValue>(&after);
+        valuesEqual = afterDecal != nullptr && beforeDecal->id == afterDecal->id &&
+            scene::matrixNearlyEqual(beforeDecal->worldMatrix, afterDecal->worldMatrix);
     }
     const auto* beforeMaterial = std::get_if<MaterialEditValue>(&before);
     const auto* afterMaterial = std::get_if<MaterialEditValue>(&after);
-    const bool validTarget = beforeMaterial != nullptr
-        ? afterMaterial != nullptr && beforeMaterial->materialIndex == afterMaterial->materialIndex &&
+    bool validTarget;
+    if (beforeMaterial) {
+        validTarget = afterMaterial != nullptr && beforeMaterial->materialIndex == afterMaterial->materialIndex &&
             beforeMaterial->materialIndex >= 0 &&
-            static_cast<size_t>(beforeMaterial->materialIndex) < scene_.materials().size()
-        : object != scene::kNullSceneEntity && scene_.sceneGraph().object(object);
+            static_cast<size_t>(beforeMaterial->materialIndex) < scene_.materials().size();
+    } else if (const auto* beforeDecal = std::get_if<DecalTransformEditValue>(&before)) {
+        const auto* afterDecal = std::get_if<DecalTransformEditValue>(&after);
+        validTarget = afterDecal && afterDecal->id == beforeDecal->id && findDecal(beforeDecal->id);
+    } else {
+        validTarget = object != scene::kNullSceneEntity && scene_.sceneGraph().object(object);
+    }
     if (!validTarget ||
         sceneLifetimeRevision != scene_.sceneGraph().lifetimeRevision() ||
         valuesEqual) {
@@ -5662,6 +5969,15 @@ bool EditorApplication::applySceneEditValue(
     scene::SceneEntity object,
     const SceneEditValue& value)
 {
+    if (const auto* transform = std::get_if<DecalTransformEditValue>(&value)) {
+        const auto* decal = findDecal(transform->id);
+        return decal && setDecalWorldMatrix(*decal, transform->worldMatrix);
+    }
+    if (const auto* move = std::get_if<PrimitiveMoveEditValue>(&value)) {
+        if (!scene_.setRenderNodeLocalOffset(move->renderNodeIndex, move->localOffset)) { return false; }
+        notifySceneTransformChanged(true);
+        return true;
+    }
     if (const auto* material = std::get_if<MaterialEditValue>(&value)) {
         if (material->materialIndex < 0 ||
             static_cast<size_t>(material->materialIndex) >= scene_.materials().size()) {
@@ -5712,31 +6028,36 @@ void EditorApplication::updateSceneDirtyState()
     scene_.setDirty(sceneNonTransformDirty_ || transformDirty);
 }
 
+void EditorApplication::finishViewportGizmoTransaction()
+{
+    if (gizmoWasUsing_ && gizmoEditingSceneLifetime_ == scene_.sceneGraph().lifetimeRevision()) {
+        const auto editedObject = scene_.sceneGraph().object(gizmoEditingObject_);
+        if (const auto* move = std::get_if<PrimitiveMoveEditValue>(&gizmoStartValue_)) {
+            const auto& instance = scene_.renderNodes()[move->renderNodeIndex];
+            pushSceneEditCommand(gizmoEditingObject_, gizmoEditingSceneLifetime_, gizmoStartValue_,
+                PrimitiveMoveEditValue{move->renderNodeIndex, instance.localOffset});
+        } else if (const auto* before = std::get_if<DecalTransformEditValue>(&gizmoStartValue_)) {
+            if (const auto* decal = findDecal(before->id)) {
+                pushSceneEditCommand(scene::kNullSceneEntity, gizmoEditingSceneLifetime_, gizmoStartValue_,
+                    DecalTransformEditValue{decal->id, decal->worldFromDecal});
+            }
+        } else if (const auto* transform = editedObject.tryGetComponent<scene::TransformComponent>()) {
+            pushSceneEditCommand(gizmoEditingObject_, gizmoEditingSceneLifetime_, gizmoStartValue_, transform->localMatrix);
+        }
+    }
+    if (ImGuizmo::IsUsingAny()) {
+        ImGuizmo::Enable(false);
+        ImGuizmo::Enable(true);
+    }
+    gizmoWasUsing_ = false;
+    gizmoEditingObject_ = scene::kNullSceneEntity;
+    gizmoEditingSceneLifetime_ = 0;
+    viewportGizmoCapturingMouse_ = false;
+}
+
 void EditorApplication::finishActiveTransformTransactions()
 {
-    if (gizmoWasUsing_) {
-        const scene::ConstSceneObject editedObject =
-            gizmoEditingSceneLifetime_ == scene_.sceneGraph().lifetimeRevision()
-            ? scene_.sceneGraph().object(gizmoEditingObject_)
-            : scene::ConstSceneObject{};
-        if (const scene::TransformComponent* transform =
-                editedObject.tryGetComponent<scene::TransformComponent>()) {
-            pushTransformCommand(
-                gizmoEditingObject_,
-                gizmoEditingSceneLifetime_,
-                gizmoStartLocalMatrix_,
-                transform->localMatrix);
-        }
-        if (ImGuizmo::IsUsingAny()) {
-            ImGuizmo::Enable(false);
-            ImGuizmo::Enable(true);
-        }
-        gizmoWasUsing_ = false;
-        gizmoEditingObject_ = scene::kNullSceneEntity;
-        gizmoEditingSceneLifetime_ = 0;
-        viewportGizmoCapturingMouse_ = false;
-    }
-
+    if (gizmoWasUsing_) { finishViewportGizmoTransaction(); }
     if (inspectorTransformEditing_) {
         const scene::ConstSceneObject editedObject =
             inspectorEditingSceneLifetime_ == scene_.sceneGraph().lifetimeRevision()
@@ -6537,62 +6858,49 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
 {
     viewportGizmoCapturingMouse_ = false;
     const scene::ConstSceneObject object = selectedSceneObject();
-
-    const auto finishInterruptedTransaction = [this]() {
-        if (gizmoWasUsing_ &&
-            gizmoEditingSceneLifetime_ == scene_.sceneGraph().lifetimeRevision()) {
-            const scene::ConstSceneObject editedObject =
-                scene_.sceneGraph().object(gizmoEditingObject_);
-            if (const scene::TransformComponent* transform =
-                    editedObject.tryGetComponent<scene::TransformComponent>()) {
-                pushTransformCommand(
-                    gizmoEditingObject_,
-                    gizmoEditingSceneLifetime_,
-                    gizmoStartLocalMatrix_,
-                    transform->localMatrix);
-            }
-        }
-        if (ImGuizmo::IsUsingAny()) {
-            ImGuizmo::Enable(false);
-            ImGuizmo::Enable(true);
-        }
-        gizmoWasUsing_ = false;
-        gizmoEditingObject_ = scene::kNullSceneEntity;
-        gizmoEditingSceneLifetime_ = 0;
-    };
+    const auto* instance = selectedRenderNode();
+    const auto* decal = selectedDecal();
+    const auto* editingPrimitive = std::get_if<PrimitiveMoveEditValue>(&gizmoStartValue_);
+    const auto* editingDecal = std::get_if<DecalTransformEditValue>(&gizmoStartValue_);
+    const int32_t editingRenderNodeIndex = editingPrimitive ? editingPrimitive->renderNodeIndex : scene::kInvalidSceneIndex;
 
     if (gizmoWasUsing_ &&
         (gizmoEditingObject_ != object.entity() ||
+            editingRenderNodeIndex != sceneSelection_.renderNodeIndex ||
+            (editingDecal ? sceneSelection_.decalId != editingDecal->id : decal != nullptr) ||
             gizmoEditingSceneLifetime_ != scene_.sceneGraph().lifetimeRevision())) {
-        finishInterruptedTransaction();
+        finishViewportGizmoTransaction();
     }
     if (!viewportInteractionEnabled_ || inspectorTransformEditing_ ||
-        inspectorPropertyEditing_ || !object ||
-        object.hasComponent<scene::GeneratedComponent>() ||
-        !object.hasComponent<scene::SourceNodeComponent>()) {
-        finishInterruptedTransaction();
+        inspectorPropertyEditing_ || (!decal && (!object ||
+            object.hasComponent<scene::GeneratedComponent>() ||
+            !object.hasComponent<scene::SourceNodeComponent>()))) {
+        finishViewportGizmoTransaction();
         return;
     }
 
     const scene::TransformComponent* transform =
         object.tryGetComponent<scene::TransformComponent>();
-    if (transform == nullptr) {
-        finishInterruptedTransaction();
+    if (!decal && transform == nullptr) {
+        finishViewportGizmoTransaction();
         return;
     }
-    const float localDeterminant = affineDeterminant(transform->localMatrix);
-    const bool singular = !matrixIsFinite(transform->localMatrix) ||
-        !std::isfinite(localDeterminant) || std::abs(localDeterminant) <= 0.0000001f;
-    const bool shear = !singular && matrixHasShear(transform->localMatrix);
+    const auto& local = decal ? decal->worldFromDecal : transform->localMatrix;
+    const auto& world = decal ? decal->worldFromDecal : (instance ? instance->worldMatrix : transform->worldMatrix);
+    const float minimumDeterminant = decal ? 0.0f : 0.0000001f;
+    const float localDeterminant = affineDeterminant(local);
+    const bool singular = !matrixIsFinite(local) ||
+        !std::isfinite(localDeterminant) || std::abs(localDeterminant) <= minimumDeterminant;
+    const bool shear = !singular && matrixHasShear(local);
     const bool reflection = !singular && localDeterminant < 0.0f;
-    const float worldDeterminant = affineDeterminant(transform->worldMatrix);
-    const bool worldInvalid = !matrixIsFinite(transform->worldMatrix) ||
-        !std::isfinite(worldDeterminant) || std::abs(worldDeterminant) <= 0.0000001f;
-    const bool worldShear = !worldInvalid && matrixHasShear(transform->worldMatrix);
+    const float worldDeterminant = affineDeterminant(world);
+    const bool worldInvalid = !matrixIsFinite(world) ||
+        !std::isfinite(worldDeterminant) || std::abs(worldDeterminant) <= minimumDeterminant;
+    const bool worldShear = !worldInvalid && matrixHasShear(world);
     const bool worldReflection = !worldInvalid && worldDeterminant < 0.0f;
     bool parentSingular = false;
     bool parentDistortsLinearTransform = false;
-    if (!object.hasComponent<scene::RootComponent>()) {
+    if (object && !object.hasComponent<scene::RootComponent>()) {
         if (const scene::RelationshipComponent* relationship =
             object.tryGetComponent<scene::RelationshipComponent>();
             relationship != nullptr && relationship->parent != scene::kNullSceneEntity) {
@@ -6613,7 +6921,8 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
             }
         }
     }
-    const bool editsLinearTransform = gizmoOperation_ != GizmoOperation::Translate;
+    const auto gizmoOperation = instance ? GizmoOperation::Translate : gizmoOperation_;
+    const bool editsLinearTransform = gizmoOperation != GizmoOperation::Translate;
     const bool unsafeLinearEdit = editsLinearTransform &&
         (shear || reflection || worldShear || worldReflection ||
             parentDistortsLinearTransform);
@@ -6630,7 +6939,7 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
             ImVec2(min.x + 10.0f, max.y - 28.0f * mainScale_),
             IM_COL32(255, 190, 90, 255),
             reason);
-        finishInterruptedTransaction();
+        finishViewportGizmoTransaction();
         return;
     }
 
@@ -6640,11 +6949,16 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
         properties["camera"],
         static_cast<float>(viewportView_.renderWidth(viewportTextureWidth_)),
         static_cast<float>(viewportView_.renderHeight(viewportTextureHeight_)));
-    const auto& world = transform->worldMatrix;
-    const float3 pivot(world.a03, world.a13, world.a23);
+    const float3 origin(world.a03, world.a13, world.a23);
+    float3 pivot = origin;
+    if (instance) {
+        const auto& primitive = scene_.renderPrimitives()[instance->renderPrimitiveIndex];
+        const auto center = world * float4(primitive.localBounds.center(), 1.0f);
+        pivot = float3(center.x, center.y, center.z);
+    }
     // ImGuizmo's clip-Z check does not reject pivots behind a reversed-Z view.
     if (!isWithinViewportDepth(-(matrices.view * float4(pivot, 1.0f)).z, matrices)) {
-        finishInterruptedTransaction();
+        finishViewportGizmoTransaction();
         return;
     }
     if (gizmoSmokeInput_) {
@@ -6659,25 +6973,29 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
     ImGuizmo::SetOrthographic(matrices.orthographic);
 
     ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
-    if (gizmoOperation_ == GizmoOperation::Rotate) {
+    if (gizmoOperation == GizmoOperation::Rotate) {
         operation = ImGuizmo::ROTATE;
-    } else if (gizmoOperation_ == GizmoOperation::Scale) {
+    } else if (gizmoOperation == GizmoOperation::Scale) {
         operation = ImGuizmo::SCALE;
     }
-    const ImGuizmo::MODE mode = gizmoOperation_ == GizmoOperation::Scale || gizmoLocal_
+    const ImGuizmo::MODE mode = gizmoOperation == GizmoOperation::Scale || gizmoLocal_
         ? ImGuizmo::LOCAL
         : ImGuizmo::WORLD;
     const bool useSnap = snapEnabled_ || ImGui::GetIO().KeyCtrl;
-    const float step = gizmoOperation_ == GizmoOperation::Translate
+    const float step = gizmoOperation == GizmoOperation::Translate
         ? translateSnap_
-        : (gizmoOperation_ == GizmoOperation::Rotate ? rotateSnap_ : scaleSnap_);
+        : (gizmoOperation == GizmoOperation::Rotate ? rotateSnap_ : scaleSnap_);
     const float snap[3] = {step, step, step};
-    float4x4 editedWorld = transform->worldMatrix;
-    const float4x4 localBeforeManipulate = transform->localMatrix;
+    float4x4 editedWorld = world;
+    editedWorld.a03 = pivot.x;
+    editedWorld.a13 = pivot.y;
+    editedWorld.a23 = pivot.z;
     const bool cameraDragging = viewportCameraDragButton_ != kNoViewportCameraDragButton;
     if (cameraDragging) { ImGuizmo::Enable(false); }
     const int firstVertex = drawList->VtxBuffer.Size;
-    ImGuizmo::PushID(static_cast<int>(object.entity()));
+    if (decal) { ImGuizmo::PushID("DecalProjector"); }
+    ImGuizmo::PushID(decal ? static_cast<int>(decal->id) : static_cast<int>(object.entity()));
+    if (instance) { ImGuizmo::PushID(sceneSelection_.renderNodeIndex); }
     const bool manipulated = ImGuizmo::Manipulate(
         matrices.view.a,
         matrices.projection.a,
@@ -6688,38 +7006,92 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
         useSnap ? snap : nullptr);
     const bool usingNow = ImGuizmo::IsUsing();
     const bool overNow = !cameraDragging && ImGuizmo::IsOver();
+    if (instance) { ImGuizmo::PopID(); }
     ImGuizmo::PopID();
+    if (decal) { ImGuizmo::PopID(); }
     if (cameraDragging) { ImGuizmo::Enable(true); }
     if (gizmoSmokeInput_) { gizmoSmokeInput_->drewGizmo = drawList->VtxBuffer.Size != firstVertex; }
-    viewportGizmoCapturingMouse_ = usingNow || overNow || ImGuizmo::IsUsingAny();
     if (usingNow && !gizmoWasUsing_) {
-        gizmoStartLocalMatrix_ = localBeforeManipulate;
+        if (decal) {
+            gizmoStartValue_ = DecalTransformEditValue{decal->id, decal->worldFromDecal};
+        } else if (instance) {
+            gizmoStartValue_ = PrimitiveMoveEditValue{sceneSelection_.renderNodeIndex, instance->localOffset};
+        } else {
+            gizmoStartValue_ = transform->localMatrix;
+        }
         gizmoEditingObject_ = object.entity();
         gizmoEditingSceneLifetime_ = scene_.sceneGraph().lifetimeRevision();
     }
     if (manipulated) {
+        if (instance) {
+            editedWorld.a03 = origin.x + (editedWorld.a03 - pivot.x);
+            editedWorld.a13 = origin.y + (editedWorld.a13 - pivot.y);
+            editedWorld.a23 = origin.z + (editedWorld.a23 - pivot.z);
+        }
         std::string reason;
         if (!setSelectedObjectWorldMatrix(editedWorld, reason) && !reason.empty()) {
             sceneStatus_ = reason;
         }
     }
-    if (!usingNow && gizmoWasUsing_) {
-        const scene::ConstSceneObject editedObject =
-            gizmoEditingSceneLifetime_ == scene_.sceneGraph().lifetimeRevision()
-            ? scene_.sceneGraph().object(gizmoEditingObject_)
-            : scene::ConstSceneObject{};
-        if (const scene::TransformComponent* editedTransform =
-                editedObject.tryGetComponent<scene::TransformComponent>()) {
-            pushTransformCommand(
-                gizmoEditingObject_,
-                gizmoEditingSceneLifetime_,
-                gizmoStartLocalMatrix_,
-                editedTransform->localMatrix);
-        }
-        gizmoEditingObject_ = scene::kNullSceneEntity;
-        gizmoEditingSceneLifetime_ = 0;
-    }
+    if (!usingNow && gizmoWasUsing_) { finishViewportGizmoTransaction(); }
+    viewportGizmoCapturingMouse_ = usingNow || overNow || ImGuizmo::IsUsingAny();
     gizmoWasUsing_ = usingNow;
+}
+
+void EditorApplication::drawViewportGizmoBounds(const ImVec2& min, const ImVec2& max)
+{
+    if (!gizmoBoundsVisible_ || !viewportInteractionEnabled_) { return; }
+
+    scene::Bounds bounds;
+    float4x4 worldFromBounds = float4x4::Identity();
+    ImU32 color = IM_COL32(124, 209, 255, 235);
+    if (const auto* decal = selectedDecal()) {
+        bounds = {.min = float3(-0.5f), .max = float3(0.5f), .valid = true};
+        worldFromBounds = decal->worldFromDecal;
+        color = IM_COL32(255, 207, 92, 240);
+    } else if (const auto* instance = selectedRenderNode()) {
+        bounds = scene_.renderPrimitives()[instance->renderPrimitiveIndex].localBounds;
+        worldFromBounds = instance->worldMatrix;
+    } else if (const auto object = selectedSceneObject()) {
+        includeSceneObjectBounds(scene_, object, bounds);
+    }
+    if (!bounds.valid) { return; }
+
+    auto properties = viewportCameraProperties();
+    ensureCameraProperties(properties, scene_.bounds());
+    const auto matrices = viewportCameraMatrices(properties["camera"],
+        static_cast<float>(viewportView_.renderWidth(viewportTextureWidth_)),
+        static_cast<float>(viewportView_.renderHeight(viewportTextureHeight_)));
+    const auto clipFromBounds = matrices.projection * matrices.view * worldFromBounds;
+    std::array<float4, 8> corners;
+    for (uint32_t i = 0; i < corners.size(); ++i) {
+        corners[i] = clipFromBounds * boundsCorner(bounds, i);
+    }
+
+    constexpr std::array<std::array<uint32_t, 2>, 12> edges{{
+        {0, 1}, {2, 3}, {4, 5}, {6, 7},
+        {0, 2}, {1, 3}, {4, 6}, {5, 7},
+        {0, 4}, {1, 5}, {2, 6}, {3, 7},
+    }};
+    const auto project = [&](const float4& clip) {
+        return viewportPosition(std::clamp(clip.x / clip.w, -1.0f, 1.0f),
+            std::clamp(clip.y / clip.w, -1.0f, 1.0f), min, max);
+    };
+    auto* drawList = ImGui::GetWindowDrawList();
+    drawList->PushClipRect(min, max, true);
+    for (const auto& [first, second] : edges) {
+        auto start = corners[first];
+        auto end = corners[second];
+        if (!clipViewportEdge(start, end)) { continue; }
+        const auto a = project(start);
+        const auto b = project(end);
+        if (!std::isfinite(a.x) || !std::isfinite(a.y) || !std::isfinite(b.x) || !std::isfinite(b.y) ||
+            (a.x == b.x && a.y == b.y)) { continue; }
+        drawList->AddLine(a, b, IM_COL32(19, 22, 29, 200), 3.5f * mainScale_);
+        drawList->AddLine(a, b, color, 1.5f * mainScale_);
+        if (gizmoSmokeInput_) { gizmoSmokeInput_->boundsEdges.push_back({a.x, a.y, b.x, b.y}); }
+    }
+    drawList->PopClipRect();
 }
 
 void EditorApplication::drawViewportObjectHandles(const ImVec2& min, const ImVec2& max)
@@ -6801,6 +7173,16 @@ void EditorApplication::drawViewportObjectHandles(const ImVec2& min, const ImVec
     for (const scene::RenderCamera& camera : scene_.cameras()) {
         if (!camera.fallback && camera.visible) {
             drawHandle(camera.object, IM_COL32(92, 184, 255, 230), "C");
+        }
+    }
+    if (selectedObject) {
+        for (const scene::SceneEntity entity : selectedObject.getComponent<scene::RelationshipComponent>().children) {
+            const auto child = scene_.sceneGraph().object(entity);
+            if (child.hasComponent<scene::SourceNodeComponent>() &&
+                !child.hasComponent<scene::CameraComponent>() && !child.hasComponent<scene::LightComponent>() &&
+                child.getComponent<scene::VisibilityComponent>().worldVisible) {
+                drawHandle(entity, IM_COL32(166, 155, 224, 230), child.hasComponent<scene::MeshComponent>() ? "M" : "N");
+            }
         }
     }
 }
@@ -7015,6 +7397,7 @@ void EditorApplication::drawViewportPanel()
     }
     ImGui::Begin("Viewport");
 
+    const bool primitiveSelected = selectedRenderNode() != nullptr;
     const bool gizmoTransactionActive = inspectorTransformEditing_ ||
         inspectorPropertyEditing_ || gizmoWasUsing_ ||
         ImGuizmo::IsUsingAny();
@@ -7033,14 +7416,19 @@ void EditorApplication::drawViewportPanel()
     };
     drawToolButton("W Move", GizmoOperation::Translate);
     ImGui::SameLine();
+    ImGui::BeginDisabled(primitiveSelected);
     drawToolButton("E Rotate", GizmoOperation::Rotate);
     ImGui::SameLine();
     drawToolButton("R Scale", GizmoOperation::Scale);
+    ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button(gizmoLocal_ ? "Local" : "World")) {
         gizmoLocal_ = !gizmoLocal_;
     }
     ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::Checkbox("Bounds", &gizmoBoundsVisible_);
+    ImGui::SetItemTooltip("Show the selected mesh bounds or decal projection volume.");
     ImGui::SameLine();
     ImGui::Checkbox("Snap", &snapEnabled_);
     ImGui::SameLine();
@@ -7222,6 +7610,7 @@ void EditorApplication::drawViewportPanel()
         handleViewportCameraControls(min, max);
         drawViewportObjectHandles(min, max);
         drawViewportGizmo(min, max);
+        drawViewportGizmoBounds(min, max);
     }
 
     if (loadingScene) {
@@ -7273,9 +7662,9 @@ void EditorApplication::drawViewportPanel()
         !cameraGestureActive && !transformEditing) {
         if (ImGui::IsKeyPressed(ImGuiKey_W, false)) {
             gizmoOperation_ = GizmoOperation::Translate;
-        } else if (ImGui::IsKeyPressed(ImGuiKey_E, false)) {
+        } else if (!primitiveSelected && ImGui::IsKeyPressed(ImGuiKey_E, false)) {
             gizmoOperation_ = GizmoOperation::Rotate;
-        } else if (ImGui::IsKeyPressed(ImGuiKey_R, false)) {
+        } else if (!primitiveSelected && ImGui::IsKeyPressed(ImGuiKey_R, false)) {
             gizmoOperation_ = GizmoOperation::Scale;
         } else if (ImGui::IsKeyPressed(ImGuiKey_X, false)) {
             gizmoLocal_ = !gizmoLocal_;

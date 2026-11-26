@@ -227,6 +227,7 @@ struct RenderNode {
     float4x4 worldMatrix = float4x4::Identity();
     uint64_t transformRevision = 0;
     bool visible = true;
+    float3 localOffset = float3(0.0f, 0.0f, 0.0f); // In the owning scene node's local space.
 };
 
 struct RenderMaterial {
@@ -442,6 +443,8 @@ public:
     void clear();
     bool setObjectLocalMatrix(SceneEntity object, const float4x4& localMatrix);
     bool setObjectWorldMatrix(SceneEntity object, const float4x4& worldMatrix);
+    bool setRenderNodeLocalOffset(int32_t renderNodeIndex, const float3& localOffset);
+    bool setRenderNodeWorldPosition(int32_t renderNodeIndex, const float3& worldPosition);
     bool setObjectVisible(SceneEntity object, bool visible);
     bool setObjectCameraProperties(SceneEntity object, const CameraProperties& properties);
     bool setObjectLightProperties(SceneEntity object, const LightProperties& properties);

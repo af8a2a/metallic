@@ -20,7 +20,9 @@ std::vector<int32_t> EditorApplication::selectedMaterialIndices() const
     if (sceneSelection_.type == SceneSelectionType::Material) {
         add(sceneSelection_.index);
     } else if (sceneSelection_.type == SceneSelectionType::RenderPrimitive) {
-        if (sceneSelection_.index >= 0 &&
+        if (const auto* instance = selectedRenderNode()) {
+            add(instance->materialIndex);
+        } else if (sceneSelection_.index >= 0 &&
             static_cast<size_t>(sceneSelection_.index) < scene_.renderPrimitives().size()) {
             add(scene_.renderPrimitives()[sceneSelection_.index].materialIndex);
         }

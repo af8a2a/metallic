@@ -612,13 +612,21 @@ bool SceneGraph::setWorldMatrix(SceneEntity objectEntity, const float4x4& worldM
         return false;
     }
 
-    const float determinant = affineDeterminant(parentWorldMatrix);
+    if (!tryInvertAffineMatrix(parentWorldMatrix)) {
+        return false;
+    }
+    const float4x4 localMatrix = parentWorldMatrix * worldMatrix;
+    return setLocalMatrix(objectEntity, localMatrix);
+}
+
+bool SceneGraph::tryInvertAffineMatrix(float4x4& matrix)
+{
+    const float determinant = affineDeterminant(matrix);
     if (!std::isfinite(determinant) || std::abs(determinant) <= 0.0000001f) {
         return false;
     }
-    parentWorldMatrix.Invert();
-    const float4x4 localMatrix = parentWorldMatrix * worldMatrix;
-    return setLocalMatrix(objectEntity, localMatrix);
+    matrix.Invert();
+    return true;
 }
 
 bool SceneGraph::setCameraProperties(

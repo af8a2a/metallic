@@ -413,10 +413,17 @@ mouse input through the viewport gizmo, checks that the selected object moves
 each frame, and verifies undo and redo. The `[Smoke Gizmo]` line reports mean
 frame wall time, mean scene binding refresh time, and the total number of pass
 recompiles over the measured drag. Set `METALLIC_SMOKE_TEST_SAMPLE` to select
-another Sponza sample. If it has a `Floor Decals` camera, the command tests both
-that camera node and the `Sponza Opaque` mesh node.
-Set `METALLIC_GIZMO_SMOKE_CAPTURE` to an output `.ppm` path to save the final
-editor frame after timing.
+another Sponza sample. The test selects the `Sponza Opaque` mesh and one of its
+primitive instances in the Scene Graph. It checks that dragging the primitive
+preserves the mesh node and sibling placement. It also tests the `Floor Decals`
+camera node when present. Set `METALLIC_GIZMO_SMOKE_CAPTURE` to an output `.ppm`
+path to capture the viewport after the primitive drag and redo.
+
+With `METALLIC_SMOKE_TEST_SAMPLE=sponza-technology-showcase`, the test also
+expands `Floor Decals`, selects the Floor Medallion, and checks that dragging
+its gizmo moves that projector independently. Set
+`METALLIC_DECAL_GIZMO_SMOKE_CAPTURE` to an output `.ppm` path to capture the
+viewport after the decal drag and redo.
 
 ## Release and optimized debugging
 

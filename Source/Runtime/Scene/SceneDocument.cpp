@@ -931,7 +931,7 @@ nlohmann::json serializeMatrix(const float4x4& matrix)
 }
 
 template<typename T>
-bool readDecalInteger(const nlohmann::json& value, T& result)
+bool readInteger(const nlohmann::json& value, T& result)
 {
     if (!value.is_number_integer()) { return false; }
     if (value.is_number_unsigned()) {
@@ -946,6 +946,23 @@ bool readDecalInteger(const nlohmann::json& value, T& result)
     return true;
 }
 
+bool readPrimitiveOffset(const nlohmann::json& value, int32_t& primitiveIndex, float3& localOffset)
+{
+    if (!value.is_object() || !value.contains("primitiveIndex") ||
+        !readInteger(value["primitiveIndex"], primitiveIndex) || primitiveIndex < 0 ||
+        !value.contains("primitiveName") || !value["primitiveName"].is_string()) {
+        return false;
+    }
+    const auto offset = value.find("offset");
+    if (offset == value.end() || !offset->is_array() || offset->size() != 3 ||
+        !std::ranges::all_of(*offset, [](const auto& component) { return component.is_number(); })) {
+        return false;
+    }
+    const auto components = offset->get<std::array<float, 3>>();
+    localOffset = float3(components[0], components[1], components[2]);
+    return true;
+}
+
 bool loadDecals(Scene& scene, const nlohmann::json& values, const std::filesystem::path& directory,
     std::string& reason)
 {
@@ -953,14 +970,14 @@ bool loadDecals(Scene& scene, const nlohmann::json& values, const std::filesyste
     std::unordered_set<uint32_t> ids;
     for (const auto& value : values) {
         RenderDecal decal;
-        if (!value.is_object() || !value.contains("id") || !readDecalInteger(value["id"], decal.id) ||
+        if (!value.is_object() || !value.contains("id") || !readInteger(value["id"], decal.id) ||
             !ids.insert(decal.id).second) {
             reason = "Each world.decals entry requires a unique uint32 id.";
             return false;
         }
         reason = "Invalid world.decals entry " + std::to_string(decal.id) + ".";
-        if ((value.contains("priority") && !readDecalInteger(value["priority"], decal.priority)) ||
-            (value.contains("receiverMask") && !readDecalInteger(value["receiverMask"], decal.receiverMask)) ||
+        if ((value.contains("priority") && !readInteger(value["priority"], decal.priority)) ||
+            (value.contains("receiverMask") && !readInteger(value["receiverMask"], decal.receiverMask)) ||
             (value.contains("enabled") && !value["enabled"].is_boolean())) { return false; }
         decal.enabled = value.value("enabled", true);
         if (value.contains("worldFromDecal") && !readMatrix(value["worldFromDecal"], decal.worldFromDecal, reason)) {
@@ -984,7 +1001,7 @@ bool loadDecals(Scene& scene, const nlohmann::json& values, const std::filesyste
         const auto readTexture = [&](const char* key, int32_t& index, std::filesystem::path& file) {
             if (!value.contains(key)) { return true; }
             const auto& binding = value[key];
-            if (!binding.is_string()) { return readDecalInteger(binding, index); }
+            if (!binding.is_string()) { return readInteger(binding, index); }
             const std::filesystem::path asset = binding.get<std::string>();
             if (asset.empty()) { return false; }
             file = directory / asset;
@@ -1325,6 +1342,7 @@ bool SceneDocument::loadInternalInPlace(
     if (std::filesystem::exists(documentPath_, existsError) &&
         !applySidecar(documentPath_)) {
         Scene::clear();
+        decalPresentations_.clear();
         sourcePath_.clear();
         documentPath_.clear();
         compositionDocument_ = false;
@@ -1340,6 +1358,7 @@ bool SceneDocument::loadInternalInPlace(
             .currentItem = documentPath_.string(),
         })) {
         Scene::clear();
+        decalPresentations_.clear();
         sourcePath_.clear();
         documentPath_.clear();
         compositionDocument_ = false;
@@ -1371,6 +1390,7 @@ void SceneDocument::clear()
     importedLightSources_.clear();
     importedMaterials_.clear();
     materialAssets_.clear();
+    decalPresentations_.clear();
     sidecarLoaded_ = false;
     hasEnvironmentSettings_ = false;
     compositionDocument_ = false;
@@ -1408,6 +1428,20 @@ bool SceneDocument::setObjectWorldMatrix(SceneEntity object, const float4x4& wor
     return true;
 }
 
+bool SceneDocument::setRenderNodeLocalOffset(int32_t renderNodeIndex, const float3& localOffset)
+{
+    if (!Scene::setRenderNodeLocalOffset(renderNodeIndex, localOffset)) { return false; }
+    dirty_ = true;
+    return true;
+}
+
+bool SceneDocument::setRenderNodeWorldPosition(int32_t renderNodeIndex, const float3& worldPosition)
+{
+    if (!Scene::setRenderNodeWorldPosition(renderNodeIndex, worldPosition)) { return false; }
+    dirty_ = true;
+    return true;
+}
+
 bool SceneDocument::setMaterialProperties(int32_t materialIndex, const RenderMaterial& properties)
 {
     if (!Scene::setMaterialProperties(materialIndex, properties)) { return false; }
@@ -1426,8 +1460,21 @@ bool SceneDocument::setDecal(RenderDecal decal, const std::filesystem::path& bas
 bool SceneDocument::removeDecal(uint32_t id)
 {
     if (!Scene::removeDecal(id)) { return false; }
+    decalPresentations_.erase(id);
     dirty_ = true;
     return true;
+}
+
+SceneEntity SceneDocument::decalSceneGraphParent(uint32_t id) const
+{
+    const auto presentation = decalPresentations_.find(id);
+    return presentation == decalPresentations_.end() ? kNullSceneEntity : presentation->second.parent;
+}
+
+std::string_view SceneDocument::decalName(uint32_t id) const
+{
+    const auto presentation = decalPresentations_.find(id);
+    return presentation == decalPresentations_.end() ? std::string_view{} : presentation->second.name;
 }
 
 bool SceneDocument::setMaterialAsset(int32_t materialIndex, std::string_view uri,
@@ -2133,6 +2180,39 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
             }
         }
 
+        if (version >= 3 && overrideValue.contains("primitiveOffsets")) {
+            recognizedOverride = true;
+            const auto& offsets = overrideValue["primitiveOffsets"];
+            const MeshComponent* mesh = object.tryGetComponent<MeshComponent>();
+            if (mesh == nullptr || !offsets.is_array()) {
+                appendWarning(documentWarning_, "Skipped " + nodeDescription + " primitiveOffsets.");
+            } else {
+                for (const auto& offset : offsets) {
+                    int32_t primitiveIndex = kInvalidSceneIndex;
+                    float3 localOffset;
+                    if (!readPrimitiveOffset(offset, primitiveIndex, localOffset)) {
+                        appendWarning(documentWarning_, "Skipped an invalid " + nodeDescription + " primitive offset.");
+                        continue;
+                    }
+                    const auto instance = std::ranges::find_if(mesh->renderNodeIndices, [&](int32_t renderNodeIndex) {
+                        const auto& renderNode = renderNodes()[static_cast<size_t>(renderNodeIndex)];
+                        const auto& primitive = renderPrimitives()[static_cast<size_t>(renderNode.renderPrimitiveIndex)];
+                        return primitive.primitiveIndex == primitiveIndex && offset["primitiveName"] == primitive.name;
+                    });
+                    if (instance == mesh->renderNodeIndices.end()) {
+                        appendWarning(documentWarning_, "Skipped " + nodeDescription + " offset for a changed primitive.");
+                    } else {
+                        const float3& currentOffset = renderNodes()[static_cast<size_t>(*instance)].localOffset;
+                        if ((currentOffset.x != localOffset.x || currentOffset.y != localOffset.y ||
+                             currentOffset.z != localOffset.z) &&
+                            !Scene::setRenderNodeLocalOffset(*instance, localOffset)) {
+                            appendWarning(documentWarning_, "Skipped an invalid " + nodeDescription + " primitive offset.");
+                        }
+                    }
+                }
+            }
+        }
+
         if (version >= 3 && overrideValue.contains("camera")) {
             recognizedOverride = true;
             const CameraComponent* camera = object.tryGetComponent<CameraComponent>();
@@ -2265,10 +2345,38 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
         }
     }
     if (version >= 2 && document.contains("world") && document["world"].contains("decals")) {
+        const auto& values = document["world"]["decals"];
         std::string reason;
-        if (!loadDecals(*this, document["world"]["decals"], path.parent_path(), reason)) {
+        if (!loadDecals(*this, values, path.parent_path(), reason)) {
             documentWarning_ = std::move(reason);
             return false;
+        }
+        for (const auto& value : values) {
+            const auto id = value["id"].get<uint32_t>();
+            DecalPresentation presentation;
+            if (const auto name = value.find("name"); name != value.end()) {
+                if (name->is_string()) {
+                    presentation.name = name->get<std::string>();
+                } else {
+                    appendWarning(documentWarning_, "Skipped invalid name for decal " + std::to_string(id) + '.');
+                }
+            }
+            if (const auto parent = value.find("sceneGraphParent"); parent != value.end()) {
+                if (!parent->is_object() || !parent->contains("sourceId") || !(*parent)["sourceId"].is_string() ||
+                    (*parent)["sourceId"].get_ref<const std::string&>().empty() || !parent->contains("nodeIndex") ||
+                    !readInteger((*parent)["nodeIndex"], presentation.parentNodeIndex) || presentation.parentNodeIndex < 0) {
+                    appendWarning(documentWarning_, "Skipped invalid Scene Graph parent for decal " + std::to_string(id) + '.');
+                } else {
+                    presentation.parentSourceId = (*parent)["sourceId"].get<std::string>();
+                    presentation.parent = objectForSourceNode(presentation.parentSourceId, presentation.parentNodeIndex).entity();
+                    if (presentation.parent == kNullSceneEntity) {
+                        appendWarning(documentWarning_, "Scene Graph parent is unavailable for decal " + std::to_string(id) + '.');
+                    }
+                }
+            }
+            if (!presentation.name.empty() || !presentation.parentSourceId.empty()) {
+                decalPresentations_.emplace(id, std::move(presentation));
+            }
         }
     }
     if (legacySun) {
@@ -2346,6 +2454,22 @@ bool SceneDocument::save(std::string& message)
         }
 
         const ConstSceneObject object = objectForNode(static_cast<int32_t>(nodeIndex));
+        if (const MeshComponent* mesh = object.tryGetComponent<MeshComponent>()) {
+            for (const int32_t renderNodeIndex : mesh->renderNodeIndices) {
+                const auto& instance = renderNodes()[static_cast<size_t>(renderNodeIndex)];
+                const float3& offset = instance.localOffset;
+                if (offset.x == 0.0f && offset.y == 0.0f && offset.z == 0.0f) {
+                    continue;
+                }
+                const auto& primitive = renderPrimitives()[static_cast<size_t>(instance.renderPrimitiveIndex)];
+                nodeOverride["primitiveOffsets"].push_back({
+                    {"primitiveIndex", primitive.primitiveIndex},
+                    {"primitiveName", primitive.name},
+                    {"offset", {offset.x, offset.y, offset.z}},
+                });
+                hasOverride = true;
+            }
+        }
         if (const CameraComponent* camera = object.tryGetComponent<CameraComponent>();
             camera != nullptr && !cameraPropertiesNearlyEqualForDocument(
                 camera->properties,
@@ -2518,7 +2642,17 @@ bool SceneDocument::save(std::string& message)
         document["world"]["environment"]["volumetricFog"] = serializeVolumetricFog(worldEnvironment_.volumetricFog);
     }
     if (!decals().empty()) {
-        document["world"]["decals"] = serializeDecals(*this, documentPath_.parent_path());
+        auto values = serializeDecals(*this, documentPath_.parent_path());
+        for (auto& value : values) {
+            const auto presentation = decalPresentations_.find(value["id"].get<uint32_t>());
+            if (presentation == decalPresentations_.end()) { continue; }
+            const auto& metadata = presentation->second;
+            if (!metadata.name.empty()) { value["name"] = metadata.name; }
+            if (!metadata.parentSourceId.empty()) {
+                value["sceneGraphParent"] = {{"sourceId", metadata.parentSourceId}, {"nodeIndex", metadata.parentNodeIndex}};
+            }
+        }
+        document["world"]["decals"] = std::move(values);
     }
     if (environment_.hasExplicitSourceColorSpace()) {
         document["world"]["environment"]["colorSpace"] = render::colorSpaceName(environment_.sourceColorSpace);

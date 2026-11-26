@@ -756,7 +756,102 @@ bool EditorApplication::runGizmoSmokeTest()
         auto profileFrame = profiler_.beginFrame();
         return waitForFrameSlotBeforeInput() && renderFrame() && viewportPreviewValid_;
     };
-    const auto drag = [&](int32_t nodeIndex, std::string name, bool geometry) {
+    auto& input = *gizmoSmokeInput_;
+    const auto boundsEdgesDrawn = [&](size_t edgeCount) {
+        return input.boundsEdges.size() == edgeCount && std::ranges::all_of(input.boundsEdges, [](const auto& edge) {
+            return std::ranges::all_of(edge, [](float coordinate) { return std::isfinite(coordinate); }) &&
+                (edge[0] != edge[2] || edge[1] != edge[3]);
+        });
+    };
+    const auto boundsMatch = [&](const auto& expected) {
+        return std::ranges::equal(input.boundsEdges, expected, [](const auto& actual, const auto& reference) {
+            return std::ranges::equal(actual, reference, [](float a, float b) { return std::abs(a - b) < 0.05f; });
+        });
+    };
+    const auto treeFrame = [&](bool down, const std::optional<std::array<float, 2>>& pointer = std::nullopt) {
+        auto& io = ImGui::GetIO();
+        if (pointer) { io.AddMousePosEvent((*pointer)[0], (*pointer)[1]); }
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, down);
+        input.sceneTreeRow.reset();
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(40.0f, 40.0f), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(650.0f, 580.0f), ImGuiCond_Always);
+        ImGui::SetNextWindowFocus();
+        ImGui::Begin("Scene Graph interaction test");
+        drawSceneGraphTab();
+        ImGui::End();
+        ImGui::Render();
+    };
+    const auto nodeDepth = [&](const scene::ConstSceneObject& object) {
+        const auto& graph = scene_.sceneGraph();
+        int depth = 1;
+        for (auto parent = object.getComponent<scene::RelationshipComponent>().parent;
+            parent != scene::kNullSceneEntity; parent = graph.object(parent).getComponent<scene::RelationshipComponent>().parent) {
+            ++depth;
+        }
+        return depth;
+    };
+    const auto selectTreeRow = [&](const scene::ConstSceneObject& object, int32_t renderNodeIndex) {
+        const int expectedDepth = nodeDepth(object) + (renderNodeIndex == scene::kInvalidSceneIndex ? 0 : 1);
+        input.sceneTreeProbe = object.entity();
+        input.sceneTreePrimitiveProbe = renderNodeIndex;
+        const auto selection = sceneSelection_;
+        sceneSelection_ = {};
+        treeFrame(false);
+        sceneSelection_ = selection;
+        treeFrame(false);
+        if (!expect(input.sceneTreeRow && input.sceneTreeDepth == expectedDepth,
+                "Scene Graph reveals the selection at its hierarchy depth")) { return false; }
+
+        const auto row = input.sceneTreeRow;
+        sceneSelection_ = {};
+        treeFrame(false, row);
+        treeFrame(true, row);
+        treeFrame(false, row);
+        input.sceneTreeProbe = scene::kNullSceneEntity;
+        input.sceneTreePrimitiveProbe = scene::kInvalidSceneIndex;
+        return expect(selectedSceneObject().entity() == object.entity() && sceneSelection_.renderNodeIndex == renderNodeIndex,
+            "Click the node or primitive in the Scene Graph");
+    };
+    const auto selectShowcaseDecal = [&](const scene::ConstSceneObject& group, uint32_t decalId) {
+        input.sceneTreeProbe = group.entity();
+        const auto selection = sceneSelection_;
+        sceneSelection_ = {};
+        treeFrame(false);
+        sceneSelection_ = selection;
+        treeFrame(false);
+        if (!expect(input.sceneTreeRow && input.sceneTreeDepth == nodeDepth(group),
+                "Find the Floor Decals parent row")) { return false; }
+
+        const auto [labelX, rowY] = *input.sceneTreeRow;
+        const std::array arrow{labelX - 2.0f - ImGui::GetTreeNodeToLabelSpacing() * 0.5f, rowY};
+        input.sceneTreeProbe = scene::kNullSceneEntity;
+        input.sceneTreeDecalProbe = decalId;
+        treeFrame(false, arrow);
+        if (!expect(!input.sceneTreeRow, "Collapsed Floor Decals hides its child rows")) { return false; }
+        treeFrame(true, arrow);
+        treeFrame(false, arrow);
+
+        for (const uint32_t id : {1u, 2u, 3u}) {
+            input.sceneTreeDecalProbe = id;
+            treeFrame(false);
+            if (!expect(input.sceneTreeRow && input.sceneTreeDepth == nodeDepth(group) + 1,
+                    "Expanding Floor Decals reveals each of its three child decals")) { return false; }
+        }
+        input.sceneTreeDecalProbe = decalId;
+        treeFrame(false);
+        const auto row = input.sceneTreeRow;
+        sceneSelection_ = {};
+        treeFrame(false, row);
+        treeFrame(true, row);
+        treeFrame(false, row);
+        input.sceneTreeDecalProbe.reset();
+        const auto* selected = selectedDecal();
+        return expect(selected && selected->id == decalId, "Click the Floor Medallion in the Scene Graph");
+    };
+    const auto drag = [&](int32_t nodeIndex, std::string name, bool geometry,
+                          int32_t renderNodeIndex = scene::kInvalidSceneIndex,
+                          std::optional<uint32_t> decalId = std::nullopt) {
         const scene::ConstSceneObject object = scene_.objectForNode(nodeIndex);
         if (!expect(object && object.hasComponent<scene::TransformComponent>(), "Find editable Sponza node")) {
             return false;
@@ -770,16 +865,50 @@ bool EditorApplication::runGizmoSmokeTest()
             .nodeIndex = nodeIndex,
         };
         const auto& transform = object.getComponent<scene::TransformComponent>();
-        const float3 position(transform.worldMatrix.a03, transform.worldMatrix.a13, transform.worldMatrix.a23);
+        const auto* instance = renderNodeIndex != scene::kInvalidSceneIndex ? &scene_.renderNodes()[renderNodeIndex] : nullptr;
+        const bool checkBounds = decalId || (instance && startupSampleId_ == "sponza-technology-showcase" && startupScenePath_.empty());
+        const auto& decals = scene_.decals();
+        const auto decalIt = decalId ? std::ranges::find(decals, *decalId, &scene::RenderDecal::id) : decals.end();
+        if (decalId && !expect(decalIt != decals.end(), "Find the Floor Medallion decal")) { return false; }
+        const auto originalDecals = decalId ? decals : std::vector<scene::RenderDecal>{};
+        const auto ownerLocal = transform.localMatrix;
+        const auto ownerWorld = transform.worldMatrix;
+        const scene::RenderNode* sibling = nullptr;
+        float4x4 siblingWorld;
+        float3 position(ownerWorld.a03, ownerWorld.a13, ownerWorld.a23);
+        if (instance) {
+            const auto& sections = object.getComponent<scene::MeshComponent>().renderNodeIndices;
+            sibling = &scene_.renderNodes()[sections[0] == renderNodeIndex ? sections[1] : sections[0]];
+            siblingWorld = sibling->worldMatrix;
+            const auto& primitive = scene_.renderPrimitives()[instance->renderPrimitiveIndex];
+            const auto center = instance->worldMatrix * float4(primitive.localBounds.center(), 1.0f);
+            position = float3(center.x, center.y, center.z);
+            sceneSelection_.type = SceneSelectionType::RenderPrimitive;
+            sceneSelection_.index = instance->renderPrimitiveIndex;
+            sceneSelection_.renderNodeIndex = renderNodeIndex;
+        }
+        if (decalId) {
+            const auto& decalWorld = decalIt->worldFromDecal;
+            position = float3(decalWorld.a03, decalWorld.a13, decalWorld.a23);
+        }
+        const auto editedMatrix = [&]() -> const float4x4& {
+            if (decalId) { return decalIt->worldFromDecal; }
+            return instance ? instance->worldMatrix : transform.localMatrix;
+        };
         applySceneCamera(scene::RenderCamera{
-            .eye = position + float3(7.2f, 2.65f, 0.35f),
-            .center = position + float3(0.0f, 0.75f, 0.0f),
+            .eye = position + (instance ? float3(3.2f, 1.5f, 1.6f) :
+                decalId ? float3(3.6f, 2.1f, 0.25f) : float3(7.2f, 2.65f, 0.35f)),
+            .center = position + ((instance || decalId) ? float3(0.0f, 0.0f, 0.0f) : float3(0.0f, 0.75f, 0.0f)),
             .yfov = 1.047197551196598,
             .znear = 0.05,
             .zfar = 100.0,
         });
-        auto& input = *gizmoSmokeInput_;
         input.pointer.reset();
+        if (!render() || !(decalId ? selectShowcaseDecal(object, *decalId) : selectTreeRow(object, renderNodeIndex))) {
+            return false;
+        }
+        const auto parent = scene_.sceneGraph().object(object.getComponent<scene::RelationshipComponent>().parent);
+        const auto parentWorld = parent ? parent.getComponent<scene::TransformComponent>().worldMatrix : float4x4::Identity();
         constexpr uint32_t kReadyFrameLimit = 120;
         constexpr uint32_t kWarmupFrames = 12;
         uint32_t readyFrames = 0;
@@ -790,9 +919,13 @@ bool EditorApplication::runGizmoSmokeTest()
         if (!expect(readyFrames == kWarmupFrames, "Viewport gizmo becomes available after scene streaming")) {
             return false;
         }
+        if (checkBounds && !expect(boundsEdgesDrawn(12), "Selected decal or primitive displays all bounding box edges")) {
+            return false;
+        }
+        const auto beforeBounds = checkBounds ? input.boundsEdges : std::vector<std::array<float, 4>>{};
 
         const auto [centerX, centerY] = *input.center;
-        const auto before = transform.localMatrix;
+        const auto before = editedMatrix();
         input.pointer = std::array{centerX, centerY};
         if (!render() || !expect(viewportGizmoCapturingMouse_, "Pointer hovers the translation handle")) {
             return false;
@@ -805,13 +938,20 @@ bool EditorApplication::runGizmoSmokeTest()
         double bindingMilliseconds = 0.0;
         uint64_t recompiledPasses = 0;
         const auto geometryBefore = scene_.geometryTransformRevision();
+        const auto decalRevisionBefore = scene_.decalRevision();
+        const auto cameraBefore = viewportView_.camera();
         const auto graphGeneration = graphExecutor_->executionStats().graphGeneration;
         for (uint32_t frame = 1; frame <= kDragFrames; ++frame) {
-            const auto previous = transform.localMatrix;
+            const auto previous = editedMatrix();
+            const auto previousBounds = checkBounds ? input.boundsEdges : std::vector<std::array<float, 4>>{};
             input.pointer = std::array{centerX + 2.0f * float(frame), centerY};
             const auto begin = std::chrono::steady_clock::now();
-            if (!render() || !expect(gizmoWasUsing_ && !scene::matrixNearlyEqual(transform.localMatrix, previous),
+            if (!render() || !expect(gizmoWasUsing_ && !scene::matrixNearlyEqual(editedMatrix(), previous),
                     "Each drag frame updates the selected transform")) {
+                return false;
+            }
+            if (checkBounds && !expect(boundsEdgesDrawn(12) && !boundsMatch(previousBounds),
+                    "Bounding box follows the selected transform in the same drag frame")) {
                 return false;
             }
             frameMilliseconds += std::chrono::duration<double, std::milli>(
@@ -837,17 +977,38 @@ bool EditorApplication::runGizmoSmokeTest()
                 "Mesh motion updates the geometry revision and camera motion preserves it")) {
             return false;
         }
-        const auto after = transform.localMatrix;
+        if (parent && !expect(scene::matrixNearlyEqual(parent.getComponent<scene::TransformComponent>().worldMatrix, parentWorld) &&
+                scene::matrixNearlyEqual(transform.worldMatrix, parentWorld * transform.localMatrix),
+                "Child gizmo updates local transform independently of its parent")) {
+            return false;
+        }
+        if (instance && !expect(scene::matrixNearlyEqual(transform.localMatrix, ownerLocal) &&
+                scene::matrixNearlyEqual(transform.worldMatrix, ownerWorld) &&
+                scene::matrixNearlyEqual(sibling->worldMatrix, siblingWorld),
+                "Primitive drag leaves the mesh node and sibling instance in place")) {
+            return false;
+        }
+        if (decalId && !expect(scene_.decalRevision() > decalRevisionBefore &&
+                scene::matrixNearlyEqual(transform.localMatrix, ownerLocal) &&
+                scene::matrixNearlyEqual(transform.worldMatrix, ownerWorld) && viewportView_.camera() == cameraBefore &&
+                std::ranges::equal(decals, originalDecals, [&](const auto& current, const auto& original) {
+                    return current.id == original.id &&
+                        (current.id == *decalId || scene::matrixNearlyEqual(current.worldFromDecal, original.worldFromDecal));
+                }), "Decal drag updates only the selected projector")) { return false; }
+        const auto after = editedMatrix();
+        const auto afterBounds = checkBounds ? input.boundsEdges : std::vector<std::array<float, 4>>{};
         undoTransform();
-        if (!expect(scene::matrixNearlyEqual(transform.localMatrix, before) && !scene_.dirty(),
+        if (!expect(scene::matrixNearlyEqual(editedMatrix(), before) && !scene_.dirty(),
                 "Undo restores the original transform") || !render()) {
             return false;
         }
+        if (checkBounds && !expect(boundsMatch(beforeBounds), "Undo restores the original bounding box")) { return false; }
         redoTransform();
-        if (!expect(scene::matrixNearlyEqual(transform.localMatrix, after) && scene_.dirty(),
+        if (!expect(scene::matrixNearlyEqual(editedMatrix(), after) && scene_.dirty(),
                 "Redo restores the completed drag") || !render()) {
             return false;
         }
+        if (checkBounds && !expect(boundsMatch(afterBounds), "Redo restores the moved bounding box")) { return false; }
         spdlog::info("[Smoke Gizmo] node='{}' frames={} meanFrameMs={:.3f} meanBindingRefreshMs={:.3f} recompiledPasses={}",
             name, kDragFrames, frameMilliseconds / kDragFrames, bindingMilliseconds / kDragFrames, recompiledPasses);
         return true;
@@ -857,17 +1018,44 @@ bool EditorApplication::runGizmoSmokeTest()
     const auto& cameras = scene_.cameras();
     const auto camera = std::ranges::find(cameras, "Floor Decals", &scene::RenderCamera::name);
     if (camera != cameras.end() && !drag(camera->nodeIndex, camera->name, false)) { return false; }
+    if (startupSampleId_ == "sponza-technology-showcase" && startupScenePath_.empty()) {
+        if (!expect(camera != cameras.end(), "The showcase includes the Floor Decals camera and decal group") ||
+            !drag(camera->nodeIndex, "Floor Medallion decal", false, scene::kInvalidSceneIndex, 1u)) { return false; }
+        if (const char* path = std::getenv("METALLIC_DECAL_GIZMO_SMOKE_CAPTURE"); path && *path) {
+            if (!expect(exportSmokeMainViewport(path), "Export the decal gizmo frame as a PPM image")) { return false; }
+        }
+        gizmoBoundsVisible_ = false;
+        if (!render() || !expect(input.boundsEdges.empty() && input.drewGizmo,
+                "Bounds toggle hides the box and leaves the gizmo visible")) { return false; }
+        gizmoBoundsVisible_ = true;
+
+        const auto perspective = viewportView_.camera();
+        const float3 viewOffset(perspective.eye[0] - perspective.center[0],
+            perspective.eye[1] - perspective.center[1], perspective.eye[2] - perspective.center[2]);
+        auto clipped = perspective;
+        clipped.nearPlane = length(viewOffset) + 0.2f;
+        if (!viewportView_.setCamera(clipped) || !render() || !expect(!input.drewGizmo && boundsEdgesDrawn(8),
+                "The near plane clips four decal edges and preserves the eight visible segments")) {
+            return false;
+        }
+        if (!viewportView_.setCamera(perspective)) { return false; }
+        undoTransform();
+        spdlog::info("[Smoke Gizmo] Decal bounds follow drag, undo and redo, and respect the toggle and near-plane clipping");
+    }
     const auto& nodes = scene_.nodes();
     const auto mesh = std::ranges::find(nodes, "Sponza Opaque", &scene::SceneNode::name);
-    if (!expect(mesh != nodes.end(), "Sponza Opaque is available in the chosen sample") ||
-        !drag(static_cast<int32_t>(mesh - nodes.begin()), mesh->name, true)) {
-        return false;
-    }
+    if (!expect(mesh != nodes.end(), "Sponza Opaque is available in the chosen sample")) { return false; }
+    const auto meshNode = static_cast<int32_t>(mesh - nodes.begin());
+    const auto meshName = mesh->name;
+    const auto& sections = scene_.objectForNode(meshNode).getComponent<scene::MeshComponent>().renderNodeIndices;
+    if (!expect(sections.size() >= 2, "Sponza contains multiple primitive instances") ||
+        !drag(meshNode, meshName + " primitive", true, sections.front())) { return false; }
     if (const char* path = std::getenv("METALLIC_GIZMO_SMOKE_CAPTURE"); path && *path) {
-        if (!expect(exportSmokeMainViewport(path), "Export the final editor frame as a PPM image")) { return false; }
+        if (!expect(exportSmokeMainViewport(path), "Export the primitive gizmo frame as a PPM image")) { return false; }
     }
+    undoTransform();
+    if (!drag(meshNode, meshName, true)) { return false; }
 
-    auto& input = *gizmoSmokeInput_;
     input.pointer.reset();
     const auto& world = selectedSceneObject().getComponent<scene::TransformComponent>().worldMatrix;
     auto depthCamera = viewportView_.camera();
