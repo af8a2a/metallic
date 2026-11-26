@@ -7,7 +7,7 @@
                 "enableClusterRtx": true, "initialLoad": true, "autoLod": false, "lodLevel": 0}},
         {"id": 2, "name": "Shadows", "type": "VirtualShadowMapLightsPass", "position": {"x": 340, "y": 0},
             "properties": {"enabled": true, "lightCapacity": 4, "physicalPageBudget": 2048,
-                "compactOutputs": true, "debugOutput": false}},
+                "compactOutputs": true, "debugOutput": false, "publishWorldShadows": true}},
         {"id": 3, "name": "Deferred", "type": "VisibilityBufferDeferredPass", "position": {"x": 650, "y": 100},
             "properties": {"path": "Asset/Sponza/SponzaVolumetricFog.metallic_scene.json", "materialBinning": true, "outputLinear": true}},
         {"id": 4, "name": "Fog", "type": "VolumetricFogPass", "position": {"x": 650, "y": 420},
@@ -38,7 +38,8 @@
         {"id": 16, "src": "Fog.view", "dst": "FogComposite.view"},
         {"id": 17, "src": "FogComposite.color", "dst": "AutoExposure.source"},
         {"id": 18, "src": "AutoExposure.color", "dst": "FinalBlit.source"},
-        {"id": 19, "src": "ColorGrading.lut", "dst": "FinalBlit.lut"}
+        {"id": 19, "src": "ColorGrading.lut", "dst": "FinalBlit.lut"},
+        {"id": 20, "src": "Shadows.worldShadowFaces", "dst": "Fog.worldShadowFaces"}
     ],
     "outputs": [],
     "view": {

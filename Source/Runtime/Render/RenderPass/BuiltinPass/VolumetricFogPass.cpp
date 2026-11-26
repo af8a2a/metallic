@@ -5,6 +5,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/ClusterLightGrid.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapWorld.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
@@ -99,6 +100,9 @@ RenderPassReflection VolumetricFogPass::reflect(const RenderGraphCompileContext&
     depth.format = Format::D32Sfloat;
     depth.matchOutputExtent = false;
     reflectMetadata(reflection.addBufferInput("rasterInfo", "Camera that produced the depth"), sizeof(VisibilityBufferFrameInfo));
+    reflection.addBufferInput("worldShadowFaces", "Optional world-space VSM faces for punctual fog lights")
+        .buffer(0, sizeof(VirtualShadowMapWorldFace)).bufferLayout("VirtualShadowMapWorldFace")
+        .storageRead().setOptional().sharedProducerInput = "rasterInfo";
     const auto tile = properties().value("gridPixelSize", 16u);
     const auto slices = properties().value("gridSizeZ", 64u);
     const auto output = [&](const char* name, Format format, bool volume, bool sampled) {
@@ -345,6 +349,10 @@ Result<> VolumetricFogPass::execute(RenderGraphExecutionContext& context)
     std::vector<StageUse> depthUses{{"depth", Access::TextureSampleRead}, {"conservativeDepth", Access::TextureStorageWrite}};
     std::vector<StageUse> materialUses{{"material", Access::TextureStorageWrite}};
     std::vector<StageUse> lightUses{{"material", Access::TextureSampleRead}, {"scattering", Access::TextureStorageWrite}};
+    if (const auto faces = context.inputBuffer("worldShadowFaces"); faces.valid()) {
+        p.worldShadowFaces = writer.buffer(faces.buffer());
+        lightUses.push_back({"worldShadowFaces", Access::BufferStorageRead});
+    }
     if (localVolumes) {
         const auto instances = packLocalFogVolumes(fog.localVolumes, p.current);
         p.localFog.startDistanceCm = std::max(10.0f, context.properties().value("localFogStartDistanceMeters", 20.0f) * 100.0f);

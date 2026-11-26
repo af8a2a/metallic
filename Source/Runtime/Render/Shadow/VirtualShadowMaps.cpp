@@ -3733,6 +3733,15 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         gpuLOD ? casters.gpuLOD->context.clusterCount : 0, gpuLOD ? casters.gpuLOD->context.instanceCount : 0};
 }
 
+VirtualShadowMapWorldFace VirtualShadowMaps::publishWorldFace(RenderFrameContext& frame) const
+{
+    const auto& push = state_->push;
+    if (!push.enabled) { return {}; }
+    frame.retain(state_);
+    return {push.atlas, push.pages, push.projections, push.statistics, push.physicalPagesX,
+        push.clipmapCount, push.pageSize, state_->resources->physicalPoolStorage ? push.physicalPagesY : 0u};
+}
+
 Result<> VirtualShadowMaps::preparePointFaces(CommandBuffer& commands,
     std::span<const VirtualShadowMapResult> pointFaces, std::string& log)
 {

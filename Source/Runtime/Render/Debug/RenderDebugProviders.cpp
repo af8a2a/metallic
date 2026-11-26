@@ -4,6 +4,7 @@
 #include "Runtime/Render/Debug/LumenProbeTraceReadback.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapWorld.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "../../../../Shaders/Interop/StreamCLASTessellation.h"
@@ -76,6 +77,11 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
     add({"RG32I", 8, {{"r", "i32", 0}, {"g", "i32", 4}}});
     add({"RGBA32I", 16, {{"r", "i32", 0}, {"g", "i32", 4}, {"b", "i32", 8}, {"a", "i32", 12}}});
 #define DEBUG_FIELD(T, F) DebugFieldDesc{#F, "u32", static_cast<uint32_t>(offsetof(T, F))}
+    using WorldFace = VirtualShadowMapWorldFace;
+    add({"VirtualShadowMapWorldFace", sizeof(WorldFace), {
+        DEBUG_FIELD(WorldFace, atlas), DEBUG_FIELD(WorldFace, pages), DEBUG_FIELD(WorldFace, projections),
+        DEBUG_FIELD(WorldFace, statistics), DEBUG_FIELD(WorldFace, physicalPagesX), DEBUG_FIELD(WorldFace, clipmapCount),
+        DEBUG_FIELD(WorldFace, pageSize), DEBUG_FIELD(WorldFace, physicalPagesY)}});
     add({"MeshletLODSelectionHeader", 16, {{"count", "u32", 0}, {"capacity", "u32", 4},
         {"candidateCount", "u32", 8}, {"overflow", "u32", 12}}});
     add({"MeshletLODSelection", sizeof(MeshletLODSelection), {

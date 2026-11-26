@@ -49,8 +49,7 @@ uint vsmAtlasLayer(uint physicalPage, ShadowPush push)
 
 float4 vsmProjectClip(float3 position, ShadowProjection projection)
 {
-    float4 p = float4(position, 1.0);
-    return float4(dot(projection.rowX, p), dot(projection.rowY, p), dot(projection.rowZ, p), dot(projection.rowW, p));
+    return virtualShadowMapProjectClip(position, projection);
 }
 
 // Match the ordered scalar arithmetic of projectedBounds used by cache
@@ -215,12 +214,10 @@ bool vsmContains(float3 position, ShadowProjection projection, uint pageSize, bo
 uint2 vsmVirtualTexel(float3 position, ShadowProjection projection, uint pageSize)
 {
     uint resolution = projection.page.y * pageSize;
-    uint2 texel = uint2(floor((position.xy * 0.5 + 0.5) * float(resolution)));
-#if VSM_DIRECTIONAL_MARK
-    return texel;
-#else
-    return projection.metric.w > 0.5 ? min(texel, uint2(resolution - 1u)) : texel;
+#if !VSM_DIRECTIONAL_MARK
+    if (projection.metric.w > 0.5) { return virtualShadowMapLocalTexel(position.xy, resolution); }
 #endif
+    return uint2(floor((position.xy * 0.5 + 0.5) * float(resolution)));
 }
 
 uint vsmVirtualPage(uint2 texel, ShadowProjection projection, uint pageSize)

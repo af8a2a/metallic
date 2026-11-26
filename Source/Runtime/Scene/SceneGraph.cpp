@@ -72,6 +72,7 @@ bool lightUnsupportedPropertiesUnchanged(
         return current.range == next.range &&
             current.sourceRadius == next.sourceRadius &&
             current.volumetricScatteringIntensity == next.volumetricScatteringIntensity &&
+            current.castVolumetricShadow == next.castVolumetricShadow &&
             current.innerConeAngle == next.innerConeAngle &&
             current.outerConeAngle == next.outerConeAngle;
     }
@@ -236,6 +237,7 @@ bool lightPropertiesNearlyEqual(
         propertyValuesNearlyEqual(lhs.range, rhs.range) &&
         propertyValuesNearlyEqual(lhs.sourceRadius, rhs.sourceRadius) &&
         propertyValuesNearlyEqual(lhs.volumetricScatteringIntensity, rhs.volumetricScatteringIntensity) &&
+        lhs.castVolumetricShadow == rhs.castVolumetricShadow &&
         propertyValuesNearlyEqual(lhs.innerConeAngle, rhs.innerConeAngle) &&
         propertyValuesNearlyEqual(lhs.outerConeAngle, rhs.outerConeAngle);
 }

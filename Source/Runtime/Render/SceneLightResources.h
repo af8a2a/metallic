@@ -38,6 +38,7 @@ struct SceneLightRecord {
     int32_t sourceVirtualLightIndex = scene::kInvalidSceneIndex;
     scene::SceneEntity sourceObject = scene::kNullSceneEntity;
     bool enabled = false;
+    bool castVolumetricShadow = false;
 };
 
 std::vector<SceneLightRecord> buildSceneLightRecords(

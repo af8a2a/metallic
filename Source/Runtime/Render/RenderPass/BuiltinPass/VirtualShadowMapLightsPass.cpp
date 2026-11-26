@@ -1,5 +1,6 @@
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/ClusterLightGrid.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
@@ -118,6 +119,11 @@ public:
             .buffer(sizeof(VirtualShadowMapLightsHeader) + uint64_t(capacity) * sizeof(VirtualShadowMapLightEntry), 0)
             .transferWrite()
             .stageAccess(RenderGraphResourceAccess::BufferStorageReadWrite, RenderGraphPassKind::Compute);
+        if (properties().value("publishWorldShadows", false)) {
+            reflection.addBufferOutput("worldShadowFaces", "Per-source face descriptors for world-space volumetric shadow queries")
+                .buffer(uint64_t(capacity) * 6 * sizeof(VirtualShadowMapWorldFace), sizeof(VirtualShadowMapWorldFace))
+                .bufferLayout("VirtualShadowMapWorldFace").transferWrite().transient(RenderGraphInitialization::FullOverwrite);
+        }
         reflection.addBufferOutput("statistics", "Six 32-uint face blocks per light entry")
             .buffer(uint64_t(capacity) * 6 * kVirtualShadowMapFaceStatisticsSize, sizeof(uint32_t))
             .bufferLayout("u32").transferWrite();
@@ -177,7 +183,9 @@ public:
         compact.rebuildGraph = true;
         auto debugOutput = runtimeBoolSetting("debugOutput", "Publish Page Debug", true);
         debugOutput.rebuildGraph = true;
-        return {capacity, compact, debugOutput,
+        auto worldShadows = runtimeBoolSetting("publishWorldShadows", "Publish World-space Volumetric Shadows", false);
+        worldShadows.rebuildGraph = true;
+        return {capacity, compact, debugOutput, worldShadows,
             runtimeBoolSetting("enabled", "Virtual Shadows", true),
             runtimeBoolSetting("benchmarkGPUProfile", "Detailed GPU Profile", false),
             runtimeBoolSetting("benchmarkBuildSubstages", "Profile Build Substages", false),
@@ -288,6 +296,7 @@ public:
         const auto output = context.outputTexture("shadows");
         const auto debug = context.outputTexture("debug");
         const auto table = context.outputBuffer("lights");
+        const auto worldShadowFaces = context.outputBuffer("worldShadowFaces");
         const auto statistics = context.outputBuffer("statistics");
         const auto cacheDiagnostics = context.outputBuffer("cacheDiagnostics");
         const auto lodStatisticsOutput = context.outputBuffer("lodStatistics");
@@ -313,6 +322,7 @@ public:
             !metadata.valid() || metadata.desc().size != sizeof(VisibilityBufferFrameInfo) ||
             metadata.desc().memoryLocation != MemoryLocation::HostUpload ||
             !output.valid() || (debugOutput_ && !debug.valid()) || !table.valid() || !statistics.valid() || !cacheDiagnostics.valid() ||
+            context.properties().value("publishWorldShadows", false) != worldShadowFaces.valid() ||
             !lodStatisticsOutput.valid() || !budgetDiagnostics.valid() || !resolutionOutput.valid() ||
             !rasterResolutionOutput.valid() || !memory.valid() ||
             (collectGPUWork_ && (!workload.valid() || !buildDiagnostics.valid() || !projectionGridDiagnostics.valid())) ||
@@ -668,6 +678,7 @@ public:
         }
         std::vector<VirtualShadowMapProjectionGroup> projections;
         projections.reserve(header.admittedCount);
+        std::vector<VirtualShadowMapWorldFace> worldFaces(worldShadowFaces.valid() ? size_t(capacity_) * 6 : 0);
         ViewConstants view{};
         uint64_t contentKey = 0;
         std::shared_ptr<Buffer> gpuLODStatistics;
@@ -790,6 +801,9 @@ public:
                     for (uint32_t face = 0; face < item.entry.faceCount; ++face) {
                         const auto* shadow = &(*sharedResults)[resultIndex++];
                         pointResults[face] = *shadow;
+                        if (worldShadowFaces.valid() && index >= 2 && sources[index - 2].source.castVolumetricShadow) {
+                            worldFaces[index * 6 + face] = faces[face]->publishWorldFace(*RenderFrameContext::from(commands));
+                        }
                         if (receiverCoverage_) {
                             auto appendCoverage = [&](Buffer* source, uint64_t offset, const auto& destination,
                                 const std::string& name, const std::string& outputName) -> Result<> {
@@ -864,6 +878,13 @@ public:
             return {};
         };
         if (auto r = recordFaces(context.commandBuffer()); !r) { (void)context.streamer()->cancelCopyBatch(*batch); return r; }
+        if (worldShadowFaces.valid()) {
+            const StreamDataChunk chunk{worldFaces.data(), worldFaces.size() * sizeof(VirtualShadowMapWorldFace)};
+            const auto upload = context.streamer()->streamBufferData({.dataChunks = {&chunk, 1}, .placementAlignment = 16,
+                .dstBuffer = worldShadowFaces.buffer(), .copyBatch = *batch});
+            if (!upload.valid()) { (void)context.streamer()->cancelCopyBatch(*batch); return makeError(Error::OutOfMemory); }
+            initializeUses.push_back({"worldShadowFaces", RenderGraphResourceAccess::BufferTransferWrite});
+        }
         BufferSlice sourceLODStatistics, destinationLODStatistics;
         if (gpuLODStatistics) {
             auto source = gpuLODStatistics->slice();

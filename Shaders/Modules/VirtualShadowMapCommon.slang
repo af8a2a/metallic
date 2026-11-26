@@ -3,6 +3,27 @@ module VirtualShadowMapCommon;
 
 namespace Metallic.Shadow
 {
+// GPU projection buffer shared by the VSM rasterizer, surface receivers and
+// world-space receivers. Local lights use the same matrix for every page mip.
+public struct VirtualShadowMapProjection
+{
+    public float4 rowX, rowY, rowZ, rowW, metric;
+    public uint4 page; // Virtual-page offset, pages per axis, level, coarse flag.
+    public float4 originNear;
+};
+
+public float4 virtualShadowMapProjectClip(float3 position, VirtualShadowMapProjection projection)
+{
+    float4 p = float4(position, 1.0);
+    return float4(dot(projection.rowX, p), dot(projection.rowY, p), dot(projection.rowZ, p), dot(projection.rowW, p));
+}
+
+public uint2 virtualShadowMapLocalTexel(float2 ndc, uint resolution)
+{
+    uint2 texel = uint2(floor((ndc * 0.5 + 0.5) * float(resolution)));
+    return min(texel, uint2(resolution - 1u));
+}
+
 // Canonical cubemap order: +X, -X, +Y, -Y, +Z, -Z. Exact edge/corner
 // ties belong to X before Y before Z, including the light origin (+X).
 public uint virtualShadowMapPointFace(float3 delta)

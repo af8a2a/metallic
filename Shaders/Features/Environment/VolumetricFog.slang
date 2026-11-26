@@ -253,7 +253,8 @@ void lightScattering(uint3 id : SV_DispatchThreadID)
             float cellRadius = length(cell - computeCellTranslatedWorldPosition(id + uint3(1, 1, 1), offset, p));
             light += fogPunctualScattering(resolveUniform(p.lightGrid)[0], resolveUniform(p.lights),
                 resolveUniform(p.lightCells), resolveUniform(p.lightIndices), resolveUniform(p.lightCandidates),
-                id.xy * p.grid.w, sceneDepthCm * 0.01f, p.current.eye.xyz, cell, cameraVector, cellRadius, p.lightDirectionPhase.w);
+                p.worldShadowFaces, id.xy * p.grid.w, sceneDepthCm * 0.01f, p.current.eye.xyz, cell, cameraVector,
+                cellRadius, p.lightDirectionPhase.w);
         }
     }
     light /= float(numSamples);

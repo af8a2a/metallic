@@ -181,6 +181,9 @@ struct RenderGraphField {
     bool matchOutputExtent = true;
     // An independent output can cover one texel per tile of a negotiated input.
     std::string extentSourceInput;
+    // For derived inputs indexed in another input's domain, both passes must consume
+    // the same graph output on this named input (e.g. the raster view for VSM faces).
+    std::string sharedProducerInput;
     uint32_t extentDivisor = 1;
     uint32_t width = 0;
     uint32_t height = 0;

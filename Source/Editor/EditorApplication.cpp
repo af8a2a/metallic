@@ -5074,6 +5074,7 @@ void EditorApplication::drawLightingControls()
                 const double maxScattering = 65504.0;
                 changed |= ImGui::DragScalar("Volumetric scattering intensity", ImGuiDataType_Double,
                     &p.volumetricScatteringIntensity, 0.02f, &minRange, &maxScattering, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+                changed |= ImGui::Checkbox("Cast volumetric shadow", &p.castVolumetricShadow);
             }
             if (spot) {
                 float direction[] = {light.direction.x, light.direction.y, light.direction.z};
@@ -6415,6 +6416,8 @@ void EditorApplication::drawSelectedLightComponentInspector()
         const double maxScattering = 65504.0;
         changed |= ImGui::DragScalar("Volumetric scattering intensity", ImGuiDataType_Double,
             &edited.volumetricScatteringIntensity, 0.02f, &kMinimumValue, &maxScattering, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        trackEditItem();
+        changed |= ImGui::Checkbox("Cast volumetric shadow", &edited.castVolumetricShadow);
         trackEditItem();
         const bool rangeChanged = ImGui::DragScalar(
             "Range",

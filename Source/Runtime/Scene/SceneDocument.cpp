@@ -61,6 +61,7 @@ bool lightPropertiesNearlyEqualForDocument(
         nearlyEqual(lhs.range, rhs.range) &&
         nearlyEqual(lhs.sourceRadius, rhs.sourceRadius) &&
         nearlyEqual(lhs.volumetricScatteringIntensity, rhs.volumetricScatteringIntensity) &&
+        lhs.castVolumetricShadow == rhs.castVolumetricShadow &&
         nearlyEqual(lhs.innerConeAngle, rhs.innerConeAngle) &&
         nearlyEqual(lhs.outerConeAngle, rhs.outerConeAngle);
 }
@@ -185,7 +186,7 @@ bool parseLightProperties(
     }
     if (current.type == "directional") {
         if (value.contains("range") || value.contains("sourceRadius") || value.contains("volumetricScatteringIntensity") ||
-            value.contains("innerConeAngle") ||
+            value.contains("castVolumetricShadow") || value.contains("innerConeAngle") ||
             value.contains("outerConeAngle")) {
             reason = "directional light override contains punctual light properties";
             return false;
@@ -196,6 +197,10 @@ bool parseLightProperties(
         !readOptionalFiniteNumber(value, "sourceRadius", properties.sourceRadius, reason) ||
         !readOptionalFiniteNumber(value, "volumetricScatteringIntensity", properties.volumetricScatteringIntensity, reason)) {
         return false;
+    }
+    if (value.contains("castVolumetricShadow")) {
+        if (!value["castVolumetricShadow"].is_boolean()) { reason = "castVolumetricShadow must be a boolean"; return false; }
+        properties.castVolumetricShadow = value["castVolumetricShadow"].get<bool>();
     }
     if (current.type == "spot") {
         return readOptionalFiniteNumber(
@@ -364,6 +369,7 @@ nlohmann::json serializeLightProperties(const LightProperties& properties)
         value["range"] = properties.range;
         value["sourceRadius"] = properties.sourceRadius;
         value["volumetricScatteringIntensity"] = properties.volumetricScatteringIntensity;
+        value["castVolumetricShadow"] = properties.castVolumetricShadow;
     }
     if (properties.type == "spot") {
         value["innerConeAngle"] = properties.innerConeAngle;

@@ -40,7 +40,7 @@
             "lights": [
                 {"type": "point", "name": "West arcade lamp", "position": [-4.0, 1.8, -0.75],
                  "color": [1.0, 0.62, 0.36], "intensity": 18.0, "intensityUnit": "candela",
-                 "range": 4.0, "volumetricScatteringIntensity": 1.0}
+                 "range": 4.0, "volumetricScatteringIntensity": 1.0, "castVolumetricShadow": true}
             ]
         }
     },

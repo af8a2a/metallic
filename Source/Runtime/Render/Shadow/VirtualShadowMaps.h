@@ -4,6 +4,7 @@
 #include "Runtime/Render/Environment/CelestialLighting.h"
 #include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLOD.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapWorld.h"
 
 #include <memory>
 #include <array>
@@ -21,6 +22,7 @@ struct MeshletStreamDeferredGPUResourcesView;
 struct CPUProfileRecorder;
 struct ClusterLightGridSnapshot;
 class RenderGraphExecutionContext;
+class RenderFrameContext;
 class VirtualShadowMaps;
 class VirtualShadowMapPhysicalPool;
 
@@ -333,6 +335,10 @@ public:
     static Result<> projectShared(CommandBuffer& commands, std::span<const VirtualShadowMapProjectionGroup> groups,
         std::string& log, CPUProfileRecorder* profiler = nullptr, RenderGraphExecutionContext* gpuProfiler = nullptr,
         const VirtualShadowMapProjectionGridResources* grid = nullptr);
+
+    // Called after recording the face. Protect its bindless descriptors and
+    // backing allocations until every downstream batch in this frame completes.
+    VirtualShadowMapWorldFace publishWorldFace(RenderFrameContext& frame) const;
 
     // Keep a recent shared snapshot while releasing the face's recording scratch.
     // The caller can destroy the face once this returns false.

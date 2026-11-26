@@ -1637,6 +1637,26 @@ bool RenderGraph::validate(std::string& log) const
                 "'");
             return false;
         }
+        if (!dstField->sharedProducerInput.empty()) {
+            const auto sharedEdge = [&](const std::string& pass) {
+                return std::find_if(edges_.begin(), edges_.end(), [&](const RenderGraphEdge& candidate) {
+                    return candidate.dstPass == pass && candidate.dstField == dstField->sharedProducerInput;
+                });
+            };
+            const auto producerInput = sharedEdge(edge.srcPass);
+            const auto consumerInput = sharedEdge(edge.dstPass);
+            if (producerInput == edges_.end() || consumerInput == edges_.end() ||
+                producerInput->srcPass != consumerInput->srcPass || producerInput->srcField != consumerInput->srcField) {
+                log = validationPrefix(makeRenderGraphFieldName(edge.dstPass, edge.dstField) +
+                    " requires both passes to share the same " + dstField->sharedProducerInput + " input");
+                return false;
+            }
+            if (srcField->debugLayout != dstField->debugLayout || srcField->structureStride != dstField->structureStride) {
+                log = validationPrefix("incompatible derived buffer layout for " +
+                    makeRenderGraphFieldName(edge.dstPass, edge.dstField));
+                return false;
+            }
+        }
         if (srcField->resourceType == RenderGraphResourceType::Texture2D &&
             (srcField->textureType != dstField->textureType ||
                 (dstField->depth != 0 && srcField->depth != dstField->depth) ||

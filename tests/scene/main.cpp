@@ -146,6 +146,7 @@ void expectLightProperties(
         << label << " outerConeAngle";
     EXPECT_DOUBLE_EQ(actual.sourceRadius, expected.sourceRadius) << label << " sourceRadius";
     EXPECT_DOUBLE_EQ(actual.volumetricScatteringIntensity, expected.volumetricScatteringIntensity);
+    EXPECT_EQ(actual.castVolumetricShadow, expected.castVolumetricShadow) << label;
 }
 
 void expectCameraSnapshot(
@@ -180,6 +181,7 @@ void expectLightSnapshot(
         << label << " outerConeAngle";
     EXPECT_DOUBLE_EQ(actual.sourceRadius, expected.sourceRadius) << label << " sourceRadius";
     EXPECT_DOUBLE_EQ(actual.volumetricScatteringIntensity, expected.volumetricScatteringIntensity);
+    EXPECT_EQ(actual.castVolumetricShadow, expected.castVolumetricShadow) << label;
 }
 
 void expectTextureInfo(
@@ -4171,7 +4173,9 @@ void testSceneDocumentPropertyRoundTrip(const std::filesystem::path& baseDirecto
     editedLight.outerConeAngle = 1.57079632679489661923;
     editedLight.sourceRadius = 0.125;
     EXPECT_DOUBLE_EQ(authoredLight.volumetricScatteringIntensity, 1.0);
+    EXPECT_FALSE(authoredLight.castVolumetricShadow);
     editedLight.volumetricScatteringIntensity = 2.5;
+    editedLight.castVolumetricShadow = true;
 
     ASSERT_TRUE(document.setObjectCameraProperties(
         perspectiveObject.entity(),
@@ -4319,6 +4323,7 @@ void testSceneDocumentPropertyRoundTrip(const std::filesystem::path& baseDirecto
     EXPECT_DOUBLE_EQ(savedLightProperties.value("sourceRadius", 0.0), editedLight.sourceRadius);
     EXPECT_DOUBLE_EQ(savedLightProperties.at("volumetricScatteringIntensity").get<double>(),
         editedLight.volumetricScatteringIntensity);
+    EXPECT_TRUE(savedLightProperties.at("castVolumetricShadow").get<bool>());
     EXPECT_DOUBLE_EQ(
         savedLightProperties.value("innerConeAngle", 0.0),
         editedLight.innerConeAngle);
@@ -4378,6 +4383,12 @@ void testSceneDocumentPropertyRoundTrip(const std::filesystem::path& baseDirecto
     metallic::scene::SceneDocument directlyOpened;
     ASSERT_TRUE(directlyOpened.load(sidecarPath)) << directlyOpened.lastLoadResult().error;
     expectPersistedProperties(directlyOpened);
+    auto shadowOnlyEdit = editedLight;
+    shadowOnlyEdit.castVolumetricShadow = false;
+    const auto loadedLight = directlyOpened.objectForNode(kLightNodeIndex);
+    ASSERT_TRUE(directlyOpened.setObjectLightProperties(loadedLight.entity(), shadowOnlyEdit));
+    EXPECT_FALSE(directlyOpened.lights()[loadedLight.getComponent<metallic::scene::LightComponent>().renderLightIndex]
+        .castVolumetricShadow);
 
     metallic::scene::CameraProperties unsavedPerspective = editedPerspective;
     unsavedPerspective.yfov = 0.9;
@@ -5678,6 +5689,7 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
         light.properties.intensity = -1.0;
         light.properties.sourceRadius = type == std::string_view("point") ? 0.25 : 0.5;
         light.properties.volumetricScatteringIntensity = type == std::string_view("point") ? 0.0 : 3.5;
+        light.properties.castVolumetricShadow = type == std::string_view("spot");
         light.position = float3(-1.0f, 2.0f, 3.0f);
         light.direction = float3(0.0f, -2.0f, -1.0f);
         light.enabled = light.properties.type != "point";
@@ -5728,6 +5740,7 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
         EXPECT_DOUBLE_EQ(light.properties.intensity, -1.0);
         EXPECT_DOUBLE_EQ(light.properties.sourceRadius, lighting.lights[i + 1].properties.sourceRadius);
         EXPECT_DOUBLE_EQ(light.properties.volumetricScatteringIntensity, lighting.lights[i + 1].properties.volumetricScatteringIntensity);
+        EXPECT_EQ(light.properties.castVolumetricShadow, lighting.lights[i + 1].properties.castVolumetricShadow);
         EXPECT_FLOAT_EQ(light.position.x, -1.0f);
         EXPECT_FLOAT_EQ(light.direction.y, -2.0f);
         EXPECT_EQ(light.enabled, lighting.lights[i + 1].enabled);

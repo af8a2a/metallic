@@ -232,6 +232,7 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
         light.spot[3] = static_cast<float>(properties.volumetricScatteringIntensity);
         record.gpu = light;
         record.enabled = true;
+        record.castVolumetricShadow = properties.castVolumetricShadow;
     };
     for (size_t index = 0; index < renderLights.size(); ++index) {
         const scene::RenderLight& light = renderLights[index];
@@ -250,6 +251,7 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
                 .outerConeAngle = light.outerConeAngle, .intensityUnit = light.intensityUnit,
                 .sourceRadius = light.sourceRadius,
                 .volumetricScatteringIntensity = light.volumetricScatteringIntensity,
+                .castVolumetricShadow = light.castVolumetricShadow,
             }, float3(m.a03, m.a13, m.a23), light.type == "point"
                 ? float3(0.0f, -1.0f, 0.0f) : float3(-m.a02, -m.a12, -m.a22));
         }

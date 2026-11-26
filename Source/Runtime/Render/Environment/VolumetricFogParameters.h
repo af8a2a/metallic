@@ -23,6 +23,7 @@ using FogLightGrid = ShaderBuffer;
 using FogLights = ShaderBuffer;
 using FogLightCells = ShaderBuffer;
 using FogLightIndices = ShaderBuffer;
+using FogWorldShadowFaces = ShaderBuffer;
 using FogSampler = ShaderSampler;
 using FogInstanceSpan = GPUBufferSpan;
 using FogTileRead = ShaderSampledImage;
@@ -31,6 +32,7 @@ using FogTileWrite = ShaderStorageImage;
 import ShaderCore;
 import AtmosphereTypes;
 import Lighting;
+import VirtualShadowMapWorld;
 using Metallic;
 using Metallic.Lighting;
 namespace Metallic {
@@ -50,6 +52,7 @@ typealias FogLightGrid = ResourceHandle<StructuredBuffer<ClusterLightGridParams>
 typealias FogLights = ResourceHandle<StructuredBuffer<ClusterLightData>>;
 typealias FogLightCells = ResourceHandle<StructuredBuffer<ClusterLightGridCell>>;
 typealias FogLightIndices = ResourceHandle<StructuredBuffer<uint>>;
+typealias FogWorldShadowFaces = Metallic.Shadow::WorldShadowFaces;
 typealias FogSampler = SamplerHandle;
 typealias FogInstanceSpan = BufferSpan<uint4>;
 typealias FogTileRead = ResourceHandle<Texture2DArray<uint>>;
@@ -93,13 +96,15 @@ struct VolumetricFogParams {
     FogLightIndices lightIndices, lightCandidates;
     FogSampler sampler;
     LocalFogParameters localFog;
+    FogWorldShadowFaces worldShadowFaces;
 };
 
 #ifdef __cplusplus
-inline constexpr uint64_t kVolumetricFogABI = 0x56464f4700000003ull;
+inline constexpr uint64_t kVolumetricFogABI = 0x56464f4700000004ull;
 static_assert(offsetof(VolumetricFogParams, scene) == 320);
 static_assert(offsetof(VolumetricFogParams, sampler) == 428);
 static_assert(offsetof(VolumetricFogParams, localFog) == 432);
-static_assert(sizeof(VolumetricFogParams) == 464);
+static_assert(offsetof(VolumetricFogParams, worldShadowFaces) == 464);
+static_assert(sizeof(VolumetricFogParams) == 480);
 #endif
 } // namespace metallic::render (C++) / Metallic (Slang)

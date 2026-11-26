@@ -276,12 +276,7 @@ void vsmRecordClusterLevel(ShadowPush push, uint scanTests, uint outcome)
 }
 #endif
 
-public struct ShadowProjection
-{
-    float4 rowX, rowY, rowZ, rowW, metric;
-    uint4 page; // Virtual-page offset, pages per axis, level, coarse flag.
-    float4 originNear;
-};
+public typealias ShadowProjection = VirtualShadowMapProjection;
 
 struct ShadowFace
 {

@@ -6,6 +6,7 @@
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Scene/SceneDocument.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <fstream>
@@ -91,15 +92,18 @@ public:
     }
 };
 
-RenderGraph makeFogGraph(const RenderView& view)
+RenderGraph makeFogGraph(const RenderView& view, bool worldShadows = false)
 {
+    static const bool registered = registerRenderGraphPassType("WhiteFogProbeWall", "Unlit white fog probe wall",
+        [] { return std::make_unique<WhiteFogProbeWall>(); });
+    if (!registered) { throw std::runtime_error("Cannot register white wall fixture"); }
     RenderGraph graph;
     graph.setViewProperties({{"camera", view.cameraProperties()}, {"renderResolution", view.renderResolutionProperties()},
         {"temporalJitter", false}});
     graph.addNode("VisibilityBufferPass", "VBuffer", {{"initialLoad", true}, {"enableClusterRtx", false},
         {"autoLod", false}, {"meshletNormalConeCull", false}, {"camera", view.cameraProperties()}});
     graph.addNode("WhiteFogProbeWall", "Wall");
-    graph.addNode("VolumetricFogPass", "Fog", {{"gridPixelSize", 16}, {"gridSizeZ", 64},
+    graph.addNode("VolumetricFogPass", "Fog", {{"gridPixelSize", worldShadows ? 4 : 16}, {"gridSizeZ", 64},
         {"conservativeDepth", false}, {"temporalReprojection", false}, {"jitter", false}, {"localFogVolumes", true}});
     graph.addNode("VolumetricFogCompositePass", "Composite");
     graph.addEdge("VBuffer.depth", "Fog.depth");
@@ -110,6 +114,16 @@ RenderGraph makeFogGraph(const RenderView& view)
     graph.addEdge("Fog.view", "Composite.view");
     graph.markOutput("Composite.color");
     graph.markOutput("VBuffer.depth");
+    if (worldShadows) {
+        // One coarse page per face. No surface receiver requests a fine page for the air under test.
+        graph.addNode("VirtualShadowMapLightsPass", "Shadows", {{"publishWorldShadows", true},
+            {"compactOutputs", true}, {"debugOutput", false}, {"lightCapacity", 4},
+            {"physicalPageBudget", 7}, {"maxWorkItems", 4096}});
+        graph.addEdge("VBuffer.depth", "Shadows.depth");
+        graph.addEdge("VBuffer.rasterInfo", "Shadows.rasterInfo");
+        graph.addEdge("Shadows.worldShadowFaces", "Fog.worldShadowFaces");
+        graph.markOutput("Fog.scattering");
+    }
     return graph;
 }
 
@@ -176,9 +190,6 @@ public:
             return RHITestResult::skip("Fog scene rendering needs realtime raster device features");
         }
         try {
-            static const bool registered = registerRenderGraphPassType("WhiteFogProbeWall", "Unlit white fog probe wall",
-                [] { return std::make_unique<WhiteFogProbeWall>(); });
-            if (!registered) { return RHITestResult::fail("Cannot register white wall fixture"); }
             const auto directory = context.outputDirectory / "local-fog-reference";
             scene::SceneDocument document;
             if (!document.load(writeWhiteWall(directory))) {
@@ -293,5 +304,202 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VolumetricFogLocalTest);
+
+std::filesystem::path writeShadowDoors(const std::filesystem::path& directory)
+{
+    const auto document = writeWhiteWall(directory);
+    const auto path = directory / "wall.gltf";
+    auto asset = nlohmann::json::parse(std::ifstream(path));
+    // The 16 m wide orthographic view sees only the backdrop. Put two walls
+    // outside it at x = +/-10 m, with doorways at different depths.
+    constexpr float quad[]{0,-1,-1, 0,1,-1, 0,1,1, 0,-1,-1, 0,1,1, 0,-1,1};
+    std::ofstream binary(directory / "panel.bin", std::ios::binary);
+    binary.write(reinterpret_cast<const char*>(quad), sizeof(quad));
+    asset["buffers"].push_back({{"uri", "panel.bin"}, {"byteLength", sizeof(quad)}});
+    asset["bufferViews"].push_back({{"buffer", 1}, {"byteLength", sizeof(quad)}});
+    asset["accessors"].push_back({{"bufferView", 1}, {"componentType", 5126}, {"count", 6},
+        {"type", "VEC3"}, {"min", {0,-1,-1}}, {"max", {0,1,1}}});
+    asset["meshes"].push_back(asset["meshes"][0]);
+    asset["meshes"][1]["primitives"][0]["attributes"]["POSITION"] = 1;
+    auto panel = [&](float x, float yMin, float yMax, float zMin, float zMax) {
+        asset["scenes"][0]["nodes"].push_back(asset["nodes"].size());
+        asset["nodes"].push_back({{"mesh", 1}, {"translation", {x, 0.5f*(yMin+yMax), 0.5f*(zMin+zMax)}},
+            {"scale", {1, 0.5f*(yMax-yMin), 0.5f*(zMax-zMin)}}});
+    };
+    for (float x : {-10.0f, 10.0f}) {
+        const float door = x < 0 ? -15.0f : -20.0f;
+        panel(x, -12, 12, -39, door - 2);
+        panel(x, -12, 12, door + 2, -1);
+        panel(x, 1, 12, door - 2, door + 2);
+    }
+    std::ofstream gltf(path);
+    gltf << asset.dump();
+    if (!binary || !gltf) { throw std::runtime_error("Could not write offscreen shadow doors"); }
+    return document;
+}
+
+class VolumetricFogPunctualShadowTest final : public RHITest
+{
+public:
+    VolumetricFogPunctualShadowTest()
+    {
+        name = "volumetric_fog_punctual_vsm_shadows";
+        type = RHITestType::Rendering;
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto& caps = context.device.capabilities();
+        if (!caps.bindlessDescriptorHeap || !caps.meshShader || !caps.taskShader || !caps.geometryShader) {
+            return RHITestResult::skip("Fog VSM scene requires --rhi-realtime");
+        }
+        try {
+            const auto directory = context.outputDirectory / "fog-vsm-doors";
+            scene::SceneDocument document;
+            if (!document.load(writeShadowDoors(directory))) {
+                return RHITestResult::fail(document.documentWarning() + document.lastLoadResult().error);
+            }
+            RenderWorld world;
+            world.setScene(&document);
+            configureProbe(world, "base");
+            scene::LightingSettings lighting;
+            for (bool spot : {false, true}) {
+                scene::PunctualLight light;
+                light.properties.type = spot ? "spot" : "point";
+                light.position = {spot ? 20.0f : -20.0f, 0, -15};
+                light.direction = {spot ? -1.0f : 1.0f, 0, 0};
+                light.properties.intensity = 8000;
+                light.properties.intensityUnit = scene::LightUnit::Candela;
+                light.properties.range = 60;
+                light.properties.innerConeAngle = 0.75;
+                light.properties.outerConeAngle = 1.0;
+                lighting.lights.push_back(light);
+            }
+            RenderView view;
+            view.setRenderResolution(kWidth, kHeight);
+            view.setCamera({.eye = {0, 0, 0}, .center = {0, 0, -1}, .farPlane = 100,
+                .orthoHeight = 12, .orthographic = true});
+            RenderGraphExecutor executor;
+            executor.bindRenderWorld(&world);
+            executor.bindRenderView(&view);
+            std::string log;
+            const auto errors = context.validationMessageCount ? context.validationMessageCount->load() : 0;
+            const auto graph = makeFogGraph(view, true);
+            auto mismatched = graph;
+            mismatched.addNode("VisibilityBufferPass", "OtherView");
+            const auto edge = std::find_if(mismatched.edges().begin(), mismatched.edges().end(),
+                [](const auto& candidate) { return candidate.dstPass == "Fog" && candidate.dstField == "rasterInfo"; });
+            mismatched.removeEdge(edge->id);
+            mismatched.addEdge("OtherView.rasterInfo", "Fog.rasterInfo");
+            if (mismatched.validate(log) || log.find("share the same rasterInfo") == std::string::npos) {
+                return RHITestResult::fail("Cross-view world shadow resources were not rejected: " + log);
+            }
+            if (!executor.compile(context.device, graph, kWidth, kHeight, log)) {
+                return RHITestResult::fail(log);
+            }
+            constexpr uint32_t nx = kWidth / 4, ny = kHeight / 4, nz = 64;
+            constexpr uint64_t volumeBytes = nx * ny * nz * 8, colorBytes = kWidth * kHeight * 16;
+            constexpr uint64_t depthBytes = kWidth * kHeight * 4;
+            const auto& volume = executor.outputResource("Fog.scattering")->desc;
+            if (volume.width != nx || volume.height != ny || volume.depth != nz) {
+                return RHITestResult::fail("Unexpected fog shadow probe grid");
+            }
+            auto readback = checked(context.device.createBuffer({.size = volumeBytes + colorBytes + depthBytes,
+                .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}), "readback");
+            // The center froxel column is at x = 0.25 m. At z slices 13, 25 and 37 its depths are
+            // 6.92, 14.86 and 25.15 m. The latter two see only the left and right doorway, respectively.
+            constexpr std::array<uint32_t, 4> slices{13, 25, 37, 0};
+            constexpr std::array<std::array<uint32_t, 2>, 6> referencePixels{{
+                {64,48}, {64,0}, {32,48}, {96,48}, {32,12}, {96,12}}};
+            nlohmann::json sceneColor{{"pixels", referencePixels}};
+            nlohmann::json observations;
+            std::string failure;
+            for (size_t lamp = 0; lamp < lighting.lights.size(); ++lamp) {
+                const auto& type = lighting.lights[lamp].properties.type;
+                lighting.lights[1 - lamp].properties.volumetricScatteringIntensity = 0;
+                lighting.lights[lamp].properties.volumetricScatteringIntensity = 1;
+                std::array<uint16_t, 4> baseline{};
+                for (int frame = 0; frame < 3; ++frame) {
+                    const bool shadowed = frame == 1;
+                    lighting.lights[lamp].properties.castVolumetricShadow = shadowed;
+                    if (!world.setLighting(lighting)) { return RHITestResult::fail("Invalid shadow probe lighting"); }
+                    checked(executor.execute({.graphicsQueue = &context.graphicsQueue}), "render shadow doors");
+                    checked(executor.waitForSubmittedWork(), "wait for shadow doors");
+                    bench::GPUCommands capture(context.graphicsQueue);
+                    checked(capture.initialize(context.device), "begin shadow readback");
+                    const auto copy = [&](const char* name, uint64_t offset, uint64_t size) {
+                        const auto& resource = *executor.outputResource(name);
+                        checked(executor.transitionOutput(*capture.commands, name, ResourceState::TransferSource), "transition capture");
+                        checked(capture.commands->copyTextureToBuffer({.texture = resource.texture,
+                            .buffer = checked(readback->slice({offset, size}), "capture slice"), .width = resource.desc.width,
+                            .height = resource.desc.height, .depth = resource.desc.depth}), "copy output");
+                    };
+                    copy("Fog.scattering", 0, volumeBytes);
+                    copy("Composite.color", volumeBytes, colorBytes);
+                    copy("VBuffer.depth", volumeBytes + colorBytes, depthBytes);
+                    const BufferBarrierDesc host{.buffer = readback.get(), .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                        .after = {PipelineStageBits::Host, AccessBits::HostRead}};
+                    checked(capture.commands->synchronize({.buffers = {&host, 1}}), "publish capture");
+                    checked(capture.submitAndWait(), "submit capture");
+                    readback->invalidate();
+                    const auto* bytes = static_cast<const std::byte*>(readback->map());
+                    if (!bytes) { throw std::runtime_error("Cannot map shadow door capture"); }
+                    const auto* scattering = reinterpret_cast<const uint16_t*>(bytes);
+                    const auto* color = reinterpret_cast<const float*>(bytes + volumeBytes);
+                    const auto* depth = reinterpret_cast<const float*>(bytes + volumeBytes + colorBytes);
+                    const std::string captureName = type + (shadowed ? "-shadowed" : "-unshadowed");
+                    if (frame < 2) {
+                        for (const auto& [x, y] : referencePixels) {
+                            const auto* rgb = color + (y * kWidth + x) * 4;
+                            sceneColor["cases"][captureName].push_back({rgb[0], rgb[1], rgb[2]});
+                        }
+                    }
+                    std::array<uint16_t, 4> actual{};
+                    for (size_t i = 0; i < actual.size(); ++i) {
+                        const bool lintel = i == 3;
+                        const uint32_t z = lintel ? slices[lamp + 1] : slices[i];
+                        const uint32_t y = lintel ? 0 : ny / 2;
+                        actual[i] = scattering[4 * ((z * ny + y) * nx + nx / 2)];
+                        if (frame == 0) { baseline[i] = actual[i]; }
+                        const bool visible = !shadowed || i == lamp + 1;
+                        // Visibility is binary inside these regions. Allow a few FP16 ULPs for the UE
+                        // shadowed-light color path; the ordinary light grid quantizes RGB to 10 bits.
+                        const bool correct = visible ? actual[i] > 0 && actual[i] < 0x7c00 &&
+                            std::abs(int(actual[i]) - int(baseline[i])) <= 4 : actual[i] == 0;
+                        if (!correct && failure.empty()) {
+                            failure = type + " frame " + std::to_string(frame) + " sample " + std::to_string(i) +
+                                " expected " + (visible ? "lit" : "shadowed") + ", FP16 " + std::to_string(actual[i]);
+                        }
+                    }
+                    observations[type].push_back(actual);
+                    std::vector<uint8_t> image(kWidth * kHeight * 4);
+                    for (uint32_t i = 0; i < kWidth * kHeight; ++i) {
+                        const float distance = 100.0f - depth[i] * (100.0f - 0.05f);
+                        if (std::abs(distance - 40.0f) > 0.02f && failure.empty()) {
+                            failure = "An offscreen door entered the primary raster";
+                        }
+                        for (int c = 0; c < 3; ++c) {
+                            const float l = std::max(0.0f, color[i * 4 + c]);
+                            image[i * 4 + c] = uint8_t(255.0f * std::sqrt(l / (1.0f + l)));
+                        }
+                        image[i * 4 + 3] = 255;
+                    }
+                    readback->unmap();
+                    if (frame < 2 && !saveRgba8Png(directory / (captureName + ".png"),
+                        image.data(), kWidth, kHeight, log)) { return RHITestResult::fail(log); }
+                }
+            }
+            std::ofstream(directory / "scattering-fp16.json") << observations.dump(2);
+            std::ofstream(directory / "metallic-scene-color.json") << sceneColor.dump(2);
+            if (!failure.empty()) { return RHITestResult::fail(failure); }
+            if (context.validationMessageCount && errors != context.validationMessageCount->load()) {
+                return RHITestResult::fail("Vulkan validation reported a shadow door graph error");
+            }
+            return RHITestResult::pass("Point and spot doors block distinct depths of the same camera ray, including offscreen casters");
+        } catch (const std::exception& e) { return RHITestResult::fail(e.what()); }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VolumetricFogPunctualShadowTest);
 } // namespace
 } // namespace metallic::tests

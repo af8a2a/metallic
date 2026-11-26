@@ -39,6 +39,7 @@ struct LightProperties {
     LightUnit intensityUnit = LightUnit::SI;
     double sourceRadius = 0.0; // VSM shadow emitter radius in meters; analytical intensity is unchanged.
     double volumetricScatteringIntensity = 1.0;
+    bool castVolumetricShadow = false;
 };
 
 bool validCameraProperties(const CameraProperties& properties);

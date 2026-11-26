@@ -1,6 +1,6 @@
 # Volumetric fog
 
-Open **GI Playground → Sponza / Volumetric Fog** to see sunlight through the arcade and a warm point light in a low bank of fog. The sample uses fixed exposure and the streamed scene TLAS for opaque directional fog shadows. Surface lighting uses VSM. In the Environment panel, expand **Volumetric fog** to edit the two exponential height layers, scattering, emission and view distance. Expand **Local fog volumes** to add, move or rotate a sphere.
+Open **GI Playground → Sponza / Volumetric Fog** to see sunlight through the arcade and a warm point light in a low bank of fog. The sample uses fixed exposure, the streamed scene TLAS for opaque directional fog shadows, and VSM for surfaces and the arcade lamp's fog shadow. In the Environment panel, expand **Volumetric fog** to edit the two exponential height layers, scattering, emission and view distance. Expand **Local fog volumes** to add, move or rotate a sphere.
 
 ## Render graph
 
@@ -14,6 +14,8 @@ The scene stores fog under `world.environment.volumetricFog`. Density and height
 
 Each point or spot light can set `volumetricScatteringIntensity` independently of its surface intensity. The default is 1. Set it to 0 to retain the surface light and remove its contribution to fog.
 
+To shadow the fog from a point or spot light, enable **Cast volumetric shadow** on that light (`castVolumetricShadow` in the scene document, default false). On `VirtualShadowMapLightsPass`, enable `publishWorldShadows` and connect `worldShadowFaces` to the fog pass's input of the same name. Both passes must consume the same `rasterInfo` output. The fog uses the selected light's VSM at each froxel position, including geometry outside the camera view. Each admitted shadow face reserves a coarse page for positions without finer resident pages. A light dropped by the VSM page budget still illuminates fog through the unshadowed path.
+
 Author local spheres in the scene's `volumetricFog.localVolumes` array. Position and radius use metres. Rotation uses local-to-world Euler angles in degrees, applied about X, Y and Z in order. Height offset is measured in unit-sphere coordinates. The radial and height extinction controls combine according to Unreal's local-volume coverage formula. For a near-camera effect, set the graph's `localFogStartDistanceMeters` to suit the scene. The sample uses 1 m and the reference default is 20 m.
 
 ## Reference and deviations
@@ -22,11 +24,12 @@ The numerical reference is the local Unreal Engine 5.7.4 NvRTX checkout at `8284
 
 - Metallic supplies a Y-up camera and TLAS in metres. Froxel depths, ray step lengths and medium coefficients use the centimetre convention of the reference. The projection adapter handles Metallic's finite reversed-Z depth.
 - Scene colors use Metallic's working color space. The HDR pipeline supplies unexposed radiance, corresponding to a pre-exposure factor of one for both the current frame and history. The physical-atmosphere sun uses Metallic's atmosphere and cloud transport.
-- The scene supplies one directional fog light. Point and spot lights use the UE unshadowed inverse-square branch with zero source length, the default distance-bias scale of one and spot soft fading off. Metallic supplies its view light grid and converts candela to the reference centimetre scale. A glTF range of zero gives unlimited range. The renderer derives the UE spot-cone constants from its stored cone cosines. Rect lights, light functions and MegaLights have separate lighting paths.
+- The scene supplies one directional fog light. Point and spot lights use UE's inverse-square attenuation with zero source length, the default distance-bias scale of one and spot soft fading off. Metallic supplies its view light grid and converts candela to the reference centimetre scale. A glTF range of zero gives unlimited range. The renderer derives the UE spot-cone constants from its stored cone cosines. Rect lights, light functions and MegaLights have separate lighting paths.
+- Shadowed point and spot lights follow the VSM branch of UE's `InjectShadowedLocalLight` and `SampleVirtualShadowMapLocal`: a single reversed-Z comparison at the sample position with zero ray-start and surface-normal bias. Metallic uses its point-face convention, resident page table and atlas. For an unlimited light, Metallic bounds the shadow projection by its casters; beyond that far plane a clear texel remains lit and a stored blocker still shadows. The fog shader evaluates each light once in its existing clustered loop. Shadowed lights use full-precision light inputs and share the fog pass's jitter/history. This scheduling omits UE's separate pre-exposed FP16 local-light accumulation target and its intermediate rounding.
 - Local spheres contribute extinction, scattering and density-weighted emission to the material grid. The pass sorts and packs up to 32 instances per view, culls them against 128-pixel tiles, and stores per-voxel emission in RGBA16F. Tile culling uses the UE permutation without a furthest-depth texture. The global phase parameter applies to all participating media in this froxel path. With local volumes disabled, constant global emission is rounded to the same half precision in the scattering pass.
 - The directional RT pass uses inline Vulkan ray queries against opaque TLAS geometry. Alpha-tested any-hit and thin-shadow material evaluation are outside this path. The Sponza sample requires the streamer's cluster acceleration structure support.
 - Conservative depth reduces the corresponding texels of the main raster depth directly over the UE HZB footprint. The history manager discards history when the view extent or medium changes and retains it during ordinary camera motion.
-- This pass integrates to the configured view distance. Distant analytic height fog, transparent-surface sampling, standalone local-volume splats, volume-domain materials, local-light shadow injection and indirect volume lighting remain outside its coverage.
+- This pass integrates to the configured view distance. Distant analytic height fog, transparent-surface sampling, standalone local-volume splats, volume-domain materials and indirect volume lighting remain outside its coverage.
 
 ## Cross-engine reference capture
 
@@ -39,6 +42,8 @@ A 128 × 96 unlit white plane in homogeneous fog was rendered on the same GPU in
 | 40 m | 0.40209961 | 0.34350586 | 0.26855469 |
 
 The local-light and local-volume regression uses a 40 m wall, an 8 × 6 × 64 grid and five image positions. It compares eight configurations against the UE D3D12 capture. The maximum absolute error across the 40 linear HDR readings was 0.000244140625. Lights with zero scattering intensity, lights outside their range and pixels outside the reference spot or sphere matched the global-only baseline. The test also checks the raster depth, grid dimensions, unbounded lights and overflow of the clustered light list.
+
+The punctual VSM regression places a wall with a doorway between each lamp and the fog, entirely outside the camera view. With seven physical pages (six point faces and one spot face), the point light illuminates the central camera ray at 14.86 m and the spot at 25.15 m. The test checks zero in-scattering behind the solid wall and lintel and verifies that toggling each lamp's shadow off restores its original scattering. A matching UE D3D12 SM5 capture reproduced the occlusion pattern. Across six image positions the maximum absolute linear HDR differences with shadows enabled were 0.000610 for the point light and 0.017944 for the spot. The UE capture's local shadow backend was not independently identified.
 
 Run the focused rendering probes from the directory containing the Release test executable.
 
