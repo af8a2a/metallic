@@ -1,0 +1,113 @@
+{
+    "version": 4,
+    "nodes": [],
+    "world": {
+        "environment": {
+            "enabled": false,
+            "visible": false,
+            "sun": {
+                "enabled": true,
+                "direction": [0.48, -0.865, -0.15],
+                "color": [1.0, 0.91, 0.77],
+                "illuminance": 6.0,
+                "angularRadius": 0.00465
+            },
+            "moon": {"enabled": false},
+            "volumetricFog": {
+                "enabled": true,
+                "density": 0.16,
+                "heightFalloff": 0.24,
+                "distanceMeters": 36.0,
+                "albedo": [0.89, 0.93, 0.99],
+                "scatteringDistribution": 0.30,
+                "directionalScatteringIntensity": 2.0,
+                "localVolumes": [
+                    {
+                        "centerMeters": [-4.25, 0.95, -0.65],
+                        "radiusMeters": 2.7,
+                        "radialExtinction": 0.43,
+                        "heightExtinction": 0.55,
+                        "heightFalloff": 1000.0,
+                        "albedo": [0.76, 0.86, 0.97]
+                    }
+                ]
+            }
+        },
+        "lighting": {
+            "exposureEV100": 0.0,
+            "autoExposure": {"enabled": false},
+            "lights": [
+                {
+                    "type": "point",
+                    "name": "Amber lamp in the fog bank",
+                    "position": [-4.0, 1.82, -0.75],
+                    "color": [1.0, 0.52, 0.24],
+                    "intensity": 12.0,
+                    "intensityUnit": "candela",
+                    "range": 4.4,
+                    "volumetricScatteringIntensity": 1.5,
+                    "castVolumetricShadow": true
+                }
+            ],
+            "rectLights": [
+                {
+                    "name": "Warm floor wash",
+                    "position": [0.8, 2.65, -1.18],
+                    "direction": [0.32, -0.90, 0.29],
+                    "color": [1.0, 0.67, 0.38],
+                    "width": 1.8,
+                    "height": 1.0,
+                    "luminance": 46.0,
+                    "range": 5.5
+                },
+                {
+                    "name": "Cool arcade wash",
+                    "position": [-6.15, 2.45, 1.12],
+                    "direction": [-0.17, -0.90, -0.40],
+                    "color": [0.30, 0.59, 1.0],
+                    "width": 2.1,
+                    "height": 1.25,
+                    "luminance": 44.0,
+                    "range": 5.3
+                }
+            ]
+        },
+        "realtimeGI": {
+            "distanceFieldPaths": ["SponzaGIBakes/SponzaOpaque.meshdf"],
+            "meshCardPaths": ["SponzaGIBakes/SponzaOpaque.meshcards"],
+            "detailDistanceFieldPaths": ["SponzaGIBakes/SponzaOpaqueReflection.meshdf"],
+            "center": [0, 5, 0],
+            "extent": 16
+        },
+        "decals": [
+            {
+                "id": 1,
+                "worldFromDecal": [2.7, 0, 0, 0, 0, 0, -2.7, 0, 0, 0.34, 0, 0, 1.58, 0, -0.03, 1],
+                "baseColorTexture": "Showcase/FloorMedallion.png",
+                "baseColor": [1, 1, 1, 0.90],
+                "roughness": 0.62,
+                "roughnessOpacity": 1.0
+            },
+            {
+                "id": 2,
+                "worldFromDecal": [1.18, 0, 0, 0, 0, 0, -0.84, 0, 0, 0.28, 0, 0, -0.72, 0, -0.04, 1],
+                "baseColorTexture": "Showcase/ArcadeEmblem.png",
+                "baseColor": [0.95, 0.87, 0.71, 0.82],
+                "roughness": 0.8,
+                "roughnessOpacity": 0.8
+            },
+            {
+                "id": 3,
+                "worldFromDecal": [0, 0, -0.78, 0, 0, 0.78, 0, 0, 0.18, 0, 0, 0, -7.9881, 3.3563, -0.1827, 1],
+                "baseColorTexture": "Showcase/ArcadeEmblem.png",
+                "baseColor": [1, 1, 1, 0.92],
+                "roughness": 0.52,
+                "roughnessOpacity": 0.85
+            }
+        ]
+    },
+    "sources": [
+        {"id": "sponza", "path": "glTF/SponzaGI.gltf"},
+        {"id": "view", "path": "SponzaShowcaseCameras.gltf"}
+    ]
+}

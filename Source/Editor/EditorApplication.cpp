@@ -4185,6 +4185,9 @@ void EditorApplication::drawInspectorPanel()
         ImGui::Text("Eye: %s", scene::formatVec3(camera.eye).c_str());
         ImGui::Text("Center: %s", scene::formatVec3(camera.center).c_str());
         ImGui::Text("Up: %s", scene::formatVec3(camera.up).c_str());
+        if (ImGui::Button("Use as Viewport Camera")) {
+            applySceneCamera(camera);
+        }
         if (!selectedObject || !selectedObject.hasComponent<scene::CameraComponent>()) {
             ImGui::TextDisabled("The render snapshot has no editable CameraComponent owner.");
         }

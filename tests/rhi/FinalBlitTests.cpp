@@ -463,6 +463,7 @@ public:
             {"sponza_gi_path_tracing.metallic_graph.json", {"PathTrace.color", true}},
             {"sponza_gi_compare.metallic_graph.json", {"Slider.color", true}},
             {"sponza_volumetric_fog.metallic_graph.json", "FogComposite.color"},
+            {"sponza_technology_showcase.metallic_graph.json", "DLSSSR.color"},
             {"mesh_distance_field_debug.metallic_graph.json", {"MeshDistanceField.color", true}},
             {"global_distance_field.metallic_graph.json", {"GlobalDistanceFieldDebug.color", true}},
             {"global_distance_field_pages.metallic_graph.json", {"GlobalDistanceFieldPagesDebug.color", true}},

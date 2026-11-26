@@ -1,5 +1,11 @@
 # Sponza
 
+## Technology showcase
+
+In **Open Render Graph Editor**, choose **Built-in Sample → Sponza / Technology Showcase** to see projected floor and wall decals, a low fog bank with a shadowed lamp, and warm and cool rectangular area lights. Lumen provides indirect light for the surfaces and the fog.
+
+Under **Scene Browser → Scene List → Cameras**, select **Overview**, **Floor Decals**, or **Fog & Rect Lights**, then click **Use as Viewport Camera** in the inspector. For an isolated comparison, toggle the decals in the scene browser, the fog in **Environment**, or **Warm floor wash** and **Cool arcade wash** in the lighting controls.
+
 ## Screenshot
 
 Lights are shown here, they are not part of the model.

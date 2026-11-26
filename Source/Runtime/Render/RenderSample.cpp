@@ -1178,6 +1178,10 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const GIPlaygroundSample sponzaVolumetricFog{"sponza-volumetric-fog", "Sponza / Volumetric Fog",
         "Sun shafts, a shadowed arcade lamp and Lumen indirect lighting in the atrium fog.",
         "Asset/Sponza/SponzaVolumetricFog.metallic_scene.json", "Pipelines/Samples/sponza_volumetric_fog.metallic_graph.json"};
+    static const GIPlaygroundSample sponzaTechnologyShowcase{"sponza-technology-showcase", "Sponza / Technology Showcase",
+        "Projected decals, local and height fog, and rectangular area lights in the Sponza atrium.",
+        "Asset/Sponza/SponzaTechnologyShowcase.metallic_scene.json",
+        "Pipelines/Samples/sponza_technology_showcase.metallic_graph.json", true};
     static const GIPlaygroundSample sponzaGIPathTracing{"sponza-gi-path-tracing", "Sponza with GI / Path Tracing",
         "Progressive OpenPBR path tracing of the sunlit Sponza atrium.",
         sponzaGIScene, "Pipelines/Samples/sponza_gi_path_tracing.metallic_graph.json"};
@@ -1225,6 +1229,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &sponzaGIRealtime,
         &sponzaGIAtmosphere,
         &sponzaVolumetricFog,
+        &sponzaTechnologyShowcase,
         &sponzaGIPathTracing,
         &sponzaGICompare,
         &realtimeLighting,

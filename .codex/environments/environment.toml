@@ -40,6 +40,11 @@ icon = "run"
 command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/RunMetallic.ps1' -Target LookDev -ProgramArguments @('--sample', 'sponza-gi-compare')\""
 
 [[actions]]
+name = "Sponza - Technology Showcase"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/RunMetallic.ps1' -Target LookDev -ProgramArguments @('--sample', 'sponza-technology-showcase')\""
+
+[[actions]]
 name = "Build Metallic"
 icon = "run"
 command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/RunMetallic.ps1 -Target Metallic -BuildOnly"

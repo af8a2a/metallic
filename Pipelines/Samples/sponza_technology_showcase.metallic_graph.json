@@ -1,0 +1,231 @@
+{
+    "name": "Sponza / Technology Showcase",
+    "version": 1,
+    "nodes": [
+        {"id": 1, "name": "VBuffer", "type": "VisibilityBufferPass", "position": {"x": 50, "y": 140},
+            "properties": {
+                "path": "Asset/Sponza/SponzaTechnologyShowcase.metallic_scene.json", "visualization": "none", "enableClusterRtx": false,
+                "initialLoad": true, "autoLod": false, "lodLevel": 0,
+                "instanceFrustumCull": true, "enableClas": false, "hybridRaster": false,
+                "instanceHzbCull": true, "meshletFrustumCull": true, "meshletNormalConeCull": true
+            }},
+        {"id": 2, "name": "Shadows", "type": "VirtualShadowMapLightsPass", "position": {"x": 370, "y": -140},
+            "properties": {
+                "enabled": true, "benchmarkGPUProfile": false, "benchmarkBuildSubstages": false,
+                "pageSize": 128, "virtualPagesPerAxis": 128, "clipmapCount": 6,
+                "maxWorkItems": 1048576, "firstClipmapExtent": 1.0, "shadowBias": 0.002,
+                "cacheEnabled": true, "cacheLayering": false, "lightCapacity": 4,
+                "physicalPageBudget": 2048, "nearPlane": 0.001, "filter": "smrt",
+                "pcfRadius": 1.0, "smrtRayCount": 2, "smrtSamplesPerRay": 16,
+                "smrtMaxRayLength": 10.0, "smrtRayLengthScale": 0.0, "smrtMaxRayAngle": 0.03,
+                "smrtTemporalEnabled": true, "smrtTemporalMaxFrames": 32, "receiverFootprint": true,
+                "tessellationFactor": 4, "tessellationSubdivisionDepth": 0, "compactOutputs": true,
+                "debugOutput": false, "publishWorldShadows": true
+            }},
+        {"id": 3, "name": "Deferred", "type": "VisibilityBufferDeferredPass", "position": {"x": 680, "y": 140},
+            "properties": {
+                "path": "Asset/Sponza/SponzaTechnologyShowcase.metallic_scene.json", "materialBinning": true, "outputLinear": true,
+                "exportLumenReceivers": true, "exportLumenPreviousPosition": true, "exportLumenSpecular": true,
+                "exportUpscalerGuides": true, "decalFullScan": false
+            }},
+        {"id": 4, "name": "GlobalDistanceFieldPages", "type": "GlobalDistanceFieldPagesPass", "position": {"x": 50, "y": 470},
+            "properties": {
+                "resolution": 252, "maxPhysicalPages": 12288, "quantized": true,
+                "clipmapCount": 1, "buildObjectGrid": true, "persistentPages": true,
+                "distanceFieldPaths": ["Asset/Sponza/SponzaGIBakes/SponzaOpaque.meshdf"], "center": [0, 5, 0], "extent": 16
+            }},
+        {"id": 5, "name": "SurfaceCache", "type": "LumenSurfaceCachePass", "position": {"x": 370, "y": 470},
+            "properties": {
+                "atlasSize": 512, "tileResolution": 64, "shadowedLighting": true,
+                "exportDirectIrradiance": true, "persistentCards": true, "meshCardPaths": ["Asset/Sponza/SponzaGIBakes/SponzaOpaque.meshcards"]
+            }},
+        {"id": 6, "name": "Radiosity", "type": "LumenRadiosityPass", "position": {"x": 680, "y": 470},
+            "properties": {
+                "atlasSize": 512, "tileResolution": 64, "maxTraceDistance": 40,
+                "persistentCards": true, "maxCardsPerFrame": 4, "maxRayIntensity": 40000
+            }},
+        {"id": 7, "name": "ScreenTrace", "type": "LumenScreenTraceSetupPass", "position": {"x": 680, "y": -140},
+            "properties": {
+                "historySource": "composited", "historyProducer": "Temporal", "dynamicReprojection": true
+            }},
+        {"id": 8, "name": "Gather", "type": "LumenScreenProbeGatherPass", "position": {"x": 990, "y": 140},
+            "properties": {
+                "maxTraceDistance": 40, "finalGather": true, "screenTraces": true,
+                "activeProbeDispatch": true, "splitProbeTracing": true, "compactProbeAtlas": true,
+                "screenGDFContinuation": true, "screenTraceRelativeDepthThickness": 0.003, "irradianceFormat": "SH3",
+                "maxRayDirections": 64, "structuredImportanceSampling": true, "fastLightingUpdate": true,
+                "roughSpecular": true, "probeExposureHistory": true
+            }},
+        {"id": 9, "name": "Temporal", "type": "LumenTemporalGatherPass", "position": {"x": 1310, "y": 140},
+            "properties": {
+                "publishScreenTraceHistory": true, "dynamicReprojection": true, "fastLightingUpdate": true,
+                "maxFramesAccumulated": 32, "stochasticHistoryQuantization": true, "roughSpecular": true
+            }},
+        {"id": 10, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 2970, "y": 140}},
+        {"id": 11, "name": "Reflections", "type": "LumenReflectionPass", "position": {"x": 1630, "y": 140},
+            "properties": {
+                "maxTraceDistance": 40, "dynamicReprojection": true, "screenTraces": true,
+                "detailTracing": true, "classifiedTracing": true, "roughSpecular": true,
+                "maxRayIntensity": 40000, "detailDistanceFieldPaths": ["Asset/Sponza/SponzaGIBakes/SponzaOpaqueReflection.meshdf"]
+            }},
+        {"id": 12, "name": "DLSSSR", "type": "StreamlineDLSSSRPass", "position": {"x": 2330, "y": 140},
+            "properties": {
+                "mode": "Quality", "fallbackToInput": true
+            }},
+        {"id": 13, "name": "AutoExposure", "type": "AutoExposurePass", "position": {"x": 2650, "y": 140},
+            "properties": {
+                "publishProbeExposure": true
+            }},
+        {"id": 14, "name": "ColorGrading", "type": "ColorGradingLUTPass", "position": {"x": 2650, "y": 470},
+            "properties": {
+                "toneCurve": "aces2"
+            }},
+        {"id": 15, "name": "TranslucencyVolume", "type": "LumenTranslucencyVolumePass", "position": {"x": 1060, "y": 800},
+            "properties": {
+                "gridPixelSize": 32, "endDistanceMeters": 80
+            }},
+        {"id": 16, "name": "Fog", "type": "VolumetricFogPass", "position": {"x": 1740, "y": 800},
+            "properties": {
+                "gridPixelSize": 16, "gridSizeZ": 64, "rayTracedShadows": false,
+                "temporalReprojection": true, "localFogVolumes": true, "localFogStartDistanceMeters": 1.0
+            }},
+        {"id": 17, "name": "FogComposite", "type": "VolumetricFogCompositePass", "position": {"x": 1970, "y": 140}}
+    ],
+    "edges": [
+        {"id": 1, "src": "VBuffer.visibility", "dst": "Deferred.visibility"},
+        {"id": 2, "src": "VBuffer.depth", "dst": "Deferred.depth"},
+        {"id": 3, "src": "VBuffer.rasterInfo", "dst": "Deferred.rasterInfo"},
+        {"id": 4, "src": "VBuffer.domain", "dst": "Deferred.domain"},
+        {"id": 5, "src": "VBuffer.visibility", "dst": "Shadows.visibility"},
+        {"id": 6, "src": "VBuffer.depth", "dst": "Shadows.depth"},
+        {"id": 7, "src": "VBuffer.rasterInfo", "dst": "Shadows.rasterInfo"},
+        {"id": 8, "src": "Shadows.shadows", "dst": "Deferred.virtualShadows"},
+        {"id": 9, "src": "Shadows.lights", "dst": "Deferred.virtualShadowLights"},
+        {"id": 10, "src": "VBuffer.depth", "dst": "ScreenTrace.depth"},
+        {"id": 11, "src": "VBuffer.depth", "dst": "Temporal.sceneDepth"},
+        {"id": 12, "src": "Deferred.lumenPosition", "dst": "Gather.position"},
+        {"id": 13, "src": "Deferred.lumenNormal", "dst": "Gather.normal"},
+        {"id": 14, "src": "Deferred.lumenDiffuse", "dst": "Gather.diffuse"},
+        {"id": 15, "src": "Deferred.color", "dst": "Gather.directColor"},
+        {"id": 16, "src": "GlobalDistanceFieldPages.pageTable", "dst": "SurfaceCache.pageTable"},
+        {"id": 17, "src": "GlobalDistanceFieldPages.pageAtlas", "dst": "SurfaceCache.pageAtlas"},
+        {"id": 18, "src": "GlobalDistanceFieldPages.coarseMip", "dst": "SurfaceCache.coarseMip"},
+        {"id": 19, "src": "GlobalDistanceFieldPages.domain", "dst": "SurfaceCache.domain"},
+        {"id": 20, "src": "GlobalDistanceFieldPages.pageTable", "dst": "Gather.pageTable"},
+        {"id": 21, "src": "GlobalDistanceFieldPages.pageAtlas", "dst": "Gather.pageAtlas"},
+        {"id": 22, "src": "GlobalDistanceFieldPages.coarseMip", "dst": "Gather.coarseMip"},
+        {"id": 23, "src": "GlobalDistanceFieldPages.domain", "dst": "Gather.domain"},
+        {"id": 24, "src": "GlobalDistanceFieldPages.objectGrid", "dst": "Gather.objectGrid"},
+        {"id": 25, "src": "GlobalDistanceFieldPages.objectGridScene", "dst": "Gather.objectGridScene"},
+        {"id": 26, "src": "SurfaceCache.cards", "dst": "Gather.cards"},
+        {"id": 27, "src": "SurfaceCache.scene", "dst": "Gather.cardScene"},
+        {"id": 28, "src": "SurfaceCache.depth", "dst": "Gather.cardDepth"},
+        {"id": 29, "src": "Radiosity.lighting", "dst": "Gather.cardLighting"},
+        {"id": 30, "src": "ScreenTrace.closestHZB", "dst": "Gather.closestHZB"},
+        {"id": 31, "src": "ScreenTrace.previousDepth", "dst": "Gather.previousDepth"},
+        {"id": 32, "src": "ScreenTrace.previousColor", "dst": "Gather.previousColor"},
+        {"id": 33, "src": "ScreenTrace.traceView", "dst": "Gather.traceView"},
+        {"id": 34, "src": "Gather.indirectDiffuse", "dst": "Temporal.currentIndirectDiffuse"},
+        {"id": 35, "src": "Deferred.lumenPosition", "dst": "Temporal.position"},
+        {"id": 36, "src": "Deferred.lumenNormal", "dst": "Temporal.normal"},
+        {"id": 37, "src": "Deferred.color", "dst": "Temporal.directColor"},
+        {"id": 38, "src": "GlobalDistanceFieldPages.pageTable", "dst": "Radiosity.pageTable"},
+        {"id": 39, "src": "GlobalDistanceFieldPages.pageAtlas", "dst": "Radiosity.pageAtlas"},
+        {"id": 40, "src": "GlobalDistanceFieldPages.coarseMip", "dst": "Radiosity.coarseMip"},
+        {"id": 41, "src": "GlobalDistanceFieldPages.domain", "dst": "Radiosity.domain"},
+        {"id": 42, "src": "GlobalDistanceFieldPages.objectGrid", "dst": "Radiosity.objectGrid"},
+        {"id": 43, "src": "GlobalDistanceFieldPages.objectGridScene", "dst": "Radiosity.objectGridScene"},
+        {"id": 44, "src": "SurfaceCache.cards", "dst": "Radiosity.cards"},
+        {"id": 45, "src": "SurfaceCache.scene", "dst": "Radiosity.cardScene"},
+        {"id": 46, "src": "SurfaceCache.depth", "dst": "Radiosity.cardDepth"},
+        {"id": 47, "src": "SurfaceCache.lighting", "dst": "Radiosity.cardLighting"},
+        {"id": 48, "src": "SurfaceCache.normal", "dst": "Radiosity.cardNormal"},
+        {"id": 49, "src": "SurfaceCache.albedo", "dst": "Radiosity.cardAlbedo"},
+        {"id": 50, "src": "SurfaceCache.emissive", "dst": "Radiosity.cardEmissive"},
+        {"id": 51, "src": "SurfaceCache.directIrradiance", "dst": "Radiosity.cardDirectLighting"},
+        {"id": 53, "src": "Temporal.color", "dst": "Reflections.sceneColor"},
+        {"id": 54, "src": "Deferred.lumenPosition", "dst": "Reflections.position"},
+        {"id": 55, "src": "Deferred.lumenNormal", "dst": "Reflections.normal"},
+        {"id": 56, "src": "Deferred.lumenSpecular", "dst": "Reflections.specular"},
+        {"id": 57, "src": "GlobalDistanceFieldPages.pageTable", "dst": "Reflections.pageTable"},
+        {"id": 58, "src": "GlobalDistanceFieldPages.pageAtlas", "dst": "Reflections.pageAtlas"},
+        {"id": 59, "src": "GlobalDistanceFieldPages.coarseMip", "dst": "Reflections.coarseMip"},
+        {"id": 60, "src": "GlobalDistanceFieldPages.domain", "dst": "Reflections.domain"},
+        {"id": 61, "src": "GlobalDistanceFieldPages.objectGrid", "dst": "Reflections.objectGrid"},
+        {"id": 62, "src": "GlobalDistanceFieldPages.objectGridScene", "dst": "Reflections.objectGridScene"},
+        {"id": 63, "src": "SurfaceCache.cards", "dst": "Reflections.cards"},
+        {"id": 64, "src": "SurfaceCache.scene", "dst": "Reflections.cardScene"},
+        {"id": 65, "src": "SurfaceCache.depth", "dst": "Reflections.cardDepth"},
+        {"id": 66, "src": "Radiosity.lighting", "dst": "Reflections.cardLighting"},
+        {"id": 67, "src": "SurfaceCache.cardUpdates", "dst": "Radiosity.cardUpdates"},
+        {"id": 68, "src": "Deferred.lumenPreviousPosition", "dst": "Reflections.previousPosition"},
+        {"id": 69, "src": "ScreenTrace.closestHZB", "dst": "Reflections.closestHZB"},
+        {"id": 70, "src": "ScreenTrace.previousDepth", "dst": "Reflections.previousDepth"},
+        {"id": 71, "src": "ScreenTrace.previousColor", "dst": "Reflections.previousColor"},
+        {"id": 72, "src": "ScreenTrace.traceView", "dst": "Reflections.traceView"},
+        {"id": 73, "src": "VBuffer.depth", "dst": "Reflections.detailDepth"},
+        {"id": 74, "src": "Deferred.lumenPreviousPosition", "dst": "Gather.previousPosition"},
+        {"id": 75, "src": "Deferred.lumenPreviousPosition", "dst": "Temporal.previousPosition"},
+        {"id": 76, "src": "Deferred.lumenSpecular", "dst": "Gather.specular"},
+        {"id": 77, "src": "Gather.roughSpecular", "dst": "Temporal.currentRoughSpecular"},
+        {"id": 78, "src": "Temporal.roughSpecular", "dst": "Reflections.roughSpecular"},
+        {"id": 79, "src": "Deferred.motionVectors", "dst": "DLSSSR.motionVectors"},
+        {"id": 80, "src": "Deferred.deviceDepth", "dst": "DLSSSR.depth"},
+        {"id": 81, "src": "DLSSSR.color", "dst": "AutoExposure.source"},
+        {"id": 82, "src": "AutoExposure.color", "dst": "FinalBlit.source"},
+        {"id": 83, "src": "ColorGrading.lut", "dst": "FinalBlit.lut"},
+        {"id": 84, "src": "VBuffer.depth", "dst": "Fog.depth"},
+        {"id": 85, "src": "VBuffer.rasterInfo", "dst": "Fog.rasterInfo"},
+        {"id": 86, "src": "Reflections.color", "dst": "FogComposite.sceneColor"},
+        {"id": 87, "src": "VBuffer.depth", "dst": "FogComposite.depth"},
+        {"id": 88, "src": "Fog.integrated", "dst": "FogComposite.integrated"},
+        {"id": 89, "src": "Fog.view", "dst": "FogComposite.view"},
+        {"id": 90, "src": "Shadows.worldShadowFaces", "dst": "Fog.worldShadowFaces"},
+        {"id": 91, "src": "GlobalDistanceFieldPages.pageTable", "dst": "TranslucencyVolume.pageTable"},
+        {"id": 92, "src": "GlobalDistanceFieldPages.pageAtlas", "dst": "TranslucencyVolume.pageAtlas"},
+        {"id": 93, "src": "GlobalDistanceFieldPages.coarseMip", "dst": "TranslucencyVolume.coarseMip"},
+        {"id": 94, "src": "GlobalDistanceFieldPages.domain", "dst": "TranslucencyVolume.domain"},
+        {"id": 95, "src": "GlobalDistanceFieldPages.objectGrid", "dst": "TranslucencyVolume.objectGrid"},
+        {"id": 96, "src": "GlobalDistanceFieldPages.objectGridScene", "dst": "TranslucencyVolume.objectGridScene"},
+        {"id": 97, "src": "SurfaceCache.cards", "dst": "TranslucencyVolume.cards"},
+        {"id": 98, "src": "SurfaceCache.scene", "dst": "TranslucencyVolume.cardScene"},
+        {"id": 99, "src": "SurfaceCache.depth", "dst": "TranslucencyVolume.cardDepth"},
+        {"id": 100, "src": "Radiosity.lighting", "dst": "TranslucencyVolume.cardLighting"},
+        {"id": 101, "src": "VBuffer.depth", "dst": "TranslucencyVolume.depth"},
+        {"id": 102, "src": "VBuffer.rasterInfo", "dst": "TranslucencyVolume.rasterInfo"},
+        {"id": 103, "src": "TranslucencyVolume.giAmbient", "dst": "Fog.giAmbient"},
+        {"id": 104, "src": "TranslucencyVolume.giDirectional", "dst": "Fog.giDirectional"},
+        {"id": 105, "src": "TranslucencyVolume.giGrid", "dst": "Fog.giGrid"},
+        {"id": 106, "src": "FogComposite.color", "dst": "DLSSSR.inputColor"}
+    ],
+    "outputs": [],
+    "view": {
+        "camera": {
+            "eye": [
+                7.2,
+                2.65,
+                0.35
+            ],
+            "center": [
+                -3.5,
+                0.95,
+                -0.15
+            ],
+            "up": [
+                0,
+                1,
+                0
+            ],
+            "projection": "perspective",
+            "fovDegrees": 60.0,
+            "znear": 0.05,
+            "zfar": 100.0
+        },
+        "temporalJitter": true,
+        "renderResolution": {
+            "width": 1280,
+            "height": 720,
+            "adaptive": true
+        }
+    }
+}
