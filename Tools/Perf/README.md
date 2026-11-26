@@ -26,10 +26,11 @@ P2 production Shader Printf observations use [ShaderTrace.py](ShaderTrace.py). S
 [commands and the evidence contract](ShaderTrace.md). This is a separate diagnostic
 process with exact WorkControl input/output checks; it is not eligible for timing acceptance.
 
-M3's bounded shader candidate loop is implemented in
-[ExperimentRunner.py](ExperimentRunner.py). See [commands, gates and recovery](ExperimentRunner.md):
-guarded patch/build, exact depth/visibility checks, independent-process ABBA,
-separate confirmation, accept/reject/inconclusive and automatic baseline restore.
+[ExperimentRunner.py](ExperimentRunner.py) tests a declared WorkControl shader
+candidate with exact depth/visibility checks and an independent-process A-B-B-A
+block. Its v4 policy adds one extension block only when discovery calls for it.
+The runner records the verdict in `Decision.json` and restores the baseline.
+See the [runner schedule, decision gates and recovery](ExperimentRunner.md).
 
 M2 fixed in-frame workloads and independent-process A/A are implemented in
 [WorkloadCase.py](WorkloadCase.py). See [the contract](WorkloadCase.md) and

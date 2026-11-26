@@ -1,14 +1,15 @@
 ---
 name: metallic-shader-optimization
-description: "Optimize Metallic shaders on Windows using Nsight MCP GPU Trace counters and Shader Profiler hotspots, matched before/after captures, correctness checks and ordinary A/B timing. Use for Metallic GPU bottleneck diagnosis, shader optimization, NvPerf diagnostics, experiment verification and recovery; not generic Nsight UI automation or CPU profiling."
+description: "Optimize Metallic shaders on Windows using NVIDIA P3 bottleneck triage, Nsight MCP GPU Trace counters and Shader Profiler hotspots, matched captures, correctness checks and ordinary A/B timing. Use for Metallic GPU bottleneck diagnosis, shader optimization, NvPerf diagnostics, experiment verification and recovery; not generic Nsight UI automation or CPU profiling."
 ---
 
 # Metallic Shader Optimization
 
 把优化假设变成可复核的 GPU 实验。使用 Metallic 仓库内维护的 runner，不复制实现，
 不把这份 skill 的历史路径、指标或验收结果当成当前实测。
-默认闭环是：Nsight GPU Trace 定位昂贵范围 → MCP 查询计数器和 Shader Profiler
-热点 → 单一候选 → 同条件前后捕获对比 → 正确性与普通 A/B 确认 → 更新瓶颈假设。
+默认用 Nsight GPU Trace 定位关键路径上的昂贵范围，用 NVIDIA P3 初筛瓶颈，再用
+Shader Profiler 或单元计数器验证假设。对单一候选比较同条件捕获，检查正确性并用
+普通 A/B 计时确认收益，然后更新瓶颈假设。
 详细步骤见 [Nsight 驱动的优化闭环](references/nsight-guided-optimization.md)。
 
 ## 选择入口
@@ -55,7 +56,7 @@ Schema。NvPerf 与 `triage` 不提供源码/IL 查询，不能把它们当作�
   合作锁不证明系统级 GPU 独占；只清理本次拥有的进程，不关闭用户其他程序。
 - 优先复用已验证的资产 manifest 并检查对应 case 与 metadata。发生资产变动或
   迁移才建立新内容身份；不要因文件存在就当它有效，也不要每次默认重哈希数百 GB。
-- A/B 用 runner 的进程级统计、正确性和确认阶段，不把帧数当独立实验数。
+- A/B 用所选 runner 的进程级统计、正确性和判定规则。独立实验数按进程计。
   默认接受可验证的正收益，不设统一的 3% 最低收益；小幅提升按同样证据要求评估。
   在采集前声明判定规则和预算，不根据已见结果改门槛或反复重跑直到显著。
   观察、解释和候选决策分别报告；证据不足保留为 inconclusive，不当成无收益。

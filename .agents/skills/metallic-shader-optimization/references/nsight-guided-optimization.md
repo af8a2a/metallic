@@ -30,8 +30,38 @@ draw/dispatch 范围。区分关键路径、并行重叠、空闲/同步和 shad
 pipeline/module/entry 和实际 shader 身份；范围内若有并行工作，设备计数器不能
 独占归因到其中一个 shader，也不能把重叠区间直接相加。
 
-先枚举该范围实际采集的指标及单位，再选能验证假设的一小组，不猜 counter 名称。
-下面是查询方向，不是固定 metric ID、自动分类器或必须全过的检查表：
+### NVIDIA P3 瓶颈初筛
+
+P3（Peak-Performance-Percentage）先检查 GPU 是否持续有工作，再按硬件单元的峰值
+吞吐百分比（SOL%）选择调查方向。以下数值是 NVIDIA 的诊断参考点。接近分界时结合
+时间线和次高单元判断，收益沿用普通 A/B 的判定规则。
+
+1. **看 GPU Active% 和队列时间线。** 先定位活动率下降的区间。NVIDIA 用低于约 95%
+   提示检查 GPU 空洞。对照 Vulkan graphics、compute、copy 队列和依赖，先查提交间隙、
+   semaphore 等待和同步。证据指向 CPU 提交时，用 Nsight Systems 等 CPU 时间线确认。
+   GPU Active 接近 100% 只说明所计引擎在该范围忙碌，仍需核对目标队列是否在关键路径。
+2. **按 Top Throughput（SOL%）排序。** 先枚举实际采集的指标及单位。用同一范围内按
+   elapsed cycles 归一化的峰值吞吐百分比排序，记录最高和接近的单元及数值。展开有多个
+   子管线的单元，定位抬高汇总值的子项。以 active cycles 为分母的指标另行解释。
+
+   | 最高 SOL% | 优先验证的方向 |
+   |---|---|
+   | >80% | 优先验证是否接近该单元的吞吐上限，尝试减少它处理的工作，例如减少热点指令、显存请求或固定功能阶段的工作量。 |
+   | 60–80% | 同时调查工作量和延迟隐藏。根据次高单元、子管线和 stall 证据选一个候选。 |
+   | <60% | 优先查延迟、并发不足、工作量不足或分布不均。最高单元只是调查线索，结合实际 stall、局部性、occupancy 和 dispatch 尾部判断。 |
+
+3. **按最高单元向下验证。** SM 排在首位或接近时，若有 `SM Throughput for Active Cycles`，
+   用它判断活跃周期内的发射效率。高于约 80% 时查指令和子管线工作量，低于约 60% 时查
+   warp 发射 stall、eligible warps 及实际 occupancy，中间区间两方面都看。显存居首但 SOL
+   偏低时，结合 L2 流量来源和命中率、DRAM 访问量及访存 stall 验证延迟假设；若高吞吐
+   支持显存饱和，则优先验证能否减少传到显存的流量。
+
+缺少 GPU Active、SOL 或子项时，注明缺失指标和判断范围，使用现有时间线或热点验证假设。
+WorkControl 默认 NvPerf 只采 duration 和 SM active。P3 初筛需另取 GPU Active 和各单元 SOL。
+
+### 用计数器和热点交叉验证
+
+从实际可用指标中选出能检验假设的一小组，具体 metric ID 以本机查询为准。
 
 | 假设 | GPU Trace / 计数器证据 | Profiler 或资源证据及交叉检查 |
 |---|---|---|
@@ -40,6 +70,7 @@ pipeline/module/entry 和实际 shader 身份；范围内若有并行工作，�
 | 指令/执行管线受限 | SM issue、各执行管线吞吐、动态指令计数（若有） | 函数与源码/IL 热点、指令类别；静态 instruction mix 不当动态执行次数 |
 | 寄存器/共享内存限制并发 | 实际 occupancy、active warps、资源限制项 | registers、shared memory、spill/local traffic（接口支持时）；源码变量数不代替编译分配 |
 | 同步或分歧 | barrier 活动、shared bank conflicts、active threads/warp | barrier/branch 热点及线程组工作分配；stall 占比不能直接换成可回收时间 |
+| 固定功能阶段吞吐受限 | 几何分发、深度/颜色输出等实际可用的单元与子项吞吐 | 核对 draw/渲染状态、primitive 数、覆盖率或写入量，定位送入该单元的工作 |
 | 队列/提交或其他阶段受限 | GPU 空洞、等待、重叠与关键路径 | 先核实上游依赖/CPU 提交；单个 shader 加速未必改变整图耗时 |
 
 对选定 shader 查询 profile 概览、Top-down/Bottom-up 函数树及 source/intermediate
@@ -80,6 +111,9 @@ hash 相等。无法建立映射时说明归因限制，不能把调试构建收
 用 MCP 对两侧执行相同语义的查询，分别解析实际范围和 shader ID。若候选拆分/
 合并 dispatch，映射完整等价工作集合，比较合计开销，不只挑变快的子 dispatch。
 同时观察邻接 pass、整图关键路径及新的热点，检查收益是否被转移的成本抵消。
+若用 P3 初筛，对照两侧的 GPU Active、最高及接近的 SOL 单元和支撑归因的指标，
+说明瓶颈是否转移。候选缩短范围时，某单元的 SOL% 可能升高，结合绝对工作量和普通
+计时解释变化。
 
 每项保留 baseline/candidate 原值、单位、范围、聚合/归一化方式、差值和重复性。
 百分比指标报告百分点差；绝对量可报告相对变化，但 baseline=0 时相对变化留空。
@@ -106,7 +140,7 @@ hash 相等。无法建立映射时说明归因限制，不能把调试构建收
 |---|---|
 | 正确性通过、普通收益确认、诊断支持 | 接受性能结论；按已有授权处理候选，记录机制与剩余瓶颈 |
 | 普通收益确认，计数器未改善/机制不清 | 保留收益结论，标明机制未证实；检查范围/采样、并行工作及瓶颈转移，不新增计数器改善硬门槛 |
-| 计数器/热点按预期改善，普通计时跨零 | 保留候选与假设支持证据，性能仍 inconclusive；仅在有新假设或明确测量改进时制定下一份固定预算 |
+| 计数器/热点按预期改善，普通计时未确认收益 | 保留候选及假设证据，报告 runner 的判定和原因。若原因为 `no_measurable_difference`，报告观察值并停止 |
 | 计数器改善但普通耗时退化 | 不接受加速结论；检查寄存器、同步、工作转移及其他 pass，修正候选 |
 | 正确性失败或身份不可比较 | 分别处理正确性失败或证据失效，不由好看的计数器抵消 |
 
@@ -120,3 +154,8 @@ hash 相等。无法建立映射时说明归因限制，不能把调试构建收
 说明 Workflow/Native 的发现方式；具体工具参数仍以当前安装的 schema 为准。
 采集选项见 [GPU Trace](https://docs.nvidia.com/nsight-graphics/UserGuide/gpu-trace-overview.html)，
 采样和源码归因见 [Shader Profiler](https://docs.nvidia.com/nsight-graphics/UserGuide/shader-profiler.html)。
+
+P3 方法与阈值见 NVIDIA 的 [GPU Trace 与 P3 原文](https://developer.nvidia.com/blog/what-is-limiting-your-rendering-performance/)
+和 [P3 方法详解](https://developer.nvidia.com/blog/the-peak-performance-analysis-method-for-optimizing-any-gpu-workload/)。
+Vulkan 中如何用高级指标验证低 SOL 的成因，见
+[NVIDIA 的 GPU Trace 实例](https://developer.nvidia.com/blog/optimizing-vk-vkr-and-dx12-dxr-applications-using-nsight-graphics-gpu-trace-advanced-mode-metrics/)。

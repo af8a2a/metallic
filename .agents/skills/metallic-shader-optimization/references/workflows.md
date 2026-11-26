@@ -54,13 +54,11 @@ python -B Tools/Perf/ExperimentRunner.py run --case "$casePath" --candidate "$ca
 python -B Tools/Perf/ExperimentRunner.py verify "$outputDir"
 ```
 
-默认 1 个 discovery ABBA block（4 次独立进程），仅当结果混合或差值与组内波动相当时
-再追加 1 个 extension ABBA block（共 8 次进程），每进程限时 300 秒；具体停止条件与
-噪声下限见 `ExperimentRunner.md` 与仓库根目录 `AGENTS.md` 中的 “Performance and A/B Experiment Budget”。
-对低于 1% 噪声下限、或 8 次后仍不确定的候选直接停止并报告 `no_measurable_difference`，
-不自动追加样本或反复重试。正确性、身份、恢复和证据完整性要求仍须通过。
-exit 0 可以是 accept 或 reject，exit 2 是 inconclusive；读取 `Decision.json`、
-阶段状态和事务恢复状态，不能只看 exit code。
+WorkControl v4 先跑一个 A-B-B-A block（4 次独立进程）。discovery 的
+`nextAction=extend_runs` 由 runner 自动执行，最多追加一个 block，并合并 8 次结果判定。
+运行顺序、噪声下限及停止规则见 [ExperimentRunner.md](../../../../Tools/Perf/ExperimentRunner.md#run)。
+读取最终 `Decision.json` 的 `decision`、`reason` 和 `nextAction`，核对事务恢复状态。
+`no_measurable_difference` 表示实验已达到停止条件。报告实际耗时和运行次数。
 
 样本预算不足以分辨小收益时保留候选和全部结果，并说明测量精度限制。后续实验应
 先声明预算、可检验的改动或噪声来源处置；不自动追加样本或只保留显著批次。

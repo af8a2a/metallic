@@ -31,10 +31,10 @@ python -B Tools/Perf/ExperimentRunner.py run `
 python -B Tools/Perf/ExperimentRunner.py verify build/my-new-experiment
 ```
 
-The output directory must be new. The runner follows the repository A/B budget:
-it runs one `discovery` ABBA block (4 independent processes) by default, and
-extends with at most one `extension` ABBA block (8 processes total) only when
-the first 4 runs are mixed or the gap is comparable to the within-arm spread.
+The output directory must be new. The v4 runner starts with one `discovery`
+A-B-B-A block (4 independent processes). If discovery records
+`nextAction=extend_runs`, the runner adds one `extension` A-B-B-A block and
+evaluates all 8 runs together.
 Each process has a default 300-second timeout, configurable with `--timeout`; the
 case retains its per-process rounds and frame counts. Processes are serial.
 Evidence or correctness failures can stop collection.
@@ -43,8 +43,8 @@ Build failures, process failures, missing evidence and restoration conflicts
 produce `inconclusive`, never a speedup. Exit code 0 means a completed
 accept/reject decision, 2 means inconclusive, and 1 means invalid invocation or
 failed verification. Inspect the classifications and `nextAction` in
-`Decision.json`, not just the exit code. A discovery result may be inconclusive
-and still schedule confirmation.
+`Decision.json` alongside the exit code. The final decision includes any
+extension the runner scheduled.
 
 ## Candidate and build contract
 
@@ -90,8 +90,9 @@ every run. Do not modify source/assets or run another GPU experiment concurrentl
 3. Available workload invariants must match across arms: case, camera, render
    extent, graph, history policy, cut/page hashes, software lists, indirect groups,
    residency and production binding fields. Only the compiled SPIR-V fingerprint
-   may differ. Confirmation must also match discovery's inputs, outputs and each
-   corresponding arm's complete identity, including its SPIR-V fingerprint.
+   may differ. In v4 these checks cover the pooled runs if discovery extends.
+   Historical v2/v3 confirmation also matches discovery's inputs, outputs and
+   each corresponding arm's complete identity, including its SPIR-V fingerprint.
    Versions 2 and 3 check input drift before attributing differing outputs to candidate
    correctness. An unplanned identity change is inconclusive. This does not claim
    a complete byte snapshot of every HZB/history input.
@@ -107,13 +108,13 @@ every run. Do not modify source/assets or run another GPU experiment concurrentl
    `max(max(A) - min(A), max(B) - min(B)) / mean(A)`; across pooled blocks,
    the overall gain uses all process medians and the spread is the mean of
    per-block relative spreads.
-6. Discovery (4 runs) rejects immediately on a consistent graph regression
-   exceeding 2% and its spread, or a consistent primary regression exceeding
-   its spread. A software gain below the 1% noise floor stops immediately as
-   `no_measurable_difference`. A candidate faster in every block with gain
-   exceeding its spread (and graph regression within 2%) is accepted as
-   `separated_gain` without extending. Otherwise, discovery is `mixed_result`
-   (`nextAction=extend_runs`) and triggers the single 4-run extension block.
+6. Discovery (4 runs) first rejects a consistent graph regression exceeding
+   2% and its spread. A primary timing change with magnitude below the 1% noise
+   floor stops as `no_measurable_difference`. A consistent primary regression
+   exceeding its spread is rejected. A candidate faster in every block with gain
+   exceeding its spread and graph regression within 2% is accepted as
+   `separated_gain`. The remaining cases record `mixed_result`
+   (`nextAction=extend_runs`) and trigger the single 4-run extension block.
 7. Extension pools all 8 runs (2 ABBA blocks) and re-evaluates the same
    separation rule. If the 8-run result is still mixed, below the 1% noise
    floor, or does not exceed spread, it stops as `no_measurable_difference`
@@ -121,8 +122,8 @@ every run. Do not modify source/assets or run another GPU experiment concurrentl
 
 ## Result classification
 
-The top-level `accept / reject / inconclusive` status is retained. Versions 2 and 3 also
-records `stage`, `evidenceValidity`, `effectAssessment`, and `nextAction`, so a
+The top-level `accept / reject / inconclusive` status is retained. Versions 2–4
+also record `stage`, `evidenceValidity`, `effectAssessment`, and `nextAction`, so a
 missing measurement and a promising but imprecise measurement do not imply the
 same follow-up.
 
@@ -131,7 +132,7 @@ same follow-up.
 | `not_assessed` | `evidenceValidity` is `invalid` or `incomplete`: a collection, identity, integrity or restoration problem prevents a performance conclusion; follow the recorded repair/collection action. |
 | `correctness_failure` | Recorded outputs differ from the baseline; `reject_candidate` regardless of timing. Here `evidenceValidity=valid` describes the evidence, not the candidate's correctness. |
 | `no_shader_change` | Both arms bind the same compiled shader; `revise_candidate`, without a speedup conclusion. |
-| `confirmed_regression` | The interval gives evidence of a software slowdown or a graph regression beyond the 2% budget; `reject_candidate`. `stage` identifies where this was observed; rejection does not require independent confirmation. |
+| `confirmed_regression` | The policy confirms a primary or graph regression and records `reject_candidate`. V4 uses block separation. Historical versions use the interval. |
 | `below_target` | Historical v1/v2 result: the software interval's upper bound is below the declared 3% target; `reject_candidate` under that policy. Not produced by v3. |
 | `no_gain` | In v3, the software upper bound is exactly zero; `reject_candidate`. Negative upper bounds are classified as regression. |
 | `promising` | Historical v2/v3 result: discovery's software estimate is positive, without established regression; `nextAction=run_confirmation`. |
@@ -139,12 +140,10 @@ same follow-up.
 | `no_measurable_difference` | In v4, the gain is below the 1% noise floor or remains mixed/within-spread after 8 runs; stops with `nextAction=retain_baseline`. |
 | `confirmed_gain` | In v4 (`separated_gain`), every block is faster and gain exceeds spread (with graph within 2%); in v2/v3, independent confirmation satisfies both lower bounds; `accept_candidate`, subject to successful restoration. |
 
-Every result retains the candidate patch and collected evidence. Spending the
-budget without confirmation does not disprove the hypothesis. A later independent
-confirmation plan must declare its budget before observing its new data and
-retain all earlier rounds; do not repeatedly rerun until one interval passes.
-The current runner starts a new experiment rather than resuming or expanding an
-archived stage.
+The evidence bundle retains the candidate patch and collected measurements.
+Report the final verdict with the observed timings, run count and stop reason.
+A v4 result of `no_measurable_difference` ends the experiment and retains the
+baseline. A new invocation creates a separate evidence bundle.
 
 ## Restoration and recovery
 
@@ -168,16 +167,16 @@ unrelated applications from accessing the repository or GPU.
 
 ## Offline evidence
 
-`verify` checks all archived file hashes, the parser/tool revision, replacement
-result, readback bytes and raw frame data, recomputes each stage decision, and
-requires a qualifying discovery result, independent confirmation and successful
-restoration for acceptance.
+`verify` checks all archived file hashes, producer tool hashes, the replacement
+result, readback bytes and raw frame data, then recomputes stage decisions using
+the manifest's policy. V4 acceptance can come from discovery or the pooled
+extension and requires successful restoration. Historical policies retain their
+confirmation gates.
 It checks process lifetimes, nonoverlap and containment of measurement windows;
 copying a run into another directory does not create an independent sample.
-For versions 2 and 3, it also checks the declared stage budgets, complete ABBA ordering
-and the decision that authorized confirmation. Live collection and verification
-both require confirmation to preserve discovery's inputs, outputs and the
-complete identity of each corresponding arm.
+For v2 and v3 archives, it checks the declared stage budgets, ABBA ordering and
+the discovery decision that authorized confirmation. It also checks that
+confirmation preserved discovery's inputs, outputs and corresponding arm identities.
 Original producer tool bytes/hashes are preserved in the bundle. The current
 verifier checks those archived hashes without executing archived code and reports
 its own hash separately.
@@ -193,10 +192,9 @@ policy from the manifest protocol and requires agreement with saved decisions:
 | `metallic-shader-experiment-v3` | Same evidence and confirmation requirements as v2; positive discovery estimate and strictly positive confirmation lower bound replace the 3% target. |
 | `metallic-shader-experiment-v4` | Default 1 ABBA block (4 runs) with optional 1-block extension (8 runs total), 1% noise floor, and per-block separation rule. |
 
-Unknown protocols or altered/unknown policies fail verification. Existing v1/v2
-archives retain their original decisions and are never rewritten or reclassified
-to fit v3. Any new analysis belongs outside the original evidence bundle and must
-identify its separate policy; it does not replace the historical verdict.
+Unknown protocols or altered/unknown policies fail verification. Existing
+archives retain their original decisions. Save any new analysis outside the
+original bundle and identify the policy used for it.
 The manifest is an integrity index, not a cryptographically signed attestation
 against intentional rewriting of all evidence and hashes.
 

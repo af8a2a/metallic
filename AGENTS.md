@@ -111,11 +111,12 @@ When porting, migrating, or adapting code from a mature reference implementation
 
 - Compare the same workload and settings; record cache/warmup conditions and the measured scope. Report pass timings as pass timings, not end-to-end speedups. Keep generated captures and images out of source control unless intentionally included as evidence.
 - One run is one independent process launch measured after warmup. Frames within a run are not independent samples.
-- Default protocol: interleaved A-B-A-B (4 runs). Stop and report when every B is on the same side of every A and the A/B gap exceeds the within-variant spread. A consistent regression is also a conclusive result; stop and report it.
+- For experiments without a runner-defined schedule, use A-B-A-B (4 runs). Stop and report when every B is on the same side of every A and the A/B gap exceeds the within-variant spread. Report a consistent regression as a conclusive result.
+- When a runner owns the schedule and verdict, use its documented protocol within this budget. WorkControl's `Tools/Perf/ExperimentRunner.py` uses A-B-B-A and handles any eligible extension itself. Report its `Decision.json` verdict and stop reason.
 - Extend to at most 8 interleaved runs only when the first 4 are mixed, the gap is comparable to the spread, or a run is clearly disturbed (e.g. shader compile, thermal or background spike; name the cause). Do not extend once the result is already clear.
 - A gap below about 1% of the measured pass time, or below the runner's noise floor, counts as "no measurable difference"; do not add runs to resolve it.
-- If 8 runs are still inconclusive, stop and report "no measurable difference" with the observed numbers. Do not rerun to seek a clearer result. Exceeding 8 runs, or adding scenes/resolutions/settings beyond those the change affects, requires the user's approval with a stated reason.
-- Iterate on candidates with a single quick A/B or diagnostic. Run the full A-B-A-B protocol and the correctness check only for the final candidate, not for every intermediate attempt.
+- If 8 valid runs still cannot separate the variants, stop and report "no measurable difference" with the observed numbers. For invalid or incomplete evidence, report the failure reason. Exceeding 8 runs, or adding scenes/resolutions/settings beyond those the change affects, requires the user's approval with a stated reason.
+- Iterate on candidates with a single quick A/B or diagnostic. Reserve the full applicable A/B schedule and correctness check for the final candidate.
 - Report the run count used and the reason the experiment stopped.
 
 ## Commit & Pull Request Guidelines
