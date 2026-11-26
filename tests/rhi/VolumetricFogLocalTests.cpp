@@ -4,7 +4,9 @@
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
+#include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Scene/SceneDocument.h"
+#include "stb/stb_image_write.h"
 
 #include <algorithm>
 #include <array>
@@ -80,15 +82,16 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection result;
-        result.addTextureOutput("color", "Unlit white radiance").transferWrite()
+        result.addTextureOutput("color", "Uniform unlit radiance").transferWrite()
             .transient(RenderGraphInitialization::FullOverwrite).format = Format::RGBA32Sfloat;
         return result;
     }
 
     Result<> execute(RenderGraphExecutionContext& context) override
     {
+        const float radiance = properties().value("radiance", 1.0f);
         return context.commandBuffer().clearColorTexture(*context.outputTexture("color").texture(),
-            TextureLayout::TransferDestination, {1, 1, 1, 1});
+            TextureLayout::TransferDestination, {radiance, radiance, radiance, 1});
     }
 };
 
@@ -501,5 +504,285 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VolumetricFogPunctualShadowTest);
+
+struct FogGIMeasurement {
+    std::array<double, 3> scatter{};
+    std::array<double, 3> hdr{};
+    double extinction = 0;
+};
+
+float decodeFogHalf(uint16_t bits)
+{
+    const int exponent = (bits >> 10) & 31;
+    const int mantissa = bits & 1023;
+    if (exponent == 31) { throw std::runtime_error("Nonfinite scattering in fog GI capture"); }
+    return std::ldexp(float(exponent ? 1024 + mantissa : mantissa), exponent ? exponent - 25 : -24) *
+        (bits & 0x8000u ? -1.0f : 1.0f);
+}
+
+FogGIMeasurement readFogGI(RHITestContext& context, RenderGraphExecutor& executor,
+    const std::filesystem::path& directory, const std::string& name)
+{
+    const auto& volume = executor.outputResource("Fog.scattering")->desc;
+    const uint64_t scatterBytes = uint64_t(volume.width) * volume.height * volume.depth * 8;
+    constexpr uint64_t colorBytes = kWidth * kHeight * 16;
+    auto buffer = checked(context.device.createBuffer({.size = scatterBytes + colorBytes,
+        .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}), "fog GI readback");
+    bench::GPUCommands copy(context.graphicsQueue);
+    checked(copy.initialize(context.device), "initialize fog GI readback");
+    const auto read = [&](const char* output, uint64_t offset, uint64_t size) {
+        const auto& resource = *executor.outputResource(output);
+        checked(executor.transitionOutput(*copy.commands, output, ResourceState::TransferSource), "transition fog GI output");
+        checked(copy.commands->copyTextureToBuffer({.texture = resource.texture,
+            .buffer = checked(buffer->slice({offset, size}), "fog GI buffer range"),
+            .width = resource.desc.width, .height = resource.desc.height, .depth = resource.desc.depth}), "read fog GI output");
+    };
+    read("Fog.scattering", 0, scatterBytes);
+    read("Composite.color", scatterBytes, colorBytes);
+    const BufferBarrierDesc barrier{.buffer = buffer.get(), .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+        .after = {PipelineStageBits::Host, AccessBits::HostRead}};
+    checked(copy.commands->synchronize({.buffers = {&barrier, 1}}), "publish fog GI readback");
+    checked(copy.submitAndWait(), "submit fog GI readback");
+    buffer->invalidate();
+    const auto* bytes = static_cast<const std::byte*>(buffer->map());
+    if (!bytes) { throw std::runtime_error("Cannot map fog GI readback"); }
+    const auto* volumePixels = reinterpret_cast<const uint16_t*>(bytes);
+    const auto* pixels = reinterpret_cast<const float*>(bytes + scatterBytes);
+    FogGIMeasurement result;
+    uint32_t samples = 0;
+    // These central cells are in air, between the eye and the back wall in every scene.
+    for (uint32_t z = 12; z <= 34; ++z) {
+        for (uint32_t y = volume.height / 3; y < volume.height * 2 / 3; ++y) {
+            for (uint32_t x = volume.width / 4; x < volume.width / 2; ++x) {
+                const auto* cell = volumePixels + 4 * ((z * volume.height + y) * volume.width + x);
+                for (uint32_t c = 0; c < 3; ++c) { result.scatter[c] += decodeFogHalf(cell[c]); }
+                result.extinction += decodeFogHalf(cell[3]);
+                ++samples;
+            }
+        }
+    }
+    for (double& c : result.scatter) { c /= samples; }
+    result.extinction /= samples;
+    samples = 0;
+    std::vector<uint8_t> image(kWidth * kHeight * 4, 255);
+    for (uint32_t y = 0; y < kHeight; ++y) {
+        for (uint32_t x = 0; x < kWidth; ++x) {
+            const bool sample = x >= kWidth / 4 && x < kWidth / 2 && y >= kHeight / 3 && y < kHeight * 2 / 3;
+            for (uint32_t c = 0; c < 3; ++c) {
+                const auto i = 4 * (y * kWidth + x) + c;
+                const float v = pixels[i];
+                if (!std::isfinite(v) || v < 0) { throw std::runtime_error("Invalid scene color in " + name); }
+                if (sample) { result.hdr[c] += v; }
+                image[i] = uint8_t(255.0f * std::sqrt(v / (1.0f + v)));
+            }
+            if (sample) { ++samples; }
+        }
+    }
+    for (double& c : result.hdr) { c /= samples; }
+    buffer->unmap();
+    std::string error;
+    if (!saveRgba8Png(directory / (name + ".png"), image.data(), kWidth, kHeight, error)) {
+        throw std::runtime_error(error);
+    }
+    return result;
+}
+
+class VolumetricFogLumenTest final : public RHITest
+{
+public:
+    VolumetricFogLumenTest()
+    {
+        name = "volumetric_fog_lumen_wall_bounce_and_sky_visibility";
+        type = RHITestType::Rendering;
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto& caps = context.device.capabilities();
+        if (!caps.bindlessDescriptorHeap || !caps.meshShader || !caps.taskShader || !caps.geometryShader) {
+            return RHITestResult::skip("Lumen fog scene requires --rhi-realtime");
+        }
+        try {
+            const auto directory = std::filesystem::absolute(context.outputDirectory / "fog-lumen");
+            std::filesystem::create_directories(directory);
+            const auto root = std::filesystem::path(PROJECT_SOURCE_DIR);
+            scene::SceneDocument document;
+            if (!document.load(root / "Asset/Lumen/CornellBox.metallic_scene.json")) {
+                return RHITestResult::fail(document.lastLoadResult().error);
+            }
+            for (int node : {5, 6, 7}) { document.setObjectVisible(document.objectForNode(node).entity(), false); }
+            RenderWorld world;
+            world.setScene(&document);
+            world.setEnvironment(document.environment());
+            auto env = document.worldEnvironment();
+            env.volumetricFog.enabled = true;
+            env.volumetricFog.density = 5.0f;
+            env.volumetricFog.heightFalloff = 0;
+            env.volumetricFog.scatteringDistribution = 0;
+            env.volumetricFog.distanceMeters = 4;
+            world.setWorldEnvironment(env);
+            auto lights = document.lighting();
+            scene::PunctualLight light;
+            light.properties.type = "spot";
+            light.properties.intensity = 60;
+            light.properties.intensityUnit = scene::LightUnit::Candela;
+            light.properties.range = 3;
+            light.properties.outerConeAngle = 1.05;
+            light.properties.innerConeAngle = 0.65;
+            light.properties.volumetricScatteringIntensity = 0;
+            light.direction = float3(-1, 0, 0);
+            light.position = float3(-0.25f, 1, 0);
+            lights.lights = {light};
+            if (!world.setLighting(lights)) { return RHITestResult::fail("Invalid wall spotlight"); }
+            RenderView view;
+            view.setRenderResolution(kWidth, kHeight);
+            view.setCameraProperties({{"eye", {0, 1, 0.9}}, {"center", {0, 1, 0}}, {"up", {0, 1, 0}},
+                {"fovDegrees", 60}, {"znear", 0.05}, {"zfar", 10}});
+            view.setTemporalJitter(false);
+            auto graph = makeFogGraph(view);
+            // A black background isolates integrated in-scattering while preserving actual surface depth.
+            graph.setNodeProperties(graph.findNode("Wall")->id, {{"radiance", 0.0f}});
+            graph.markOutput("Fog.scattering");
+            RenderGraphExecutor executor;
+            executor.bindRenderWorld(&world);
+            executor.bindRenderView(&view);
+            std::string error;
+            if (!executor.subsystemHost()->configure<EnvironmentLightingSubsystem>(
+                    {.initialDecodeTimeoutMilliseconds = 10000}, error)) { return RHITestResult::fail(error); }
+            const auto compile = [&] {
+                if (!executor.compile(context.device, graph, kWidth, kHeight, error)) { throw std::runtime_error(error); }
+            };
+            nlohmann::json measurements;
+            const auto capture = [&](const char* name) {
+                checked(executor.execute({.graphicsQueue = &context.graphicsQueue}), "render Cornell fog");
+                checked(executor.waitForSubmittedWork(), "wait for Cornell fog");
+                const auto sample = readFogGI(context, executor, directory, name);
+                measurements[name] = {{"scattering", sample.scatter}, {"linearHDR", sample.hdr}, {"extinction", sample.extinction}};
+                return sample;
+            };
+            compile();
+            const auto baseline = capture("unconnected");
+            RenderGraph cornell;
+            if (!loadRenderGraphFromFile(root / "Pipelines/Samples/lumen_cornell_box.metallic_graph.json", cornell, error)) {
+                return RHITestResult::fail(error);
+            }
+            for (const auto* name : {"GlobalDistanceFieldPages", "SurfaceCache"}) {
+                const auto* node = cornell.findNode(name);
+                graph.addNode(node->type, name, node->properties);
+            }
+            graph.addNode("LumenTranslucencyVolumePass", "Volume", {{"gridPixelSize", 8}, {"jitter", false}});
+            for (const std::string field : {"depth", "rasterInfo"}) { graph.addEdge("VBuffer." + field, "Volume." + field); }
+            for (const std::string field : {"pageTable", "pageAtlas", "coarseMip", "domain"}) {
+                graph.addEdge("GlobalDistanceFieldPages." + field, "SurfaceCache." + field);
+                graph.addEdge("GlobalDistanceFieldPages." + field, "Volume." + field);
+            }
+            for (const std::string field : {"objectGrid", "objectGridScene"}) {
+                graph.addEdge("GlobalDistanceFieldPages." + field, "Volume." + field);
+            }
+            graph.addEdge("SurfaceCache.cards", "Volume.cards");
+            graph.addEdge("SurfaceCache.scene", "Volume.cardScene");
+            graph.addEdge("SurfaceCache.depth", "Volume.cardDepth");
+            const uint32_t directLightingEdge = graph.addEdge("SurfaceCache.lighting", "Volume.cardLighting")->id;
+            for (const std::string field : {"giAmbient", "giDirectional", "giGrid"}) {
+                graph.addEdge("Volume." + field, "Fog." + field);
+            }
+            compile();
+            const auto red = capture("red-wall");
+            const auto& materials = document.materials();
+            const auto left = std::ranges::find(materials, "Left Wall Red", &scene::RenderMaterial::name);
+            if (left == materials.end()) { return RHITestResult::fail("Missing left wall material"); }
+            auto gray = *left;
+            gray.baseColorFactor = float4(0.58f, 0.58f, 0.58f, 1);
+            if (!document.setMaterialProperties(int32_t(left - materials.begin()), gray)) {
+                return RHITestResult::fail("Could not edit Cornell wall material");
+            }
+            world.notifySceneChanged(RenderChangeBits::Material);
+            const auto neutral = capture("neutral-wall");
+
+            lights.lights.clear();
+            if (!world.setLighting(lights)) { return RHITestResult::fail("Could not disable spotlight"); }
+            const auto dark = capture("light-off");
+            auto sky = document.environment();
+            sky.enabled = true;
+            sky.path = directory / "white-sky.hdr";
+            sky.visible = false;
+            const std::vector<float> white(16 * 8 * 3, 1.0f);
+            if (!stbi_write_hdr(sky.path.string().c_str(), 16, 8, 3, white.data())) { return RHITestResult::fail("Write white sky"); }
+            world.setEnvironment(sky);
+            const auto* skyProvider = executor.subsystemHost()->get<EnvironmentLightingSubsystem>();
+            for (int frame = 0; frame < 32 && !skyProvider->snapshot().mapAvailable; ++frame) {
+                checked(executor.execute({.graphicsQueue = &context.graphicsQueue}), "publish Cornell sky");
+                checked(executor.waitForSubmittedWork(), "wait for Cornell sky");
+            }
+            if (!skyProvider->snapshot().mapAvailable) { return RHITestResult::fail("Cornell HDRI did not become resident"); }
+            const auto closed = capture("roof-closed");
+            if (!document.setObjectVisible(document.objectForNode(1).entity(), false)) {
+                return RHITestResult::fail("Could not remove Cornell roof");
+            }
+            world.notifySceneChanged(RenderChangeBits::Geometry);
+            const auto open = capture("roof-open");
+            // With white diffuse surfaces, the roof both occludes the sky and reflects light into the air.
+            const auto right = std::ranges::find(materials, "Right Wall Green", &scene::RenderMaterial::name);
+            if (right == materials.end()) { return RHITestResult::fail("Missing right wall material"); }
+            auto plaster = *right;
+            plaster.baseColorFactor = float4(0.73f, 0.73f, 0.73f, 1);
+            if (!document.setMaterialProperties(int32_t(right - materials.begin()), plaster)) {
+                return RHITestResult::fail("Could not neutralize right wall");
+            }
+            world.notifySceneChanged(RenderChangeBits::Material);
+            const auto* radiosity = cornell.findNode("Radiosity");
+            graph.addNode(radiosity->type, radiosity->name, radiosity->properties);
+            for (const auto& edge : cornell.edges()) {
+                if (edge.dstPass == radiosity->name) {
+                    graph.addEdge(edge.srcPass + "." + edge.srcField, edge.dstPass + "." + edge.dstField);
+                }
+            }
+            graph.removeEdge(directLightingEdge);
+            graph.addEdge("Radiosity.lighting", "Volume.cardLighting");
+            compile();
+            const auto measureRadiosity = [&](bool roofVisible, const char* name) {
+                if (roofVisible && !document.setObjectVisible(document.objectForNode(1).entity(), true)) {
+                    throw std::runtime_error("Could not restore Cornell roof");
+                }
+                if (roofVisible) { world.notifySceneChanged(RenderChangeBits::Geometry); }
+                for (int frame = 0; frame < 31; ++frame) {
+                    checked(executor.execute({.graphicsQueue = &context.graphicsQueue}), "accumulate Cornell radiosity");
+                    checked(executor.waitForSubmittedWork(), "wait for Cornell radiosity");
+                }
+                return capture(name);
+            };
+            const auto bouncedOpen = measureRadiosity(false, "diffuse-roof-open");
+            const auto bouncedClosed = measureRadiosity(true, "diffuse-roof-closed");
+            std::ofstream(directory / "linear-measurements.json") << measurements.dump(2);
+            const auto redder = [](const auto& a, const auto& b) { return a[0] * b[1] > a[1] * b[0]; };
+            if (baseline.scatter != std::array<double, 3>{} || dark.scatter != baseline.scatter ||
+                baseline.extinction <= 0 || red.extinction != baseline.extinction || open.extinction != baseline.extinction) {
+                return RHITestResult::fail("Disconnected or unlit GI changed fog scattering or extinction: " + measurements.dump());
+            }
+            if (red.scatter[0] <= 0 || neutral.scatter[1] <= red.scatter[1] ||
+                !redder(red.scatter, neutral.scatter) || !redder(red.hdr, neutral.hdr)) {
+                return RHITestResult::fail("The wall failed to tint in-air scattering and HDR: " + measurements.dump());
+            }
+            if (open.scatter[1] <= closed.scatter[1] * 1.05 || open.hdr[1] <= closed.hdr[1]) {
+                return RHITestResult::fail("Removing the roof failed to admit skylight: " + measurements.dump());
+            }
+            // UE 5.7.4 SM6 SceneCapture, same 32x32 pixels, unit pre-exposure and RGBA16F Lumen.
+            // For the sky probes UE used black walls with independently baked 210x220x10 cm roof geometry.
+            constexpr double neutralUE = 0.36837816, roofClosedUE = 0.07413197, roofOpenUE = 0.11758447;
+            if (std::abs(neutral.hdr[1] / neutralUE - 1.0) > 0.03 ||
+                std::abs(closed.hdr[1] / roofClosedUE - 1.0) > 0.03 ||
+                std::abs(open.hdr[1] / roofOpenUE - 1.0) > 0.03) {
+                return RHITestResult::fail("Cornell fog lighting disagrees with Unreal reference HDR: " + measurements.dump());
+            }
+            if (bouncedOpen.scatter[1] <= open.scatter[1] || bouncedClosed.scatter[1] <= closed.scatter[1] ||
+                bouncedOpen.hdr[1] <= open.hdr[1] || bouncedClosed.hdr[1] <= closed.hdr[1]) {
+                return RHITestResult::fail("Skylit surface cards failed to illuminate the air: " + measurements.dump());
+            }
+            return RHITestResult::pass("Wall color and roof visibility change in-air scattering and composited HDR");
+        } catch (const std::exception& e) { return RHITestResult::fail(e.what()); }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VolumetricFogLumenTest);
 } // namespace
 } // namespace metallic::tests

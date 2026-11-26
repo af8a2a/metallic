@@ -1,6 +1,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/LumenBlueNoise.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/LumenGlobalTraceBindings.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/LumenSky.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -17,8 +18,8 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
-constexpr uint64_t kRadiosityABI = 0x4c554d454e040008ull;
-constexpr uint64_t kRadiosityPersistentABI = 0x4c554d454e040009ull;
+constexpr uint64_t kRadiosityABI = 0x4c554d454e04000aull;
+constexpr uint64_t kRadiosityPersistentABI = 0x4c554d454e04000bull;
 constexpr uint64_t kRadiosityScheduleABI = 0x4c554d454e040003ull;
 constexpr uint32_t kProbeSpacing = 4;
 constexpr uint32_t kScheduleStateWords = 24;
@@ -41,16 +42,17 @@ struct LumenRadiosityParams {
     float maxTraceDistance;
     uint32_t viewFrameIndex, traceValid;
     float maxRayIntensity;
+    LumenSkyParameters sky;
 };
-static_assert(sizeof(LumenRadiosityParams) == 160 && offsetof(LumenRadiosityParams, atlasSize) == 124 &&
-    offsetof(LumenRadiosityParams, maxRayIntensity) == 156);
+static_assert(sizeof(LumenRadiosityParams) == 176 && offsetof(LumenRadiosityParams, atlasSize) == 124 &&
+    offsetof(LumenRadiosityParams, sky) == 160);
 
 struct PersistentRadiosityParams {
     LumenRadiosityParams lighting;
     ShaderBuffer scheduledCards, refreshCards, updateState;
 };
-static_assert(sizeof(PersistentRadiosityParams) == 172 &&
-    offsetof(PersistentRadiosityParams, scheduledCards) == 160);
+static_assert(sizeof(PersistentRadiosityParams) == 188 &&
+    offsetof(PersistentRadiosityParams, scheduledCards) == 176);
 
 struct RadiosityScheduleParams {
     ShaderBuffer cards, cardScene, domains, cardUpdates;
@@ -105,13 +107,46 @@ std::optional<RadiosityLayout> readLayout(const RenderGraphProperties& propertie
     }
 }
 
+struct RadiositySkyVersion {
+    environment::EnvironmentSource source{};
+    uint64_t resourceRevision{};
+    float intensity{}, rotation{};
+    bool operator==(const RadiositySkyVersion&) const = default;
+};
+
+RadiositySkyVersion skyVersion(const EnvironmentLightingSnapshot& sky)
+{
+    if (!sky.settings.enabled || sky.settings.intensity <= 0.0f) { return {}; }
+    // The physical sky is republished for observer motion and animated weather.
+    // Trace the latest map on scheduled updates, preserving the previous bounce.
+    const uint64_t mapRevision = sky.source == environment::EnvironmentSource::HDRI ? sky.resourceRevision : 0;
+    return {sky.source, mapRevision, sky.settings.intensity, sky.settings.rotationDegrees};
+}
+
+struct PersistentRadiosityAtlas {
+    uint64_t allocation{};
+    RadiositySkyVersion sky;
+    bool operator==(const PersistentRadiosityAtlas&) const = default;
+};
+
 struct RadiosityContent {
     uint64_t sceneIdentity, sceneContent, transform, visibility, lighting, environment;
+    RadiositySkyVersion sky;
     bool operator==(const RadiosityContent&) const = default;
 };
 
 class LumenRadiosityPass final : public ComputePass {
 public:
+    std::span<const RenderSubsystemId> requiredSubsystems() const override
+    {
+        static constexpr std::array required{EnvironmentLightingSubsystem::kSubsystemId};
+        return required;
+    }
+    Result<> declareResourceRequests(const RenderGraphResourceRequestContext& context,
+        RenderGraphResourceRequestBuilder& builder, std::string& log) override
+    {
+        return declareLumenSky(context, builder, log);
+    }
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override;
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override;
     Result<> execute(RenderGraphExecutionContext& context) override;
@@ -121,14 +156,15 @@ public:
 private:
     LumenRadiosityParams bindParams(RenderGraphExecutionContext& context, ParameterWriter& writer,
         uint32_t clipmapCount) const;
-    Result<> executePersistent(RenderGraphExecutionContext& context, ParameterWriter& writer, uint32_t clipmapCount);
+    Result<> executePersistent(RenderGraphExecutionContext& context, ParameterWriter& writer, uint32_t clipmapCount,
+        RadiositySkyVersion sky);
 
     Device* device_ = nullptr;
     std::unique_ptr<TextureView> blueNoiseVec2_;
     RadiosityLayout layout_;
     ComputeKernel refreshDenseLighting_, trace_, filter_, convertToSH_, integrate_;
     ComputeKernel clearSchedule_, buildPriority_, selectPriority_, buildCardLists_, finishSchedule_, refreshCards_;
-    std::shared_ptr<uint64_t> initializedAtlas_;
+    std::shared_ptr<PersistentRadiosityAtlas> initializedAtlas_;
     HistoryResourceManager history_;
     std::optional<RadiosityContent> lastContent_;
     uint64_t lastFrame_ = 0;
@@ -213,7 +249,7 @@ Result<> LumenRadiosityPass::compile(const RenderGraphCompileContext& context, s
     blueNoiseVec2_ = std::move(*blueNoise);
     lastContent_.reset();
     if (layout_.persistentCards) {
-        if (!initializedAtlas_) { initializedAtlas_ = std::make_shared<uint64_t>(0); }
+        if (!initializedAtlas_) { initializedAtlas_ = std::make_shared<PersistentRadiosityAtlas>(); }
     } else {
         initializedAtlas_.reset();
         if (auto result = history_.initialize(*device_); !result) { return result; }
@@ -278,22 +314,19 @@ Result<> LumenRadiosityPass::execute(RenderGraphExecutionContext& context)
 
     const auto* world = context.world();
     const auto* scene = world ? world->scene() : context.runtimeScene();
-    if (world && world->environment().enabled && world->worldEnvironment().source == environment::EnvironmentSource::HDRI) {
-        spdlog::error("The opaque Lumen Radiosity GDF branch requires HDRI lighting to be disabled");
-        return makeError(Error::InvalidArgument);
-    }
+    const auto sky = skyVersion(context.resources<EnvironmentResourceSet>()->lighting);
     auto registry = ResourceRegistry::forDevice(*device_);
     if (!registry) { return makeError(registry.error()); }
     auto& commands = context.commandBuffer();
     ParameterWriter writer(*device_, **registry, RenderFrameContext::from(commands));
     if (layout_.persistentCards) {
-        return executePersistent(context, writer, *clipmapCount);
+        return executePersistent(context, writer, *clipmapCount, sky);
     }
 
     // Card history is world-space. Camera cuts affect the screen histories only.
     const RadiosityContent content{scene->resourceIdentity(), scene->contentRevision(),
         scene->geometryTransformRevision(), scene->visibilityRevision(), world ? world->nonSunLightingRevision() : 0,
-        world ? world->environmentRevision() : 0};
+        world ? world->environmentRevision() : 0, sky};
     const uint64_t lightingRevision = world ? world->lightingRevision() : 0;
     history_.beginFrame(context.frameIndex());
     // Match UE's direct-only bootstrap. Later feedback invalidation can still
@@ -399,6 +432,7 @@ LumenRadiosityParams LumenRadiosityPass::bindParams(RenderGraphExecutionContext&
     const auto outputBuffer = [&](const char* name) { return writer.buffer(context.outputBuffer(name).buffer()); };
     LumenRadiosityParams params{};
     params.scene = bindLumenGlobalTrace(context, writer);
+    params.sky = bindLumenSky(context, writer);
     params.cardNormal = sampled("cardNormal");
     params.cardAlbedo = sampled("cardAlbedo");
     params.cardEmissive = sampled("cardEmissive");
@@ -426,7 +460,7 @@ LumenRadiosityParams LumenRadiosityPass::bindParams(RenderGraphExecutionContext&
 }
 
 Result<> LumenRadiosityPass::executePersistent(RenderGraphExecutionContext& context, ParameterWriter& writer,
-    uint32_t clipmapCount)
+    uint32_t clipmapCount, RadiositySkyVersion sky)
 {
     auto& commands = context.commandBuffer();
     if (!RenderFrameContext::from(commands)) {
@@ -435,8 +469,8 @@ Result<> LumenRadiosityPass::executePersistent(RenderGraphExecutionContext& cont
     }
 
     const auto outputBuffer = [&](const char* name) { return writer.buffer(context.outputBuffer(name).buffer()); };
-    const auto atlasAllocation = context.outputTexture("indirectIrradiance").texture()->memoryInfo().allocationId;
-    const bool cacheInitialized = *initializedAtlas_ == atlasAllocation;
+    const PersistentRadiosityAtlas atlas{context.outputTexture("indirectIrradiance").texture()->memoryInfo().allocationId, sky};
+    const bool cacheInitialized = *initializedAtlas_ == atlas;
     PersistentRadiosityParams params{
         .lighting = bindParams(context, writer, clipmapCount),
         .scheduledCards = outputBuffer("scheduledCards"),
@@ -550,7 +584,7 @@ Result<> LumenRadiosityPass::executePersistent(RenderGraphExecutionContext& cont
     if (auto result = context.executeStages(stages); !result) { return result; }
     if (cacheInitialized) { return {}; }
     return commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
-        [initialized = initializedAtlas_, atlasAllocation]() { *initialized = atlasAllocation; }, [] {}));
+        [initialized = initializedAtlas_, atlas]() { *initialized = atlas; }, [] {}));
 }
 
 } // namespace

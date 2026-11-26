@@ -34,6 +34,12 @@
                 ]
             }
         },
+        "realtimeGI": {
+            "distanceFieldPaths": ["SponzaGIBakes/SponzaOpaque.meshdf"],
+            "meshCardPaths": ["SponzaGIBakes/SponzaOpaque.meshcards"],
+            "center": [0, 5, 0],
+            "extent": 16
+        },
         "lighting": {
             "exposureEV100": 0.0,
             "autoExposure": {"enabled": false},
@@ -45,7 +51,7 @@
         }
     },
     "sources": [
-        {"id": "sponza", "path": "glTF/Sponza.gltf"},
+        {"id": "sponza", "path": "glTF/SponzaGI.gltf"},
         {"id": "view", "path": "SponzaVSMCamera.gltf"}
     ]
 }

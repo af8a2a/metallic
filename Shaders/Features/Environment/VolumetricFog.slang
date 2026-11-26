@@ -5,6 +5,7 @@ import Core;
 import ParameterRoot;
 import ScenePathMath;
 import Lighting;
+import LumenScreenTrace;
 import VolumetricFogPunctual;
 using Metallic;
 using Metallic.ScenePath;
@@ -206,6 +207,37 @@ void writeScattering(uint3 id, float4 value, VolumetricFogParams p)
     if (p.historyScatteringOut.index != 0xffffffffu) { resolveUniform(p.historyScatteringOut)[id] = value; }
 }
 
+// LumenTranslucencyVolumeShared.ush::GetTranslucencyGIVolumeLighting(false)
+// and the RotatedHGZonalHarmonic dot in VolumetricFog.usf.
+float3 fogIndirectScattering(float3 translatedWorldPositionCm, float3 cameraVector, VolumetricFogParams p)
+{
+    // Project in camera-relative meters; UE's perspective clip W uses centimeters.
+    ViewCameraConstants camera = p.current;
+    camera.center.xyz -= camera.eye.xyz;
+    camera.eye.xyz = 0.0f;
+    Lumen.ScreenTraceProjection view = Lumen.makeScreenTraceProjection(camera,
+        float2(p.indirectLight.rasterJitterX, p.indirectLight.rasterJitterY));
+    float4 clip = Lumen.screenTraceWorldToClip(view, translatedWorldPositionCm * 0.01f);
+    float2 uv = Lumen.screenTraceScreenUV(clip.xy / clip.w);
+    float clipW = camera.upProjection.w > 0.5f ? clip.w : clip.w * 100.0f;
+    float4 gridZ = p.indirectLight.gridZ;
+    float slice = log2(clipW * gridZ.x + gridZ.y) * gridZ.z;
+    // The physical texture can have padding after the last active slice.
+    float z = min(slice, gridZ.w - 0.5f) / p.indirectLight.textureDepth;
+    float3 volumeUV = float3(uv, z);
+    float3 ambient = resolveUniform(p.indirectLight.ambient).SampleLevel(resolveUniform(p.sampler), volumeUV, 0).rgb;
+    float3 directional = resolveUniform(p.indirectLight.directional).SampleLevel(resolveUniform(p.sampler), volumeUV, 0).rgb;
+    float3 normalizedAmbientColor = ambient / (WorkingColor::toXYZ(ambient).y + 0.00001f);
+    float4 red = float4(ambient.r, directional * normalizedAmbientColor.r);
+    float4 green = float4(ambient.g, directional * normalizedAmbientColor.g);
+    float4 blue = float4(ambient.b, directional * normalizedAmbientColor.b);
+    // The volume's SH coefficients use the UE axes. Metallic -Z/X/Y map to UE X/Y/Z.
+    float3 directionUE = float3(-cameraVector.z, cameraVector.x, cameraVector.y);
+    float g = p.lightDirectionPhase.w;
+    float4 rotatedHG = float4(1.0f, directionUE.y, directionUE.z, directionUE.x) * float4(1.0f, g, g, g);
+    return max(float3(dot(red, rotatedHG), dot(green, rotatedHG), dot(blue, rotatedHG)), 0.0f);
+}
+
 [shader("compute")]
 [numthreads(4, 4, 4)]
 void lightScattering(uint3 id : SV_DispatchThreadID)
@@ -248,6 +280,9 @@ void lightScattering(uint3 id : SV_DispatchThreadID)
                 p.cloudShadow, 0u, p.current.eye.xyz + cell * 0.01f);
         }
         light += (irradiance * p.lightColorIntensity.w) * shadowFactor * phase;
+        if (p.indirectLight.ambient.index != 0xffffffffu) {
+            light += fogIndirectScattering(cell, cameraVector, p);
+        }
         if (p.lightGrid.index != 0xffffffffu) {
             float sceneDepthCm = computeDepthFromZSlice(max(float(id.z) + offset.z, 0.0f), p.gridZ.xyz);
             float cellRadius = length(cell - computeCellTranslatedWorldPosition(id + uint3(1, 1, 1), offset, p));

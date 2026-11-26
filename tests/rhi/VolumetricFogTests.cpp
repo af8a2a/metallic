@@ -1,6 +1,7 @@
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "harness/ValidationRecorder.h"
+#include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
@@ -137,15 +138,22 @@ public:
             };
             const auto volumeUsage = TextureUsageBits::Sampled | TextureUsageBits::Storage;
             auto material = makeImage(Format::RGBA16Sfloat, true, volumeUsage);
-            auto scattering = makeImage(Format::RGBA16Sfloat, true, volumeUsage);
+            auto scattering = makeImage(Format::RGBA16Sfloat, true, volumeUsage | TextureUsageBits::TransferSource);
             auto integrated = makeImage(Format::RGBA16Sfloat, true, volumeUsage | TextureUsageBits::TransferSource);
             auto depth = makeImage(Format::R32Sfloat, false, TextureUsageBits::Sampled | TextureUsageBits::TransferDestination);
             auto source = makeImage(Format::RGBA32Sfloat, false, TextureUsageBits::Sampled | TextureUsageBits::TransferDestination);
             auto output = makeImage(Format::RGBA32Sfloat, false, TextureUsageBits::Storage | TextureUsageBits::TransferSource);
+            const auto giUsage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination;
+            auto giAmbient = makeImage(Format::RGBA16Sfloat, true, giUsage);
+            auto giDirectional = makeImage(Format::RGBA16Sfloat, true, giUsage);
+            constexpr std::array<float, 3> ambient{2.0f, 1.0f, 0.5f}, directional{1.25f, -0.75f, 0.5f};
+            constexpr std::array<float, 2> phaseG{-0.7f, 0.7f};
             constexpr uint64_t planeBytes = kWidth * kHeight * 4 * sizeof(float);
             constexpr uint64_t volumeBytes = kX * kY * kZ * 4 * sizeof(uint16_t);
+            constexpr uint64_t sliceBytes = volumeBytes / kZ;
             const std::array<float, 3> planes{10.0f, 20.0f, 40.0f};
-            auto readback = checked(device->createBuffer({.size = planes.size() * planeBytes + volumeBytes,
+            const uint64_t giOffset = planes.size() * planeBytes + volumeBytes;
+            auto readback = checked(device->createBuffer({.size = giOffset + phaseG.size() * sliceBytes,
                 .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}), "readback");
             ParameterWriter writer(*device, *registry);
             VolumetricFogParams p{};
@@ -215,6 +223,29 @@ public:
             checked(commands.copyTextureToBuffer({.texture = integrated.texture.get(),
                 .buffer = checked(readback->slice({planes.size() * planeBytes, volumeBytes}), "volume range"),
                 .width = kX, .height = kY, .depth = kZ}), "read integrated volume");
+            const auto clearSH = [&](FogTestImage& image, const std::array<float, 3>& rgb) {
+                image.transition(commands, ResourceState::TransferDestination);
+                checked(commands.clearColorTexture(*image.texture, TextureLayout::TransferDestination,
+                    {rgb[0], rgb[1], rgb[2], 0}), "initialize Lumen coefficients");
+                image.transition(commands, ResourceState::ShaderRead);
+            };
+            clearSH(giAmbient, ambient);
+            clearSH(giDirectional, directional);
+            p.lightColorIntensity = {};
+            p.indirectLight.ambient = writer.sampledImageHandle(giAmbient.view.get());
+            p.indirectLight.directional = writer.sampledImageHandle(giDirectional.view.get());
+            p.indirectLight.gridZ = {0.01f, 1.0f, 4.0f, float(kZ)};
+            p.indirectLight.textureDepth = float(kZ);
+            for (size_t i = 0; i < phaseG.size(); ++i) {
+                p.lightDirectionPhase[3] = phaseG[i];
+                const auto params = checked(writer.encode(p, kVolumetricFogABI), "encode directional fog GI");
+                scattering.transition(commands, ResourceState::General);
+                checked(kernels[1].dispatch(commands, params, 2, 2, 1), "fog GI scattering");
+                scattering.transition(commands, ResourceState::TransferSource);
+                checked(commands.copyTextureToBuffer({.texture = scattering.texture.get(),
+                    .buffer = checked(readback->slice({giOffset + i * sliceBytes, sliceBytes}), "GI slice range"),
+                    .width = kX, .height = kY, .depth = 1}), "read directional scattering slice");
+            }
             const BufferBarrierDesc host{.buffer = readback.get(), .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                 .after = {PipelineStageBits::Host, AccessBits::HostRead}};
             checked(commands.synchronize({.buffers = {&host, 1}}), "make readback visible");
@@ -252,7 +283,32 @@ public:
                     }
                 }
             }
+            // Camera looks down Metallic -Z (UE +X). The encoded first-order
+            // coefficients multiply UE Y, Z, X, equal here to ray.x, ray.y, -ray.z.
+            double maxPhaseError = 0;
+            const double luminance = color::luminance(ambient);
+            const auto* gi = volume + volumeBytes / sizeof(uint16_t);
+            for (size_t i = 0; i < phaseG.size(); ++i) {
+                for (uint32_t y = 0; y < kY; ++y) {
+                    for (uint32_t x = 0; x < kX; ++x) {
+                        const double dx = 2.0 * (x + 0.5) / kX - 1.0;
+                        const double dy = (1.0 - 2.0 * (y + 0.5) / kY) * kHeight / kWidth;
+                        const double moment = (directional[0] * dx + directional[1] * dy + directional[2]) /
+                            std::sqrt(1.0 + dx * dx + dy * dy);
+                        const auto* voxel = gi + 4 * ((i * kY + y) * kX + x);
+                        for (size_t c = 0; c < ambient.size(); ++c) {
+                            const double expected = p.albedoExtinction[c] * std::max(0.0,
+                                ambient[c] + phaseG[i] * moment * ambient[c] / (luminance + 0.00001));
+                            const double actual = decodeHalf(voxel[c]) / kExtinction;
+                            maxPhaseError = std::max(maxPhaseError, std::abs(actual - expected));
+                        }
+                    }
+                }
+            }
             readback->unmap();
+            if (maxPhaseError > 0.003) {
+                return RHITestResult::fail("Fog GI rotated HG SH mismatch, max error " + std::to_string(maxPhaseError));
+            }
             std::ofstream(context.outputDirectory / "transmittance.json") << observations.dump(2);
             if (context.evidence) { context.evidence->json("transmittance.json", observations); }
             if (validation.failed() || maxError > 0.0015) {
@@ -260,7 +316,7 @@ public:
                     ", validation errors " + std::to_string(validation.failed()));
             }
             return RHITestResult::pass("Three depth planes and 3,072 lit froxels match homogeneous transport, max error " +
-                std::to_string(maxError));
+                std::to_string(maxError) + "; 96 signed-phase SH samples, max error " + std::to_string(maxPhaseError));
         } catch (const std::exception& e) {
             return RHITestResult::fail(e.what());
         }

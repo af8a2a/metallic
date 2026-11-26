@@ -5,6 +5,7 @@ import ParameterRoot;
 import GlobalDistanceField;
 import LumenGlobalRay;
 import LumenRadiosity;
+import LumenSky;
 
 using Metallic;
 using Metallic.DistanceField;
@@ -14,7 +15,7 @@ using Metallic.Lumen;
 static const float kRadiosityMinTraceDistance = 0.10f;
 static const float kRadiositySurfaceBias = 0.05f;
 
-// UE 5.7.4 LumenRadiosity.usf:82, opaque Global SDF with a sky-disabled scene.
+// UE 5.7.4 LumenRadiosity.usf:82, opaque Global SDF and unblurred skylight on miss.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void lumenTraceRadiosityMain(uint3 thread : SV_DispatchThreadID)
@@ -48,6 +49,8 @@ void lumenTraceRadiosityMain(uint3 thread : SV_DispatchThreadID)
 
             if (traceClass == kGlobalDistanceFieldHit) {
                 radiance = traceResult.radiance.xyz;
+            } else {
+                radiance = sampleLumenSky(params.sky, worldRayDirection);
             }
             float maxLighting = max(radiance.x, max(radiance.y, radiance.z));
             if (maxLighting > params.maxRayIntensity) {

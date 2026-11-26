@@ -103,6 +103,15 @@ RenderPassReflection VolumetricFogPass::reflect(const RenderGraphCompileContext&
     reflection.addBufferInput("worldShadowFaces", "Optional world-space VSM faces for punctual fog lights")
         .buffer(0, sizeof(VirtualShadowMapWorldFace)).bufferLayout("VirtualShadowMapWorldFace")
         .storageRead().setOptional().sharedProducerInput = "rasterInfo";
+    for (const char* name : {"giAmbient", "giDirectional"}) {
+        auto& field = reflection.addTextureInput(name).texture3D(0, 0, 0).sampledRead().setOptional();
+        field.format = Format::RGBA16Sfloat;
+        field.matchOutputExtent = false;
+        field.sharedProducerInput = "rasterInfo";
+    }
+    auto& giGrid = reflection.addBufferInput("giGrid", "Lumen translucency volume depth mapping").setOptional();
+    reflectMetadata(giGrid, sizeof(FogFloat4));
+    giGrid.sharedProducerInput = "rasterInfo";
     const auto tile = properties().value("gridPixelSize", 16u);
     const auto slices = properties().value("gridSizeZ", 64u);
     const auto output = [&](const char* name, Format format, bool volume, bool sampled) {
@@ -220,6 +229,13 @@ Result<> VolumetricFogPass::execute(RenderGraphExecutionContext& context)
     const auto material = context.outputTexture("material");
     const auto scattering = context.outputTexture("scattering");
     const auto integrated = context.outputTexture("integrated");
+    const auto giAmbient = context.inputTexture("giAmbient");
+    const auto giDirectional = context.inputTexture("giDirectional");
+    const auto giGrid = context.inputBuffer("giGrid");
+    if (giAmbient.valid() != giDirectional.valid() || giAmbient.valid() != giGrid.valid()) {
+        spdlog::error("VolumetricFogPass requires giAmbient, giDirectional and giGrid together");
+        return makeError(Error::InvalidArgument);
+    }
     VisibilityBufferFrameInfo raster;
     if (auto r = readMetadata(context.inputBuffer("rasterInfo"), raster); !r) { return r; }
     if (!depth.valid() || raster.frameIndex != context.frameIndex() || raster.width != depth.desc().width ||
@@ -349,6 +365,22 @@ Result<> VolumetricFogPass::execute(RenderGraphExecutionContext& context)
     std::vector<StageUse> depthUses{{"depth", Access::TextureSampleRead}, {"conservativeDepth", Access::TextureStorageWrite}};
     std::vector<StageUse> materialUses{{"material", Access::TextureStorageWrite}};
     std::vector<StageUse> lightUses{{"material", Access::TextureSampleRead}, {"scattering", Access::TextureStorageWrite}};
+    if (giAmbient.valid()) {
+        const auto& ambient = giAmbient.desc();
+        const auto& directional = giDirectional.desc();
+        if (ambient.width != directional.width || ambient.height != directional.height || ambient.depth != directional.depth) {
+            spdlog::error("VolumetricFogPass requires matching ambient and directional GI volume extents");
+            return makeError(Error::InvalidArgument);
+        }
+        if (auto r = readMetadata(giGrid, p.indirectLight.gridZ); !r) { return r; }
+        p.indirectLight.ambient = writer.sampledImageHandle(giAmbient.view());
+        p.indirectLight.directional = writer.sampledImageHandle(giDirectional.view());
+        p.indirectLight.rasterJitterX = raster.jitter[0];
+        p.indirectLight.rasterJitterY = raster.jitter[1];
+        p.indirectLight.textureDepth = float(ambient.depth);
+        lightUses.push_back({"giAmbient", Access::TextureSampleRead});
+        lightUses.push_back({"giDirectional", Access::TextureSampleRead});
+    }
     if (const auto faces = context.inputBuffer("worldShadowFaces"); faces.valid()) {
         p.worldShadowFaces = writer.buffer(faces.buffer());
         lightUses.push_back({"worldShadowFaces", Access::BufferStorageRead});

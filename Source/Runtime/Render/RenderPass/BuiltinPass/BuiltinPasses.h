@@ -14,6 +14,7 @@ std::unique_ptr<RenderGraphPass> createCopyColorPass();
 std::unique_ptr<RenderGraphPass> createFinalBlitPass();
 std::unique_ptr<RenderGraphPass> createColorGradingLUTPass();
 std::unique_ptr<RenderGraphPass> createVolumetricFogPass();
+std::unique_ptr<RenderGraphPass> createLumenTranslucencyVolumePass();
 std::unique_ptr<RenderGraphPass> createVolumetricFogCompositePass();
 std::unique_ptr<RenderGraphPass> createMeshDistanceFieldDebugPass();
 std::unique_ptr<RenderGraphPass> createGlobalDistanceFieldPass();

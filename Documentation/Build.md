@@ -1060,7 +1060,7 @@ The `Radiosity` pass traces cached outgoing card radiance with 4 × 4 hemisphere
 
 Both Cornell Box and Large Scene set `ScreenTrace.historySource` to `composited` and `historyProducer` to `Temporal`. The named pass enables `publishScreenTraceHistory` and takes its `sceneDepth` from `VBuffer.depth`. Inspect `ScreenTrace.previousColor` and `ScreenTrace.previousDepth` to see the same-frame pair read on the next frame. For a Deferred comparison, set `historySource` to `deferred`, connect `Deferred.color` to `ScreenTrace.color`, disable publication and remove the `Temporal.sceneDepth` edge. Older graphs without a source setting use this Deferred path.
 
-The radiosity path adapts UE 5.7.4's software GDF branch for a sky-disabled scene.
+The radiosity path adapts UE 5.7.4's software GDF branch. Card probe rays read outgoing surface radiance on opaque hits and evaluate the scene skylight on misses. Radiosity and volumetric fog share the same scene-linear sky and world-direction convention.
 
 - Every card owns one fixed tile. The default full-atlas path updates every tile each frame. A dense dispatch replaces UE's mapped page allocator, prioritized update budget and per-page update phases. The initial frame exports direct lighting and emission and clears indirect history. Large Scene opts into per-card scheduling.
 - Ray and filter noise use the UE rendering commandlet's black dummy inputs. Trace, SH, irradiance and outgoing lighting use the reference PF_FloatRGBA precision with scene-linear exposure. SH coefficients use packed FP16 buffers. The history count occupies the irradiance texture's alpha. Metallic exports direct irradiance in RGBA32F and uses its card normal, depth and shared GDF trace. Ray distance and bias use meters.

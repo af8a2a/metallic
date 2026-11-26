@@ -2,6 +2,7 @@ module LumenRadiosity;
 
 import ShaderCore;
 import LumenGlobalRay;
+import LumenSky;
 import LumenProbeMath;
 import LumenSurfaceCache;
 
@@ -54,6 +55,7 @@ public struct LumenRadiosityParams
     public uint viewFrameIndex;
     public uint traceValid;
     public float maxRayIntensity;
+    public LumenSkyParameters sky;
 #ifdef METALLIC_LUMEN_PERSISTENT_CARDS
     public ResourceHandle<StructuredBuffer<uint2>> scheduledCards;
     public ResourceHandle<StructuredBuffer<uint2>> refreshCards;

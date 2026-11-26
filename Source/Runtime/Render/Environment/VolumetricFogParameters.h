@@ -68,6 +68,13 @@ struct LocalFogParameters {
     FogStorage3D emissiveOut;
 };
 
+struct FogIndirectLightParameters {
+    FogFloat4 gridZ; // B, O, S (centimeters), active depth slice count
+    FogSampled3D ambient, directional;
+    float rasterJitterX, rasterJitterY; // pixels
+    float textureDepth;
+};
+
 struct VolumetricFogParams {
     ViewCameraConstants current, previous;
     FogFloat4 gridZ;               // UE B, O, S in centimeters
@@ -96,15 +103,18 @@ struct VolumetricFogParams {
     FogLightIndices lightIndices, lightCandidates;
     FogSampler sampler;
     LocalFogParameters localFog;
+    FogIndirectLightParameters indirectLight;
     FogWorldShadowFaces worldShadowFaces;
 };
 
 #ifdef __cplusplus
-inline constexpr uint64_t kVolumetricFogABI = 0x56464f4700000004ull;
+inline constexpr uint64_t kVolumetricFogABI = 0x56464f4700000005ull;
 static_assert(offsetof(VolumetricFogParams, scene) == 320);
 static_assert(offsetof(VolumetricFogParams, sampler) == 428);
 static_assert(offsetof(VolumetricFogParams, localFog) == 432);
-static_assert(offsetof(VolumetricFogParams, worldShadowFaces) == 464);
-static_assert(sizeof(VolumetricFogParams) == 480);
+static_assert(offsetof(VolumetricFogParams, indirectLight) == 464);
+static_assert(sizeof(FogIndirectLightParameters) == 36);
+static_assert(offsetof(VolumetricFogParams, worldShadowFaces) == 500);
+static_assert(sizeof(VolumetricFogParams) == 512);
 #endif
 } // namespace metallic::render (C++) / Metallic (Slang)

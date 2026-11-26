@@ -7,12 +7,14 @@
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/LumenScreenProbePlacement.h"
+#include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Scene/MeshCards.h"
 #include "Runtime/Scene/MeshDistanceField.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "harness/Fixtures.h"
 #include "harness/ValidationRecorder.h"
+#include "stb/stb_image_write.h"
 #include "../../Shaders/Interop/LumenCardUpdate.h"
 
 #include <algorithm>
@@ -2728,14 +2730,15 @@ std::string checkDenseRadiosity(const CardUpdateFrame& frame, float highestExpec
 
 class LumenPersistentCardUpdateTest : public RHITest {
 public:
-    enum class Mode { CardUpdates, RectDiffuse, RectReGIR };
+    enum class Mode { CardUpdates, RectDiffuse, RectReGIR, Sky };
     static constexpr uint32_t kRectReGIRTestSamples = 2u;
     static constexpr uint32_t kRectReGIRTestRefreshCards = 3u;
 
     explicit LumenPersistentCardUpdateTest(Mode mode = Mode::CardUpdates)
         : mode_(mode)
     {
-        name = mode_ == Mode::RectReGIR ? "lumen_surface_cache_rect_regir" :
+        name = mode_ == Mode::Sky ? "lumen_radiosity_hdri_sky_miss" :
+            mode_ == Mode::RectReGIR ? "lumen_surface_cache_rect_regir" :
             mode_ == Mode::RectDiffuse ? "lumen_surface_cache_rect_diffuse" : "lumen_persistent_card_updates";
         type = RHITestType::Rendering;
     }
@@ -2743,9 +2746,9 @@ public:
     RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
-        const bool testRectLighting = mode_ != Mode::CardUpdates;
+        const bool testRectLighting = mode_ == Mode::RectDiffuse || mode_ == Mode::RectReGIR;
         const bool testReGIR = mode_ == Mode::RectReGIR;
-        const std::string fixtureName = testReGIR ? "LumenRectReGIR" :
+        const std::string fixtureName = mode_ == Mode::Sky ? "LumenRadiositySky" : testReGIR ? "LumenRectReGIR" :
             testRectLighting ? "LumenRectDiffuse" : "LumenCardUpdate";
         const auto fixture = context.outputDirectory / (fixtureName + "Boxes.gltf");
         std::error_code error;
@@ -2765,11 +2768,11 @@ public:
         if (!document.setObjectWorldMatrix(blocker, offsideBlocker)) {
             return RHITestResult::fail("Could not expose the receiver to the emitter in the card fixture");
         }
-        if (testRectLighting) {
+        if (testRectLighting || mode_ == Mode::Sky) {
             auto material = document.materials()[1];
             material.emissiveFactor = float3(0.0f);
             if (!document.setMaterialProperties(1, material)) {
-                return RHITestResult::fail("Could not isolate the analytical rectangle from emissive surfaces");
+                return RHITestResult::fail("Could not disable the fixture's emissive material");
             }
         }
 
@@ -2827,18 +2830,23 @@ public:
         const RenderGraphSubmitDesc submission{.graphicsQueue = gpu.getQueue(QueueType::Graphics),
             .historyResources = &history, .recordingWorkerLimit = 1};
 
+        enum class GDFUpdate { Reuse, Partial, Full };
         const auto runFrame = [&](std::string_view stage, const std::array<uint32_t, 3>& stats,
-            uint32_t resident = kPersistentResidentCards, std::optional<bool> rebuildGdf = false,
+            uint32_t resident = kPersistentResidentCards, std::optional<GDFUpdate> gdfUpdate = GDFUpdate::Reuse,
             bool compareLighting = true) -> std::optional<CardUpdateFrame> {
             auto frame = captureFrame(inspector, executor, submission, log, testReGIR);
             if (frame) { log = compareSurfaceUpdate(*frame, stats, resident, compareLighting, testReGIR); }
-            if (frame && log.empty() && rebuildGdf.has_value()) {
+            if (frame && log.empty() && gdfUpdate.has_value()) {
                 constexpr uint32_t pageEdge = kGdfResolution / 7;
                 constexpr uint32_t pageCount = pageEdge * pageEdge * pageEdge;
                 constexpr std::array rebuilt{1u, pageCount, 0u, 1u};
                 constexpr std::array reused{0u, 0u, pageCount, 0u};
                 const auto counters = readSurfaceValue<std::array<uint32_t, 4>>(frame->gdf->artifacts[0].bytes, 0);
-                if (counters != (*rebuildGdf ? rebuilt : reused)) {
+                const bool partial = counters[0] == 0u && counters[1] > 0u && counters[1] < pageCount &&
+                    counters[2] == pageCount - counters[1] && counters[3] == 1u;
+                const bool matches = *gdfUpdate == GDFUpdate::Partial ? partial :
+                    counters == (*gdfUpdate == GDFUpdate::Full ? rebuilt : reused);
+                if (!matches) {
                     log = "Unexpected persistent GDF update statistics " + nlohmann::json(counters).dump();
                 }
             }
@@ -2850,7 +2858,7 @@ public:
         };
 
         auto previous = runFrame("Initial frame", {1u, kPersistentResidentCards, kPersistentResidentCards},
-            kPersistentResidentCards, true);
+            kPersistentResidentCards, GDFUpdate::Full);
         if (!previous) { return RHITestResult::fail(log); }
         if (const auto message = checkDenseRadiosity(*previous, 0.0f, false); !message.empty()) {
             return RHITestResult::fail(message);
@@ -2864,6 +2872,61 @@ public:
         if (const auto message = checkCardFlags(*previous, kPersistentResidentCards, emitter,
                 kCardCaptured | kCardRelit, kCardCaptured | kCardRelit);
             !message.empty()) { return RHITestResult::fail(message); }
+
+        if (mode_ == Mode::Sky) {
+            // Measure incoming diffuse irradiance at covered card centers in both
+            // scheduling modes. The fixture has no emissive, celestial or punctual light.
+            const auto indirectEnergy = [](const CardUpdateFrame& frame) {
+                std::array<double, 2> energy{};
+                for (uint32_t slot = 0; slot < kPersistentResidentCards; ++slot) {
+                    const size_t center = tileCenter(slot);
+                    if (readSurfaceValue<uint16_t>(frame.surface->artifacts[3].bytes, center) == UINT16_MAX) { continue; }
+                    const CardCapture captures[]{frame.radiosity, frame.denseRadiosity};
+                    for (size_t i = 0; i < energy.size(); ++i) {
+                        const auto rgb = readSurfaceValue<std::array<uint16_t, 4>>(captures[i]->artifacts[0].bytes, center);
+                        energy[i] += (halfToFloat(rgb[0]) + halfToFloat(rgb[1]) + halfToFloat(rgb[2])) / 3.0;
+                    }
+                }
+                return energy;
+            };
+            if (indirectEnergy(*previous) != std::array<double, 2>{}) {
+                return RHITestResult::fail("Unlit receiver cards have nonzero indirect irradiance");
+            }
+            auto sky = renderWorld.environment();
+            sky.path = std::filesystem::absolute(context.outputDirectory / "RadiosityWhiteSky.hdr");
+            sky.enabled = true;
+            const std::vector<float> white(16 * 8 * 3, 1.0f);
+            if (!stbi_write_hdr(sky.path.string().c_str(), 16, 8, 3, white.data())) {
+                return RHITestResult::fail("Could not write white Radiosity HDRI");
+            }
+            renderWorld.setEnvironment(sky);
+            const auto* provider = executor.subsystemHost()->get<EnvironmentLightingSubsystem>();
+            for (uint32_t frame = 0; frame < 32 && !provider->snapshot().mapAvailable; ++frame) {
+                if (!captureFrame(inspector, executor, submission, log)) { return RHITestResult::fail(log); }
+            }
+            if (!provider->snapshot().mapAvailable) { return RHITestResult::fail("Radiosity HDRI did not become resident"); }
+            // Let every persistent card trace at least once with the published sky.
+            constexpr uint32_t sweep = kPersistentResidentCards / kRadiosityCardBudget;
+            std::optional<CardUpdateFrame> lit;
+            for (uint32_t frame = 0; frame < sweep; ++frame) {
+                lit = captureFrame(inspector, executor, submission, log);
+                if (!lit) { return RHITestResult::fail(log); }
+            }
+            const auto energy = indirectEnergy(*lit);
+            if (!(energy[0] > 1.0 && energy[1] > 1.0)) {
+                return RHITestResult::fail(std::format("White sky failed to light persistent/dense cards: {}, {}", energy[0], energy[1]));
+            }
+            sky.enabled = false;
+            renderWorld.setEnvironment(sky);
+            const auto off = captureFrame(inspector, executor, submission, log);
+            if (!off) { return RHITestResult::fail(log); }
+            if (indirectEnergy(*off) != std::array<double, 2>{}) {
+                return RHITestResult::fail("Disabling the sky left indirect light on the cards");
+            }
+            if (validation.failed()) { return RHITestResult::fail(validation.snapshot().dump()); }
+            return RHITestResult::pass(std::format("Card irradiance sums at black / white HDRI / black: "
+                "persistent 0 / {:.4f} / 0, dense 0 / {:.4f} / 0", energy[0], energy[1]));
+        }
 
         if (testRectLighting) {
             const auto result = testReGIR ?
@@ -2969,7 +3032,7 @@ public:
         dark.emissiveFactor = float3(0.0f);
         if (!document.setMaterialProperties(1, dark)) { return RHITestResult::fail("Could not edit the emitter material"); }
         const auto material = runFrame("Emitter material edit", {0u, kCardsPerBox, kCardsPerBox},
-            kPersistentResidentCards, true);
+            kPersistentResidentCards, GDFUpdate::Partial);
         if (!material) { return RHITestResult::fail(log); }
         if (const auto message = checkCardFlags(*material, kPersistentResidentCards, emitter, kCardCaptured | kCardRelit, 0);
             !message.empty()) { return RHITestResult::fail(message); }
@@ -2988,7 +3051,7 @@ public:
             return RHITestResult::fail("Could not move and shrink the GDF blocker");
         }
         const auto geometry = runFrame("Blocker geometry change", {0u, kCardsPerBox, kPersistentResidentCards},
-            kPersistentResidentCards, true);
+            kPersistentResidentCards, GDFUpdate::Partial);
         if (!geometry) { return RHITestResult::fail(log); }
         if (geometry->gdf->artifacts[1].bytes == material->gdf->artifacts[1].bytes) {
             return RHITestResult::fail("Moving the blocker did not change the coarse distance field");
@@ -3006,7 +3069,7 @@ public:
 
         if (!document.setObjectVisible(blocker, false)) { return RHITestResult::fail("Could not hide the GDF blocker"); }
         constexpr uint32_t remaining = kPersistentResidentCards - kCardsPerBox;
-        const auto hidden = runFrame("Blocker visibility change", {1u, remaining, remaining}, remaining, true);
+        const auto hidden = runFrame("Blocker visibility change", {1u, remaining, remaining}, remaining, GDFUpdate::Partial);
         if (!hidden) { return RHITestResult::fail(log); }
         const auto hiddenStats = readSurfaceValue<std::array<uint32_t, 4>>(
             hidden->radiosity->artifacts[kRadiosityUpdateStats].bytes, 0);
@@ -3047,7 +3110,7 @@ public:
             !executor.compile(gpu, graph, kAtlasEdge, kAtlasEdge, RenderGraphCompileOptions{.enableDebugReadback = true}, log)) {
             return RHITestResult::fail("Could not compile the budgeted Surface Cache: " + log);
         }
-        if (!runFrame("Initialize budgeted Surface Cache", {1u, remaining, remaining}, remaining, true)) {
+        if (!runFrame("Initialize budgeted Surface Cache", {1u, remaining, remaining}, remaining, GDFUpdate::Full)) {
             return RHITestResult::fail(log);
         }
         auto editedLighting = renderWorld.lighting();
@@ -3603,6 +3666,13 @@ private:
 };
 
 METALLIC_REGISTER_RHI_TEST(LumenPersistentCardUpdateTest);
+
+class LumenRadiositySkyTest final : public LumenPersistentCardUpdateTest {
+public:
+    LumenRadiositySkyTest() : LumenPersistentCardUpdateTest(Mode::Sky) {}
+};
+
+METALLIC_REGISTER_RHI_TEST(LumenRadiositySkyTest);
 
 class LumenRectDiffuseTest final : public LumenPersistentCardUpdateTest {
 public:
