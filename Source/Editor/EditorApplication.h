@@ -347,6 +347,8 @@ private:
         std::optional<std::array<float, 2>> pointer;
         std::optional<std::array<float, 2>> center;
         bool mouseDown = false;
+        bool rightMouseDown = false;
+        bool drewGizmo = false;
     };
     std::optional<GizmoSmokeInput> gizmoSmokeInput_;
     bool waitForGraphicsDebugger_ = false;

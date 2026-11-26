@@ -864,9 +864,88 @@ bool EditorApplication::runGizmoSmokeTest()
         return false;
     }
     if (const char* path = std::getenv("METALLIC_GIZMO_SMOKE_CAPTURE"); path && *path) {
-        return expect(exportSmokeMainViewport(path), "Export the final editor frame as a PPM image");
+        if (!expect(exportSmokeMainViewport(path), "Export the final editor frame as a PPM image")) { return false; }
     }
-    return true;
+
+    auto& input = *gizmoSmokeInput_;
+    input.pointer.reset();
+    const auto& world = selectedSceneObject().getComponent<scene::TransformComponent>().worldMatrix;
+    auto depthCamera = viewportView_.camera();
+    depthCamera.up = {0.0f, 1.0f, 0.0f};
+    for (float depth : {1.0f, 0.5f * depthCamera.nearPlane, -1.0f, depthCamera.farPlane + 1.0f, 1.0f}) {
+        depthCamera.eye = {world.a03, world.a13, world.a23 + depth};
+        depthCamera.center = {world.a03, world.a13, depthCamera.eye[2] - 1.0f};
+        const bool visible = depth == 1.0f;
+        if (!viewportView_.setCamera(depthCamera) || !render() ||
+            !expect(input.drewGizmo == visible && input.center.has_value() == visible,
+                "Gizmo follows the viewport depth range as the camera passes its pivot")) {
+            return false;
+        }
+    }
+
+    const auto [pivotX, pivotY] = *input.center;
+    input.pointer = std::array{pivotX + 40.0f, pivotY};
+    if (!render()) { return false; }
+    input.rightMouseDown = true;
+    if (!render() || !expect(viewportCameraDragButton_ == ImGuiMouseButton_Right && input.center && input.drewGizmo,
+            "Start camera navigation with a visible gizmo")) { return false; }
+    const auto centerBeforeLook = *input.center;
+    const auto lookBefore = viewportView_.camera().center;
+    (*input.pointer)[0] += 20.0f;
+    if (!render() || !expect(input.center && input.drewGizmo && *input.center != centerBeforeLook &&
+            viewportView_.camera().center != lookBefore, "Gizmo moves in the same frame as the camera")) {
+        return false;
+    }
+    const auto centerAfterLook = *input.center;
+    input.rightMouseDown = false;
+    if (!render() || !expect(input.center == centerAfterLook, "Gizmo stays aligned when the camera stops")) { return false; }
+    spdlog::info("[Smoke Gizmo] Gizmo respects camera clipping and tracks the current camera frame");
+
+    // Exercise camera drags from a pitched pose whose authored up differs from world up.
+    sceneSelection_ = {};
+    viewportGizmoCapturingMouse_ = false;
+    input.pointer.reset();
+    auto initialCamera = viewportView_.camera();
+    initialCamera.eye = {7.2f, 2.65f, 0.35f};
+    initialCamera.center = {initialCamera.eye[0] - 0.8660254f, initialCamera.eye[1] - 0.5f, initialCamera.eye[2]};
+    initialCamera.up = {-0.5f, 0.8660254f, 0.0f};
+    for (const auto button : {ImGuiMouseButton_Right, ImGuiMouseButton_Left}) {
+        const bool orbit = button == ImGuiMouseButton_Left;
+        const auto cameraInputFrame = [&](float x, bool down, bool alt) {
+            auto& io = ImGui::GetIO();
+            io.AddMousePosEvent(x, 250.0f);
+            io.AddKeyEvent(ImGuiMod_Alt, alt);
+            io.AddKeyEvent(ImGuiKey_LeftAlt, alt);
+            io.AddMouseButtonEvent(button, down);
+            ImGui::NewFrame();
+            ImGui::Begin("Camera interaction test");
+            viewportInteractionEnabled_ = true;
+            viewportHovered_ = true;
+            handleViewportCameraControls(ImVec2(100.0f, 100.0f), ImVec2(500.0f, 400.0f));
+            ImGui::End();
+            ImGui::Render();
+        };
+        if (!expect(viewportView_.setCamera(initialCamera), "Set pitched viewport camera")) { return false; }
+        cameraInputFrame(250.0f, false, orbit);
+        cameraInputFrame(250.0f, true, orbit);
+        cameraInputFrame(350.0f, true, orbit);
+        cameraInputFrame(350.0f, false, orbit);
+        cameraInputFrame(350.0f, false, false);
+
+        const auto& moved = viewportView_.camera();
+        const float3 forward(moved.center[0] - moved.eye[0], moved.center[1] - moved.eye[1], moved.center[2] - moved.eye[2]);
+        const float3 up(moved.up[0], moved.up[1], moved.up[2]);
+        if (!expect(std::abs(forward.x) < 0.0001f && std::abs(forward.y + 0.5f) < 0.0001f &&
+                std::abs(forward.z + 0.8660254f) < 0.0001f &&
+                std::abs(cross(forward, up).y) < 0.0001f,
+                "Horizontal camera drag turns 90 degrees without changing pitch or adding roll") ||
+            !expect(orbit ? moved.center == initialCamera.center : moved.eye == initialCamera.eye,
+                "Camera gesture keeps its pivot fixed")) {
+            return false;
+        }
+    }
+    spdlog::info("[Smoke Gizmo] Pitched camera stays level through right-button look and Alt-left orbit");
+    return render();
 }
 
 bool EditorApplication::runMultiViewportSmokeTest()

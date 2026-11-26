@@ -13,6 +13,7 @@ using Metallic.Shadow;
 const bool kTemporalIsOrtho = false;
 [SpecializationConstant]
 const bool kTemporalHasHistory = true;
+static const uint kMaxReprojectedHistoryFrames = 8u;
 
 struct TemporalViewBasis
 {
@@ -319,7 +320,9 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
                 accumulateTemporalHistoryTap(base + int2(1, 1), tapWeights.w, vpExtent,
                     prevHistory, previous, position, normal, tolerance, sum, sampleCount, weightSum);
                 if (weightSum >= 0.5) {
-                    uint priorCount = min(uint(sampleCount / weightSum + 0.5), params.maxFrames - 1u);
+                    // Repeated bilinear resampling widens the penumbra on moving views.
+                    uint historyFrames = min(params.maxFrames, kMaxReprojectedHistoryFrames);
+                    uint priorCount = min(uint(sampleCount / weightSum + 0.5), historyFrames - 1u);
                     count = priorCount + 1u;
                     result = (sum / weightSum * float(priorCount) + raw) / float(count);
                 }

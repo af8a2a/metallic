@@ -1052,6 +1052,11 @@ std::pair<uint32_t, uint32_t> constrainedPreviewExtent(
     return {previewWidth, previewHeight};
 }
 
+bool isWithinViewportDepth(float viewDepth, const ViewportCameraMatrices& matrices)
+{
+    return viewDepth >= matrices.nearPlane && viewDepth <= matrices.farPlane;
+}
+
 bool projectWorldToViewport(
     const float3& worldPosition,
     const ViewportCameraMatrices& matrices,
@@ -1060,9 +1065,7 @@ bool projectWorldToViewport(
     ImVec2& screenPosition)
 {
     const float4 viewPosition = matrices.view * float4(worldPosition, 1.0f);
-    const float viewDepth = -viewPosition.z;
-    if (!std::isfinite(viewDepth) || viewDepth < matrices.nearPlane ||
-        viewDepth > matrices.farPlane) {
+    if (!isWithinViewportDepth(-viewPosition.z, matrices)) {
         return false;
     }
     const float4 clipPosition = matrices.projection * viewPosition;
@@ -1125,7 +1128,8 @@ bool orbitCamera(float deltaX, float deltaY, float width, float height, float ey
         deltaX / std::max(width, 1.0f),
         deltaY / std::max(height, 1.0f));
 
-    const float3 cameraUp = normalizedOr(float3(up[0], up[1], up[2]), float3(0.0f, 1.0f, 0.0f));
+    const float3 worldUp(0.0f, 1.0f, 0.0f);
+    const float3 cameraUp(up[0], up[1], up[2]);
     const float3 origin(center[0], center[1], center[2]);
     const float3 position(eye[0], eye[1], eye[2]);
     const float radius = length(position - origin);
@@ -1133,29 +1137,38 @@ bool orbitCamera(float deltaX, float deltaY, float width, float height, float ey
         return false;
     }
 
-    float3 centerToEye = (position - origin) / radius;
-    const float cosElev = std::clamp(dot(centerToEye, cameraUp), -1.0f, 1.0f);
-    float3 horizontal = centerToEye - cameraUp * cosElev;
+    const float3 direction = (position - origin) / radius;
+    const float cosElev = std::clamp(dot(direction, worldUp), -1.0f, 1.0f);
+    float3 horizontal = direction - worldUp * cosElev;
     const float sinElev = length(horizontal);
     const float elev = std::atan2(sinElev, cosElev);
-    horizontal = sinElev < 0.000001f ? perpendicularTo(cameraUp) : horizontal / sinElev;
+    // At either pole the screen's up direction supplies the missing azimuth.
+    horizontal = sinElev < 0.000001f
+        ? normalize((cameraUp - worldUp * cameraUp.y) * -cosElev)
+        : horizontal / sinElev;
+    const float3 levelRight = cross(worldUp, horizontal);
+    const float3 levelUp = cross(direction, levelRight);
 
     const float yaw = -displacement.x * 2.0f * kPi;
     const float yawC = std::cos(yaw);
     const float yawS = std::sin(yaw);
-    horizontal = horizontal * yawC + cross(cameraUp, horizontal) * yawS;
+    horizontal = horizontal * yawC + levelRight * yawS;
 
     const float pitch = -displacement.y * 2.0f * kPi;
     const float newElev = std::clamp(elev - pitch, kPolePad, kPi - kPolePad);
-    centerToEye = (cameraUp * std::cos(newElev) + horizontal * std::sin(newElev)) * radius;
+    const float3 newDirection = worldUp * std::cos(newElev) + horizontal * std::sin(newElev);
+    const float3 newRight = cross(worldUp, horizontal);
+    const float3 newLevelUp = cross(newDirection, newRight);
+    // Carry the existing roll onto the new world-up frame.
+    const float3 newUp = normalize(newLevelUp * dot(cameraUp, levelUp) + newRight * dot(cameraUp, levelRight));
 
-    const float3 newEye = origin + centerToEye;
+    const float3 newEye = origin + newDirection * radius;
     eye[0] = newEye.x;
     eye[1] = newEye.y;
     eye[2] = newEye.z;
-    up[0] = cameraUp.x;
-    up[1] = cameraUp.y;
-    up[2] = cameraUp.z;
+    up[0] = newUp.x;
+    up[1] = newUp.y;
+    up[2] = newUp.z;
     return true;
 }
 
@@ -3236,11 +3249,13 @@ bool EditorApplication::renderFrame()
         ImGui_ImplSDL3_NewFrame();
         if (gizmoSmokeInput_) {
             gizmoSmokeInput_->center.reset();
+            gizmoSmokeInput_->drewGizmo = false;
             if (gizmoSmokeInput_->pointer) {
                 const auto [x, y] = *gizmoSmokeInput_->pointer;
                 ImGuiIO& io = ImGui::GetIO();
                 io.AddMousePosEvent(x, y);
                 io.AddMouseButtonEvent(ImGuiMouseButton_Left, gizmoSmokeInput_->mouseDown);
+                io.AddMouseButtonEvent(ImGuiMouseButton_Right, gizmoSmokeInput_->rightMouseDown);
             }
         }
         ImGui::NewFrame();
@@ -6625,14 +6640,21 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
         properties["camera"],
         static_cast<float>(viewportView_.renderWidth(viewportTextureWidth_)),
         static_cast<float>(viewportView_.renderHeight(viewportTextureHeight_)));
+    const auto& world = transform->worldMatrix;
+    const float3 pivot(world.a03, world.a13, world.a23);
+    // ImGuizmo's clip-Z check does not reject pivots behind a reversed-Z view.
+    if (!isWithinViewportDepth(-(matrices.view * float4(pivot, 1.0f)).z, matrices)) {
+        finishInterruptedTransaction();
+        return;
+    }
     if (gizmoSmokeInput_) {
-        const auto& world = transform->worldMatrix;
         ImVec2 center;
-        if (projectWorldToViewport(float3(world.a03, world.a13, world.a23), matrices, min, max, center)) {
+        if (projectWorldToViewport(pivot, matrices, min, max, center)) {
             gizmoSmokeInput_->center = std::array{center.x, center.y};
         }
     }
-    ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    ImGuizmo::SetDrawlist(drawList);
     ImGuizmo::SetRect(min.x, min.y, max.x - min.x, max.y - min.y);
     ImGuizmo::SetOrthographic(matrices.orthographic);
 
@@ -6652,6 +6674,9 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
     const float snap[3] = {step, step, step};
     float4x4 editedWorld = transform->worldMatrix;
     const float4x4 localBeforeManipulate = transform->localMatrix;
+    const bool cameraDragging = viewportCameraDragButton_ != kNoViewportCameraDragButton;
+    if (cameraDragging) { ImGuizmo::Enable(false); }
+    const int firstVertex = drawList->VtxBuffer.Size;
     ImGuizmo::PushID(static_cast<int>(object.entity()));
     const bool manipulated = ImGuizmo::Manipulate(
         matrices.view.a,
@@ -6662,8 +6687,10 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
         nullptr,
         useSnap ? snap : nullptr);
     const bool usingNow = ImGuizmo::IsUsing();
-    const bool overNow = ImGuizmo::IsOver();
+    const bool overNow = !cameraDragging && ImGuizmo::IsOver();
     ImGuizmo::PopID();
+    if (cameraDragging) { ImGuizmo::Enable(true); }
+    if (gizmoSmokeInput_) { gizmoSmokeInput_->drewGizmo = drawList->VtxBuffer.Size != firstVertex; }
     viewportGizmoCapturingMouse_ = usingNow || overNow || ImGuizmo::IsUsingAny();
     if (usingNow && !gizmoWasUsing_) {
         gizmoStartLocalMatrix_ = localBeforeManipulate;
@@ -6782,6 +6809,7 @@ void EditorApplication::selectViewportObject(const ImVec2& min, const ImVec2& ma
 {
     if (!viewportInteractionEnabled_ || !viewportHovered_ || !scene_.valid() ||
         !ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::GetIO().KeyAlt ||
+        viewportCameraDragButton_ != kNoViewportCameraDragButton ||
         viewportGizmoCapturingMouse_ || gizmoWasUsing_ || ImGuizmo::IsUsingAny()) {
         return;
     }
@@ -7185,7 +7213,13 @@ void EditorApplication::drawViewportPanel()
     drawList->AddRect(min, max, IM_COL32(58, 67, 80, 255));
     const bool sliderCapturingMouse = hasRhiPreview && drawSliderDebugOverlay(min, max);
     if (!hasRhiPreview) { sliderDragNodeId_ = 0; }
+
+    ImGui::Dummy(available);
+    viewportHovered_ = !sliderCapturingMouse && viewportInteractionEnabled_ && mouseInsideImage &&
+        ImGui::IsItemHovered();
     if (!sliderCapturingMouse) {
+        // Use the same camera for the overlays and the render graph later in this frame.
+        handleViewportCameraControls(min, max);
         drawViewportObjectHandles(min, max);
         drawViewportGizmo(min, max);
     }
@@ -7226,9 +7260,6 @@ void EditorApplication::drawViewportPanel()
     }
     drawList->PopClipRect();
 
-    ImGui::Dummy(available);
-    viewportHovered_ = !sliderCapturingMouse && viewportInteractionEnabled_ && mouseInsideImage &&
-        ImGui::IsItemHovered();
     const ImGuiIO& io = ImGui::GetIO();
     const bool cameraGestureActive =
         viewportCameraDragButton_ != kNoViewportCameraDragButton ||
@@ -7252,7 +7283,6 @@ void EditorApplication::drawViewportPanel()
     }
     if (!sliderCapturingMouse) {
         selectViewportObject(min, max);
-        handleViewportCameraControls(min, max);
     }
 
     ImGui::End();
@@ -7268,11 +7298,10 @@ void EditorApplication::handleViewportCameraControls(const ImVec2& min, const Im
     const ImVec2 size(max.x - min.x, max.y - min.y);
     ImGuiIO& io = ImGui::GetIO();
     const bool hovered = viewportHovered_;
-    const bool gizmoCapturingMouse = viewportGizmoCapturingMouse_ || gizmoWasUsing_ ||
-        ImGuizmo::IsUsingAny();
+    const bool gizmoDragging = gizmoWasUsing_ || ImGuizmo::IsUsingAny();
     const bool alt = ImGui::IsKeyDown(ImGuiKey_LeftAlt) || ImGui::IsKeyDown(ImGuiKey_RightAlt);
 
-    if (hovered && !gizmoCapturingMouse) {
+    if (hovered && !gizmoDragging) {
         if (alt && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             viewportCameraDragButton_ = ImGuiMouseButton_Left;
         } else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
@@ -7292,7 +7321,7 @@ void EditorApplication::handleViewportCameraControls(const ImVec2& min, const Im
     render::RenderGraphProperties& camera = properties["camera"];
     bool changed = false;
 
-    if (!gizmoCapturingMouse && io.MouseWheel != 0.0f) {
+    if (!gizmoDragging && io.MouseWheel != 0.0f) {
         if (viewportCameraDragButton_ == ImGuiMouseButton_Right) {
             viewportCameraSpeed_ = std::clamp(
                 viewportCameraSpeed_ * std::pow(kViewportCameraWheelSpeedStep, io.MouseWheel),

@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <optional>
 #include <span>
 #include <stdexcept>
 
@@ -497,18 +498,21 @@ public:
             const uint32_t edge = images.width / 2;
             ViewConstants previousView{};
             std::string log;
-            const auto render = [&](VirtualShadowMapTemporal& history, uint64_t frame, uint8_t raw, bool hardEdge) {
+            const auto render = [&](VirtualShadowMapTemporal& history, uint64_t frame, uint8_t raw,
+                                    std::optional<float> hardEdge = std::nullopt) {
                 const auto view = camera.constants(frame, images.width, images.height, images.width, images.height,
                     frame == 0 ? nullptr : &previousView);
                 previousView = view;
                 std::vector<uint8_t> edgeSamples;
                 if (hardEdge) {
-                    // A coplanar shadow boundary between pixel centers stays between their jittered samples.
+                    // Place the boundary on the plane in world space, with x expressed
+                    // in pixels of the unshifted orthographic camera.
+                    const float cameraOffset = view.current.eye[0] * float(images.height) / view.current.clipOrtho[2];
                     edgeSamples.resize(images.pixels);
                     for (uint32_t y = 0; y < images.height; ++y) {
                         for (uint32_t x = 0; x < images.width; ++x) {
-                            const float sampleX = float(x) + .5f + view.jitter[0];
-                            edgeSamples[y * images.width + x] = sampleX < float(edge) ? 0 : 255;
+                            const float sampleX = float(x) + .5f + view.jitter[0] + cameraOffset;
+                            edgeSamples[y * images.width + x] = sampleX < *hardEdge ? 0 : 255;
                         }
                     }
                 }
@@ -528,7 +532,7 @@ public:
             validation.phase("StaticCoplanarShadowEdge");
             VirtualShadowMapTemporal edgeHistory;
             for (uint64_t frame = 0; frame < 8; ++frame) {
-                const auto result = render(edgeHistory, frame, 0, true);
+                const auto result = render(edgeHistory, frame, 0, float(edge));
                 const int dark = sample(result, edge - 1), lit = sample(result, edge);
                 check(dark <= 1 && lit >= 254, "Jittered hard edge blurred on frame " + std::to_string(frame) +
                     " (dark " + std::to_string(dark) + ", lit " + std::to_string(lit) + ")");
@@ -538,12 +542,36 @@ public:
             VirtualShadowMapTemporal uniformHistory;
             const std::array expected{0, 128, 85};
             for (uint64_t frame = 0; frame < expected.size(); ++frame) {
-                const auto result = render(uniformHistory, frame, frame == 1 ? 255 : 0, false);
+                const auto result = render(uniformHistory, frame, frame == 1 ? 255 : 0);
                 check(std::abs(sample(result, edge) - expected[frame]) <= 1,
                     "Uniform visibility history reset during camera jitter on frame " + std::to_string(frame));
             }
+
+            validation.phase("MovingCoplanarShadowEdge");
+            camera.setTemporalJitter(false);
+            VirtualShadowMapTemporal movingHistory;
+            constexpr uint64_t kMovingFrames = 48;
+            const auto moveCamera = [&](uint64_t frame) {
+                const float offset = frame % 2u == 0u ? 0.f : 2.f / float(images.height);
+                check(camera.setCamera({.eye = {offset, 0, 4}, .center = {offset, 0, 0}, .nearPlane = .01f,
+                    .farPlane = 10, .orthoHeight = 4, .orthographic = true}), "Move temporal camera by half a pixel");
+            };
+            for (uint64_t frame = 0; frame < kMovingFrames; ++frame) {
+                moveCamera(frame);
+                // The quarter-pixel offset keeps the boundary between the same
+                // two pixels at both phases, while every reprojection is fractional.
+                const auto result = render(movingHistory, frame, 0, float(edge) + .25f);
+                if (frame + 2 < kMovingFrames) { continue; }
+                const int dark = sample(result, edge - 2), lit = sample(result, edge + 1);
+                check(dark <= 40 && lit >= 215, "Moving hard edge spread past its halo limit on frame " +
+                    std::to_string(frame) + " (dark " + std::to_string(dark) + ", lit " + std::to_string(lit) + ")");
+            }
+            moveCamera(kMovingFrames);
+            const int retained = sample(render(movingHistory, kMovingFrames, 0), edge + 8);
+            check(retained > 200 && retained < 245,
+                "Moving temporal visibility did not retain bounded history (visibility " + std::to_string(retained) + ")");
             check(!validation.failed(), "Temporal jitter Vulkan validation error");
-            return RHITestResult::pass("Camera jitter preserves a hard shadow edge and still accumulates visibility");
+            return RHITestResult::pass("Static jitter preserves hard shadow edges and camera motion keeps the history halo bounded");
         } catch (const std::exception& error) {
             return RHITestResult::fail(error.what());
         }
