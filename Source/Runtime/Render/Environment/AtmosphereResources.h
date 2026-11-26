@@ -10,6 +10,7 @@
 
 namespace metallic::render {
 struct DebugResourceBinding;
+class AtmospherePrecomputeKernels;
 
 GPUAtmosphereParameters buildGPUAtmosphereParameters(const environment::EnvironmentSnapshot& environment,
     const std::array<double, 3>& observerWorldMetres);
@@ -60,12 +61,16 @@ public:
     ~AtmosphereResourcesGPU();
     AtmosphereResourcesGPU(const AtmosphereResourcesGPU&) = delete;
     AtmosphereResourcesGPU& operator=(const AtmosphereResourcesGPU&) = delete;
+    // The executable kernels are independent of the observer and can be retained by all publications on this device.
+    static Result<std::shared_ptr<const AtmospherePrecomputeKernels>> prepareKernels(Device& device, std::string& log);
     // A submitted publication (or same-frame prerequisite producer with explicit
     // expectedMediumParameters) with identical static medium can supply the two
     // medium LUTs. Their image owners remain retained independently of it.
     Result<> initialize(Device& device, std::string& log, const AtmosphereResourcesGPU* sharedMedium = nullptr,
-        const GPUAtmosphereParameters* expectedMediumParameters = nullptr);
-    Result<> initialize(Device& device, std::string& log, const SharedMediumHandle& sharedMedium);
+        const GPUAtmosphereParameters* expectedMediumParameters = nullptr,
+        std::shared_ptr<const AtmospherePrecomputeKernels> preparedKernels = {});
+    Result<> initialize(Device& device, std::string& log, const SharedMediumHandle& sharedMedium,
+        std::shared_ptr<const AtmospherePrecomputeKernels> preparedKernels = {});
     SharedMediumHandle sharedMediumHandle(const GPUAtmosphereParameters* overrideParameters = nullptr) const;
     Result<> record(CommandBuffer& commands, const environment::EnvironmentSnapshot& environment,
         const std::array<double, 3>& observerWorldMetres, std::string& log);

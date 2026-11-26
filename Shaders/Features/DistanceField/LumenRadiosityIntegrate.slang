@@ -16,6 +16,8 @@ struct RadiositySH
 
 uint2 packRadiositySH(float4 sh)
 {
+    // The inverse PDF can make a coefficient exceed the half-float ray range.
+    sh = clamp(sh, -kRadiosityMaxHalfFloat, kRadiosityMaxHalfFloat);
     return uint2(packHalf2x16(sh.xy), packHalf2x16(sh.zw));
 }
 

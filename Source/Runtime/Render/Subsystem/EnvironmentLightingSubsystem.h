@@ -19,6 +19,8 @@
 
 namespace metallic::render {
 
+class AtmospherePrecomputeKernels;
+
 enum class EnvironmentLightingStatus : uint8_t {
     Uninitialized,
     Loading,
@@ -189,6 +191,7 @@ private:
     Desc desc_;
     ImportancePdfCompute pdfCompute_;
     std::unique_ptr<GPUPrecompute> gpuPrecompute_;
+    std::shared_ptr<const AtmospherePrecomputeKernels> atmosphereKernels_;
     std::shared_ptr<Resources> resources_;
     std::vector<std::shared_ptr<PhysicalPublication>> physicalPublications_;
     std::vector<std::shared_ptr<PhysicalPublication>> pendingFramePublications_;

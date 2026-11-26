@@ -21,8 +21,8 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
-constexpr uint64_t kLumenReflectionABI = 0x4c554d454e050006ull;
-constexpr uint64_t kLumenReflectionTiledABI = 0x4c554d454e050007ull;
+constexpr uint64_t kLumenReflectionABI = 0x4c554d454e050009ull;
+constexpr uint64_t kLumenReflectionTiledABI = 0x4c554d454e05000aull;
 constexpr uint64_t kLumenReflectionScheduleABI = 0x4c554d454e050008ull;
 constexpr uint64_t kLumenReflectionTemporalABI = 0x4c554d454e060001ull;
 constexpr uint64_t kLumenReflectionBilateralABI = 0x4c554d454e070002ull;
@@ -38,6 +38,9 @@ constexpr uint32_t kReflectionMaxDispatchX = 65535;
 constexpr uint32_t kReflectionMaxExtent = 1u << 14u;
 constexpr uint32_t kReflectionDispatchBytes = 3 * sizeof(uint32_t);
 constexpr float kDefaultMaxRoughness = 0.4f;
+constexpr float kDefaultMaxRayIntensity = 40.0f;
+// Leave room for filter roundoff below the FP16 invalid-lighting sentinel.
+constexpr float kMaxStoredRayIntensity = 64000.0f;
 
 enum class ReflectionDispatch : uint32_t { ActiveTiles, ClearTiles, CompactRays, DetailRays, GDFRays, Count };
 
@@ -55,7 +58,8 @@ struct LumenReflectionScreenBindings {
 struct LumenReflectionParams {
     ShaderLumenGlobalTraceBindings scene;
     ShaderSampledImage position, normal, specular, sceneColor, blueNoise;
-    ShaderStorageImage outputReflections, trace, color;
+    ShaderStorageImage outputReflections, trace;
+    float maxRayIntensity;
     ShaderSampledImage reflections;
     ViewCameraConstants camera;
     uint32_t width, height, clipmapCount, frameIndex;
@@ -68,7 +72,7 @@ struct LumenReflectionParams {
     ShaderSampledImage traceDepth;
 };
 static_assert(offsetof(LumenReflectionParams, camera) == 80 && offsetof(LumenReflectionParams, width) == 160 &&
-    offsetof(LumenReflectionParams, maxTraceDistance) == 176 &&
+    offsetof(LumenReflectionParams, maxRayIntensity) == 72 && offsetof(LumenReflectionParams, maxTraceDistance) == 176 &&
     offsetof(LumenReflectionParams, outputRayData) == 184 && offsetof(LumenReflectionParams, rayData) == 200 &&
     offsetof(LumenReflectionParams, screen) == 212 && offsetof(LumenReflectionParams, detail) == 228 &&
     offsetof(LumenReflectionParams, outputTraceDepth) == 296 &&
@@ -294,6 +298,7 @@ private:
     LumenMeshSDFGrid meshGrid_;
     float maxTraceDistance_ = 200.0f;
     float maxRoughness_ = kDefaultMaxRoughness;
+    float maxRayIntensity_ = kDefaultMaxRayIntensity;
     float meshSDFTraceDistance_ = kLumenDefaultMeshSDFTraceDistance;
     // Preserve reprojectable history across ordinary camera motion, as diffuse gather does.
     HistoryResourceManager history_;
@@ -449,6 +454,7 @@ Result<> LumenReflectionPass::compile(const RenderGraphCompileContext& context, 
         // UE 5.7.4 FPostProcessSettings defaults to 20000 cm and roughness 0.4.
         maxTraceDistance_ = properties().value("maxTraceDistance", 200.0f);
         maxRoughness_ = properties().value("maxRoughness", kDefaultMaxRoughness);
+        maxRayIntensity_ = properties().value("maxRayIntensity", kDefaultMaxRayIntensity);
         meshSDFTraceDistance_ = properties().value("meshSDFTraceDistance", kLumenDefaultMeshSDFTraceDistance);
     } catch (const RenderGraphProperties::exception& error) {
         log = "Invalid Lumen Reflection properties: " + std::string(error.what());
@@ -457,6 +463,10 @@ Result<> LumenReflectionPass::compile(const RenderGraphCompileContext& context, 
     if (!(std::isfinite(maxTraceDistance_) && maxTraceDistance_ >= 0.0001f) ||
         !(maxRoughness_ >= 0.0f && maxRoughness_ <= 1.0f)) {
         log = "Lumen Reflection requires a finite trace distance of at least 0.0001 m and roughness in [0, 1]";
+        return makeError(Error::InvalidArgument);
+    }
+    if (!(maxRayIntensity_ > 0.0f && maxRayIntensity_ <= kMaxStoredRayIntensity)) {
+        log = "Lumen Reflection maxRayIntensity must be in (0, 64000]";
         return makeError(Error::InvalidArgument);
     }
 
@@ -612,10 +622,12 @@ Result<> LumenReflectionPass::compileClassifiedTracing(const std::vector<SlangMa
 Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
 {
     const auto* world = context.world();
-    if (world && (world->environment().enabled ||
-        world->worldEnvironment().source == environment::EnvironmentSource::PhysicalAtmosphere)) {
-        spdlog::error("The opaque Lumen Reflection software path requires skylight to be disabled");
-        return makeError(Error::Unsupported);
+    if (world) {
+        const bool physical = world->worldEnvironment().source == environment::EnvironmentSource::PhysicalAtmosphere;
+        if (physical ? !optionEnabled("allowPhysicalAtmosphere") : world->environment().enabled) {
+            spdlog::error("Lumen Reflection requires skylight disabled or an explicit physical atmosphere opt-in");
+            return makeError(Error::Unsupported);
+        }
     }
     const auto* view = context.viewConstants();
     if (!view) {
@@ -694,6 +706,7 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
         .blueNoise = writer.sampledImageHandle(blueNoise_.get()),
         .outputReflections = storage("reflections"),
         .trace = storage("trace"),
+        .maxRayIntensity = maxRayIntensity_,
         .reflections = sampledOutput("reflections"),
         .camera = view->current,
         .width = output.width,

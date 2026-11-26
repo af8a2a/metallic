@@ -13,7 +13,6 @@ using Metallic.Lumen;
 // UE 5.7.4 LumenRadiosity.cpp:91–112,946–949. The reference distances are in centimeters.
 static const float kRadiosityMinTraceDistance = 0.10f;
 static const float kRadiositySurfaceBias = 0.05f;
-static const float kRadiosityMaxRayIntensity = 40.0f;
 
 // UE 5.7.4 LumenRadiosity.usf:82, opaque Global SDF with a sky-disabled scene.
 [shader("compute")]
@@ -51,8 +50,8 @@ void lumenTraceRadiosityMain(uint3 thread : SV_DispatchThreadID)
                 radiance = traceResult.radiance.xyz;
             }
             float maxLighting = max(radiance.x, max(radiance.y, radiance.z));
-            if (maxLighting > kRadiosityMaxRayIntensity) {
-                radiance *= kRadiosityMaxRayIntensity / maxLighting;
+            if (maxLighting > params.maxRayIntensity) {
+                radiance *= params.maxRayIntensity / maxLighting;
             }
         }
     }

@@ -3104,6 +3104,30 @@ public:
         const auto assetPath = [&](const char* filename) {
             return std::filesystem::weakly_canonical(root / "Asset/Sponza/SponzaGIBakes" / filename).generic_string();
         };
+        RenderSampleLoadResult startup;
+        std::string startupLog;
+        if (!loadBuiltInRenderSample(kDefaultEditorSampleId, startup, startupLog) ||
+            !startup.desc.requiresStreamline || !detail::usesSceneRealtimeGI(startup.graph) ||
+            !detail::sceneRealtimeGIAllowsPhysicalAtmosphere(startup.graph) ||
+            !hasEdge(startup.graph, "Shadows.shadows", "Deferred.virtualShadows") ||
+            !hasEdge(startup.graph, "Temporal.color", "Reflections.sceneColor") ||
+            !hasEdge(startup.graph, "Reflections.color", "DLSSSR.inputColor") ||
+            !hasEdge(startup.graph, "Deferred.motionVectors", "DLSSSR.motionVectors") ||
+            !hasEdge(startup.graph, "Deferred.deviceDepth", "DLSSSR.depth")) {
+            return RHITestResult::fail("Editor startup must connect VSM and scene realtime GI to DLSS-SR: " + startupLog);
+        }
+        scene::SceneDocument startupScene;
+        if (!startupScene.loadDeferredMeshlets(root / startup.desc.scenePath, {}) || !startupScene.realtimeGI() ||
+            startupScene.realtimeGI()->meshCardPaths != sponza.realtimeGI()->meshCardPaths ||
+            startupScene.worldEnvironment().source != environment::EnvironmentSource::PhysicalAtmosphere ||
+            !startupScene.environment().enabled || !startupScene.lighting().autoExposure.enabled) {
+            return RHITestResult::fail("Editor startup scene must enable physical atmosphere and auto exposure with the Sponza GI bakes");
+        }
+        world.setScene(&startupScene);
+        if (detail::realtimeGISceneIdentity(&startupScene, world, true) != startupScene.resourceIdentity() ||
+            detail::realtimeGISceneIdentity(nullptr, world, true) != 0) {
+            return RHITestResult::fail("The startup graph must keep GI active with the physical Sponza scene");
+        }
         const auto hasPresentation = [&](const RenderGraph& graph, std::string_view hdrSource) {
             return hasEdge(graph, hdrSource, "DLSSSR.inputColor") && hasEdge(graph, "DLSSSR.color", "AutoExposure.source") &&
                 hasEdge(graph, "DLSSNR.color", "FinalBlit.source") && graph.presentationOutputName() == "FinalBlit.color";

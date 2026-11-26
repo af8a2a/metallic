@@ -11,6 +11,7 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -194,6 +195,15 @@ bool EditorApplication::configureCPUJobBenchmark(uint32_t& workerCount)
         if (!config.at("camera").is_object()) { throw std::runtime_error("Benchmark camera must be an object"); }
         render::RenderView checkedView;
         if (!checkedView.setCameraProperties(config.at("camera"))) { throw std::runtime_error("Invalid benchmark camera"); }
+        if (config.contains("cameraTranslationPerFrame")) {
+            const auto& translation = config.at("cameraTranslationPerFrame");
+            if (!translation.is_array() || translation.size() != 3 ||
+                !std::ranges::all_of(translation, [](const auto& component) {
+                    return component.is_number() && std::isfinite(component.template get<double>());
+                })) {
+                throw std::runtime_error("cameraTranslationPerFrame needs three finite components in world metres");
+            }
+        }
         cpuJobRecordingWorkerLimit_ = config.value("recordingWorkerLimit", workerCount);
         if (!cpuJobRecordingWorkerLimit_ || cpuJobRecordingWorkerLimit_ > workerCount) {
             throw std::runtime_error("Benchmark recording limit must fit the shared pool");
@@ -220,6 +230,8 @@ bool EditorApplication::runCPUJobBenchmark()
     try {
         std::filesystem::create_directories(output);
         const auto& config = cpuJobBenchmarkConfig_;
+        const auto cameraTranslation = config.value("cameraTranslationPerFrame", std::array<double, 3>{});
+        const bool movingCamera = cameraTranslation != std::array<double, 3>{};
         const bool diagnostics = config.value("diagnostics", false);
         const bool captureScopeTimeline = config.value("captureScopeTimeline", false);
         if (diagnostics) {
@@ -266,7 +278,8 @@ bool EditorApplication::runCPUJobBenchmark()
         report["scene"] = std::filesystem::weakly_canonical(config.at("scenePath").get<std::string>()).generic_string();
         report["camera"] = config.at("camera");
         report["hiddenWindow"] = true;
-        report["trajectoryClock"] = "fixed camera; no scene edits or camera route during capture";
+        report["trajectoryClock"] = movingCamera ? "fixed camera translation per captured frame after stationary warmup" :
+            "fixed camera; no scene edits or camera route during capture";
         report["cpuFramePathContract"] = "nonoverlapping-coordinator-wall-segments-v1";
         report["frameTimeDefinition"] = "start-to-start editor loop including frame-slot wait, rendering, submission, Present and telemetry; final interval ends after final telemetry; no per-frame GPU drain/readback";
         report["resourceDefinition"] = "VMA/driver budget snapshots after selected frames; tracked peaks are simultaneous RHI allocation totals over this device lifetime, excluding untracked SDK/driver allocations; domain peaks are independent and must not be summed; OS monitor spans process lifetime";
@@ -313,7 +326,7 @@ bool EditorApplication::runCPUJobBenchmark()
             render::vulkan::StreamlineFrameBeginProfile frameBegin;
             uint64_t executionId = 0, graphGeneration = 0;
         };
-        const auto draw = [&]() {
+        const auto draw = [&](uint32_t motionFrame = 0) {
             Sample sample;
             sample.frame = profiler_.nextFrameIndex();
             const auto begin = Clock::now();
@@ -336,6 +349,20 @@ bool EditorApplication::runCPUJobBenchmark()
                     { auto scope = profiler_.scope("Poll Events"); pollEvents(); }
                     if (!running_) { throw std::runtime_error("Benchmark cancelled"); }
                     mark("Poll events");
+                    if (movingCamera && motionFrame != 0) {
+                        {
+                            auto scope = profiler_.scope("Camera motion");
+                            auto camera = benchmarkCamera;
+                            for (const char* point : {"eye", "center"}) {
+                                for (size_t axis = 0; axis < cameraTranslation.size(); ++axis) {
+                                    camera[point][axis] = benchmarkCamera.at(point).at(axis).get<double>() +
+                                        motionFrame * cameraTranslation[axis];
+                                }
+                            }
+                            applyViewportCameraProperties({{"camera", std::move(camera)}}, nullptr);
+                        }
+                        mark("Camera motion");
+                    }
                     { auto scope = profiler_.scope("Render Frame");
                         if (!renderFrame() || viewportCompileFailed_) { throw std::runtime_error("Production frame failed"); }
                     }
@@ -407,7 +434,7 @@ bool EditorApplication::runCPUJobBenchmark()
         profiler_.beginCapture();
         const auto measuredStart = Clock::now();
         for (uint32_t frame = 0; frame < frameCount; ++frame) {
-            samples.push_back(draw());
+            samples.push_back(draw(frame + 1));
             if (samples.size() > 1) {
                 samples[samples.size() - 2].frameMs = double(samples.back().originNs - samples[samples.size() - 2].originNs) / 1.e6;
             }

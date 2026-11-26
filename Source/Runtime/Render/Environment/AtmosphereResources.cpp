@@ -100,6 +100,12 @@ std::array<float, 3> atmosphereSpectrumToWorkingColor(std::array<float, 3> spect
     return {result.x, result.y, result.z};
 }
 
+class AtmospherePrecomputeKernels {
+    friend class AtmosphereResourcesGPU;
+    const Device* device_ = nullptr;
+    std::array<ComputeKernel, 6> kernels_;
+};
+
 struct AtmosphereResourcesGPU::Impl {
     struct Image {
         std::unique_ptr<Texture> texture;
@@ -107,7 +113,7 @@ struct AtmosphereResourcesGPU::Impl {
         std::vector<std::unique_ptr<TextureView>> mips;
     };
     Device* device = nullptr;
-    std::array<ComputeKernel, 6> kernels;
+    std::shared_ptr<const AtmospherePrecomputeKernels> kernels;
     std::shared_ptr<Image> transmittance = std::make_shared<Image>();
     std::shared_ptr<Image> multiScattering = std::make_shared<Image>();
     Image skyView, radiance, cloudShadow;
@@ -157,7 +163,8 @@ struct AtmosphereResourcesGPU::Impl {
 AtmosphereResourcesGPU::AtmosphereResourcesGPU() : impl_(std::make_unique<Impl>()) {}
 AtmosphereResourcesGPU::~AtmosphereResourcesGPU() = default;
 
-Result<> AtmosphereResourcesGPU::initialize(Device& device, std::string& log, const SharedMediumHandle& sharedMedium)
+Result<> AtmosphereResourcesGPU::initialize(Device& device, std::string& log, const SharedMediumHandle& sharedMedium,
+    std::shared_ptr<const AtmospherePrecomputeKernels> preparedKernels)
 {
     if (impl_->device != nullptr) { return makeError(Error::InvalidArgument); }
     if (!sharedMedium.valid() || sharedMedium.device != &device) {
@@ -168,7 +175,7 @@ Result<> AtmosphereResourcesGPU::initialize(Device& device, std::string& log, co
     impl_->multiScattering = std::static_pointer_cast<Impl::Image>(sharedMedium.multiScatteringOwner);
     impl_->mediumParameters = sharedMedium.parameters;
     impl_->sharedMedium = true;
-    return initialize(device, log, nullptr, nullptr);
+    return initialize(device, log, nullptr, nullptr, std::move(preparedKernels));
 }
 
 AtmosphereResourcesGPU::SharedMediumHandle AtmosphereResourcesGPU::sharedMediumHandle(
@@ -192,8 +199,26 @@ AtmosphereResourcesGPU::SharedMediumHandle AtmosphereResourcesGPU::sharedMediumH
     };
 }
 
+Result<std::shared_ptr<const AtmospherePrecomputeKernels>> AtmosphereResourcesGPU::prepareKernels(
+    Device& device, std::string& log)
+{
+    auto prepared = std::make_shared<AtmospherePrecomputeKernels>();
+    prepared->device_ = &device;
+    constexpr std::array<const char*, 6> modules{"Transmittance", "MultiScattering", "SkyView", "EnvironmentCapture", "AerialPerspective", "CloudShadow"};
+    constexpr std::array<const char*, 6> entries{"transmittanceMain", "multiScatteringMain", "skyViewMain", "environmentCaptureMain", "aerialPerspectiveMain", "cloudShadowMain"};
+    for (size_t index = 0; index < modules.size(); ++index) {
+        const std::string module = std::string("Features/Environment/") + modules[index];
+        auto result = ShaderRegistry::instance().getComputeKernel(device,
+            SlangShaderDesc{.moduleName = module.c_str(), .entryPointName = entries[index], .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+            ComputeKernelDesc{.parameters = parameterAbi<AtmospherePrecomputeParams>(kAtmospherePrecomputeABI, ParameterTransport::InlinePush),
+                .debugName = modules[index]}, prepared->kernels_[index], log);
+        if (!result) { return makeError(result.error()); }
+    }
+    return std::shared_ptr<const AtmospherePrecomputeKernels>(std::move(prepared));
+}
+
 Result<> AtmosphereResourcesGPU::initialize(Device& device, std::string& log, const AtmosphereResourcesGPU* sharedMedium,
-    const GPUAtmosphereParameters* expectedMediumParameters)
+    const GPUAtmosphereParameters* expectedMediumParameters, std::shared_ptr<const AtmospherePrecomputeKernels> preparedKernels)
 {
     if (impl_->device != nullptr) { return makeError(Error::InvalidArgument); }
     impl_->device = &device;
@@ -212,16 +237,16 @@ Result<> AtmosphereResourcesGPU::initialize(Device& device, std::string& log, co
         impl_->mediumParameters = expectedMediumParameters != nullptr ? *expectedMediumParameters : sharedMedium->impl_->parameters;
         impl_->sharedMedium = true;
     }
-    constexpr std::array<const char*, 6> modules{"Transmittance", "MultiScattering", "SkyView", "EnvironmentCapture", "AerialPerspective", "CloudShadow"};
-    constexpr std::array<const char*, 6> entries{"transmittanceMain", "multiScatteringMain", "skyViewMain", "environmentCaptureMain", "aerialPerspectiveMain", "cloudShadowMain"};
-    for (uint32_t index = 0; index < modules.size(); ++index) {
-        const std::string module = std::string("Features/Environment/") + modules[index];
-        auto result = ShaderRegistry::instance().getComputeKernel(device,
-            SlangShaderDesc{.moduleName = module.c_str(), .entryPointName = entries[index], .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
-            ComputeKernelDesc{.parameters = parameterAbi<AtmospherePrecomputeParams>(kAtmospherePrecomputeABI, ParameterTransport::InlinePush),
-                .debugName = modules[index]}, impl_->kernels[index], log);
-        if (!result) { return result; }
+    if (!preparedKernels) {
+        auto prepared = prepareKernels(device, log);
+        if (!prepared) { return makeError(prepared.error()); }
+        preparedKernels = std::move(*prepared);
     }
+    if (preparedKernels->device_ != &device) {
+        log = "Atmosphere precompute kernels belong to another device";
+        return makeError(Error::InvalidArgument);
+    }
+    impl_->kernels = std::move(preparedKernels);
     for (auto request : {std::array<uint32_t, 4>{0, kTransmittanceWidth, kTransmittanceHeight, 1},
         {1, kMultiScatteringSize, kMultiScatteringSize, 1}, {2, kSkyViewWidth, kSkyViewHeight, 1},
         {3, kRadianceWidth, kRadianceHeight, kRadianceMipCount}, {4, kCloudShadowSize, kCloudShadowSize, 1}}) {
@@ -283,7 +308,7 @@ Result<> AtmosphereResourcesGPU::record(CommandBuffer& commands, const environme
     auto dispatch = [&](uint32_t kernel, uint32_t width, uint32_t height, uint32_t depth = 1) -> Result<> {
         auto encoded = writer.encode(params, kAtmospherePrecomputeABI, ParameterTransport::InlinePush);
         if (!encoded) { return makeError(encoded.error()); }
-        return impl_->kernels[kernel].dispatch(commands, *encoded, (width + 7) / 8, (height + 7) / 8, depth);
+        return impl_->kernels->kernels_[kernel].dispatch(commands, *encoded, (width + 7) / 8, (height + 7) / 8, depth);
     };
     auto imageDispatch = [&](uint32_t kernel, Impl::Image& image, uint32_t width, uint32_t height, uint32_t mip = 0) -> Result<> {
         if (auto result = impl_->imageBarrier(commands, image, mip, TextureLayout::Undefined, TextureLayout::General); !result) { return result; }

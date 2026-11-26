@@ -1,6 +1,7 @@
 module SurfaceCacheCapture;
 
 import ShaderCore;
+import AtmosphereTypes;
 import ParameterRoot;
 import MaterialTextureDecode;
 import LumenSurfaceCache;
@@ -155,6 +156,20 @@ struct SurfaceCacheRectLightingParams
     uint sampleCount;
 };
 
+struct SurfaceCacheSunAtmosphereParams
+{
+    ResourceHandle<StructuredBuffer<GPUAtmosphereParameters>> parameters;
+    ResourceHandle<Texture2D<float4>> transmittance;
+    ResourceHandle<Texture2D<float4>> cloudShadow;
+};
+
+float3 surfaceCacheSunIrradiance(SurfaceCacheSunAtmosphereParams atmosphere, float3 authoredIrradiance, float3 worldPosition)
+{
+    if (atmosphere.parameters.index == 0xffffffffu) { return authoredIrradiance; }
+    return physicalCelestialIrradiance(resolveUniform(atmosphere.parameters)[0], resolveUniform(atmosphere.transmittance),
+        atmosphere.cloudShadow, 0u, worldPosition);
+}
+
 struct SurfaceCacheResolveParams
 {
     ResourceHandle<Texture2D<float4>> albedo;
@@ -172,6 +187,7 @@ struct SurfaceCacheResolveParams
     SurfaceCacheRectLightingParams rectLighting;
     ResourceHandle<SurfaceCacheIrradianceTexture> deterministicIrradiance;
     uint separateLighting;
+    SurfaceCacheSunAtmosphereParams atmosphere;
 };
 
 // Fixed-resolution cards have equal-sized rectangles. Pack the update list
@@ -290,13 +306,17 @@ void surfaceCacheResolveMain(uint3 threadID : SV_DispatchThreadID)
     const SurfaceCacheCard card = cards[cardIndex];
     float3 worldNormal = decodeSurfaceCacheNormal(card, encodedNormal.xy);
     // DeferredLightingCommon.ush:545, an unshadowed directional light at default diffuse scale.
-    float3 directLighting = params.illuminance.xyz * saturate(dot(worldNormal, params.lightDirection.xyz));
-    if (params.rectLighting.count != 0u) {
+    float cosine = saturate(dot(worldNormal, params.lightDirection.xyz));
+    float3 directLighting = params.illuminance.xyz * cosine;
+    if (params.atmosphere.parameters.index != 0xffffffffu || params.rectLighting.count != 0u) {
         float2 cardUV = (float2(texel - tile * params.tileResolution) + 0.5f) / float(params.tileResolution);
         // Match the R16 UNORM depth read by the separate lighting pass.
         float cardDepth = round(depth * 65535.0f) * (1.0f / 65535.0f);
         float3 worldPosition = surfaceCacheWorldPosition(card, cardUV, cardDepth);
-        directLighting += surfaceCacheRectIrradiance(params.rectLighting, texel, 0u, worldPosition, worldNormal);
+        directLighting = surfaceCacheSunIrradiance(params.atmosphere, params.illuminance.xyz, worldPosition) * cosine;
+        if (params.rectLighting.count != 0u) {
+            directLighting += surfaceCacheRectIrradiance(params.rectLighting, texel, 0u, worldPosition, worldNormal);
+        }
     }
 
     if (params.separateLighting != 0u) {
@@ -362,6 +382,8 @@ struct SurfaceCacheShadowedLightingParams
     SurfaceCacheRectLightingParams rectLighting;
     ResourceHandle<SurfaceCacheIrradianceTexture> deterministicIrradiance;
     uint separateLighting;
+    SurfaceCacheSunAtmosphereParams atmosphere;
+    uint reserved;
 #if defined(METALLIC_SURFACE_CACHE_HARDWARE_LOCAL_SHADOWS) || defined(METALLIC_SURFACE_CACHE_HARDWARE_RECT_SHADOWS)
     uint64_t scene;
 #endif
@@ -527,7 +549,7 @@ void surfaceCacheShadowedLightingMain(uint3 threadID : SV_DispatchThreadID)
         domains[0], 0u};
     PunctualLightSample sun;
     sun.direction = params.lightDirection.xyz;
-    sun.illuminance = params.illuminance.xyz;
+    sun.illuminance = surfaceCacheSunIrradiance(params.atmosphere, params.illuminance.xyz, worldPosition);
     sun.distance = kMaxCardShadowTraceDistance;
     float3 directLighting = shadowedSurfaceCacheLight(distanceField, domains, params.clipmapCount,
         worldPosition, worldNormal, sun, params.sunCastsShadow != 0u, false);

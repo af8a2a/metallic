@@ -274,8 +274,9 @@ public:
 class GIPlaygroundSample final : public RenderSample {
 public:
     GIPlaygroundSample(std::string_view id, std::string_view name, std::string_view description,
-        std::string_view scenePath, std::string_view graphPath)
-        : id_(id), name_(name), description_(description), scenePath_(scenePath), graphPath_(graphPath)
+        std::string_view scenePath, std::string_view graphPath, bool requiresStreamline = false)
+        : id_(id), name_(name), description_(description), scenePath_(scenePath), graphPath_(graphPath),
+          requiresStreamline_(requiresStreamline)
     {}
 
     std::string_view id() const override { return id_; }
@@ -286,6 +287,7 @@ public:
     std::string graphPath() const override { return std::string(graphPath_); }
     std::vector<std::string> scenePathTargets() const override { return {}; }
     std::string previewOutput() const override { return "FinalBlit.color"; }
+    bool requiresStreamline() const override { return requiresStreamline_; }
 
 private:
     std::string_view id_;
@@ -293,6 +295,7 @@ private:
     std::string_view description_;
     std::string_view scenePath_;
     std::string_view graphPath_;
+    bool requiresStreamline_;
 };
 
 class LumenLargeSceneSample final : public MeshDistanceFieldSample {
@@ -1168,6 +1171,10 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const GIPlaygroundSample sponzaGIRealtime{"sponza-gi-realtime", "Sponza with GI / Realtime GI + VSM",
         "Rasterized Sponza with Virtual Shadow Maps and Lumen indirect lighting.",
         sponzaGIScene, "Pipelines/Samples/sponza_gi_realtime.metallic_graph.json"};
+    static const GIPlaygroundSample sponzaGIAtmosphere{kDefaultEditorSampleId, "Sponza with GI / Physical Atmosphere",
+        "Sponza with Lumen GI, virtual shadows, physical daylight, DLSS Super Resolution, and auto exposure.",
+        "Asset/Sponza/SponzaGIAtmosphere.metallic_scene.json",
+        "Pipelines/Samples/sponza_gi_atmosphere.metallic_graph.json", true};
     static const GIPlaygroundSample sponzaGIPathTracing{"sponza-gi-path-tracing", "Sponza with GI / Path Tracing",
         "Progressive OpenPBR path tracing of the sunlit Sponza atrium.",
         sponzaGIScene, "Pipelines/Samples/sponza_gi_path_tracing.metallic_graph.json"};
@@ -1213,6 +1220,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &lumenDetailTracing,
         &lumenReflection,
         &sponzaGIRealtime,
+        &sponzaGIAtmosphere,
         &sponzaGIPathTracing,
         &sponzaGICompare,
         &realtimeLighting,

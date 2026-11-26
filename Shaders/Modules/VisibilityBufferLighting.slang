@@ -319,7 +319,14 @@ internal float3 shadeSceneVisibilitySurfaceRadiance<TProgram : ISceneSurfaceMate
         }
         if (!hasEnvironment) { return radiance; }
 
-        float3 specular = realtimeEnvironmentSpecular(reflect(-viewDirectionWS, normal), roughness, push) * float3(specularWeight);
+        float3 specular = 0.0;
+#if METALLIC_DEFERRED_LUMEN_SPECULAR
+        // Lumen composes the specular response for opaque physical-atmosphere receivers.
+        if (!(replaceDiffuse && !summary.numericalEnvironment && physicalEnvironmentEnabled(getSceneEnvironmentResources())))
+#endif
+        {
+            specular = realtimeEnvironmentSpecular(reflect(-viewDirectionWS, normal), roughness, push) * float3(specularWeight);
+        }
 
 #if MATERIAL_CLASS >= 1 && MATERIAL_CLASS <= 3
         // All opaque classes (Dielectric, Conductor, General Opaque) are compile-time guaranteed zero transmission.

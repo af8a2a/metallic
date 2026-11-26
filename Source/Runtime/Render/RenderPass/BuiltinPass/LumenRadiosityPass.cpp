@@ -17,13 +17,15 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
-constexpr uint64_t kRadiosityABI = 0x4c554d454e040006ull;
-constexpr uint64_t kRadiosityPersistentABI = 0x4c554d454e040007ull;
+constexpr uint64_t kRadiosityABI = 0x4c554d454e040008ull;
+constexpr uint64_t kRadiosityPersistentABI = 0x4c554d454e040009ull;
 constexpr uint64_t kRadiosityScheduleABI = 0x4c554d454e040003ull;
 constexpr uint32_t kProbeSpacing = 4;
 constexpr uint32_t kScheduleStateWords = 24;
 constexpr uint32_t kIndirectDispatchCount = 3;
 constexpr uint32_t kDefaultRadiosityUpdateFactor = 64;
+constexpr float kDefaultMaxRayIntensity = 40.0f;
+constexpr float kMaxHalfFloat = 65504.0f;
 constexpr std::array kSHNames{"probeSHRed", "probeSHGreen", "probeSHBlue"};
 constexpr std::array kHistoryNames{"indirectIrradiance", "lighting"};
 
@@ -38,15 +40,17 @@ struct LumenRadiosityParams {
     uint32_t atlasSize, tileResolution, clipmapCount, historyValid, temporalIndex;
     float maxTraceDistance;
     uint32_t viewFrameIndex, traceValid;
+    float maxRayIntensity;
 };
-static_assert(sizeof(LumenRadiosityParams) == 156 && offsetof(LumenRadiosityParams, atlasSize) == 124);
+static_assert(sizeof(LumenRadiosityParams) == 160 && offsetof(LumenRadiosityParams, atlasSize) == 124 &&
+    offsetof(LumenRadiosityParams, maxRayIntensity) == 156);
 
 struct PersistentRadiosityParams {
     LumenRadiosityParams lighting;
     ShaderBuffer scheduledCards, refreshCards, updateState;
 };
-static_assert(sizeof(PersistentRadiosityParams) == 168 &&
-    offsetof(PersistentRadiosityParams, scheduledCards) == 156);
+static_assert(sizeof(PersistentRadiosityParams) == 172 &&
+    offsetof(PersistentRadiosityParams, scheduledCards) == 160);
 
 struct RadiosityScheduleParams {
     ShaderBuffer cards, cardScene, domains, cardUpdates;
@@ -61,6 +65,7 @@ struct RadiosityLayout {
     uint32_t atlasSize = 256;
     uint32_t tileResolution = 32;
     float maxTraceDistance = 200.0f;
+    float maxRayIntensity = kDefaultMaxRayIntensity;
     bool persistentCards = false;
     uint32_t maxCardsPerFrame = 1;
 
@@ -75,11 +80,13 @@ std::optional<RadiosityLayout> readLayout(const RenderGraphProperties& propertie
 {
     try {
         RadiosityLayout layout{properties.value("atlasSize", 256u), properties.value("tileResolution", 32u),
-            properties.value("maxTraceDistance", 200.0f), properties.value("persistentCards", false)};
+            properties.value("maxTraceDistance", 200.0f), properties.value("maxRayIntensity", kDefaultMaxRayIntensity),
+            properties.value("persistentCards", false)};
         if (layout.tileResolution < kProbeSpacing || layout.tileResolution % kProbeSpacing != 0 ||
             layout.atlasSize < layout.tileResolution || layout.atlasSize > 2048 ||
             layout.atlasSize % layout.tileResolution != 0 || !std::isfinite(layout.maxTraceDistance) ||
-            layout.maxTraceDistance <= 0.1f) {
+            layout.maxTraceDistance <= 0.1f || !std::isfinite(layout.maxRayIntensity) ||
+            layout.maxRayIntensity <= 0.0f || layout.maxRayIntensity > kMaxHalfFloat) {
             return std::nullopt;
         }
         // UE LumenSceneLighting.cpp SetLightingUpdateAtlasSize, with one tile per physical page.
@@ -192,7 +199,7 @@ Result<> LumenRadiosityPass::compile(const RenderGraphCompileContext& context, s
     const auto layout = readLayout(properties());
     if (!layout || !context.runtimeScene) {
         log = "Lumen Radiosity requires a world scene, a tile divisible by four, a matching Surface Cache atlas, "
-            "and any maxCardsPerFrame setting within the atlas capacity";
+            "maxRayIntensity in (0, 65504], and any maxCardsPerFrame setting within the atlas capacity";
         return makeError(Error::InvalidArgument);
     }
     if (!context.graphicsQueue) {
@@ -271,9 +278,8 @@ Result<> LumenRadiosityPass::execute(RenderGraphExecutionContext& context)
 
     const auto* world = context.world();
     const auto* scene = world ? world->scene() : context.runtimeScene();
-    if (world && (world->environment().enabled ||
-        world->worldEnvironment().source == environment::EnvironmentSource::PhysicalAtmosphere)) {
-        spdlog::error("The opaque Lumen Radiosity GDF branch requires skylight to be disabled");
+    if (world && world->environment().enabled && world->worldEnvironment().source == environment::EnvironmentSource::HDRI) {
+        spdlog::error("The opaque Lumen Radiosity GDF branch requires HDRI lighting to be disabled");
         return makeError(Error::InvalidArgument);
     }
     auto registry = ResourceRegistry::forDevice(*device_);
@@ -415,6 +421,7 @@ LumenRadiosityParams LumenRadiosityPass::bindParams(RenderGraphExecutionContext&
     params.clipmapCount = clipmapCount;
     params.maxTraceDistance = layout_.maxTraceDistance;
     params.viewFrameIndex = static_cast<uint32_t>(context.frameIndex());
+    params.maxRayIntensity = layout_.maxRayIntensity;
     return params;
 }
 

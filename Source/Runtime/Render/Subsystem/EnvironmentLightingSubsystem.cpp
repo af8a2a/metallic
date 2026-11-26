@@ -339,10 +339,12 @@ public:
     ShaderReload(
         EnvironmentLightingSubsystem& owner,
         ImportancePdfCompute pdfCompute,
-        std::unique_ptr<GPUPrecompute> gpuPrecompute)
+        std::unique_ptr<GPUPrecompute> gpuPrecompute,
+        std::shared_ptr<const AtmospherePrecomputeKernels> atmosphereKernels)
         : owner_(owner)
         , pdfCompute_(std::move(pdfCompute))
         , gpuPrecompute_(std::move(gpuPrecompute))
+        , atmosphereKernels_(std::move(atmosphereKernels))
     {
     }
 
@@ -352,6 +354,7 @@ public:
         owner_.gpuPrecompute_ = std::move(gpuPrecompute_);
         owner_.requestInitialized_ = false;
         std::scoped_lock lock(owner_.physicalMutex_);
+        owner_.atmosphereKernels_ = std::move(atmosphereKernels_);
         if (owner_.host_ != nullptr) {
             for (const auto& publication : owner_.physicalPublications_) { owner_.host_->retire(publication); }
             for (const auto& publication : owner_.pendingFramePublications_) { owner_.host_->retire(publication); }
@@ -369,6 +372,7 @@ private:
     EnvironmentLightingSubsystem& owner_;
     ImportancePdfCompute pdfCompute_;
     std::unique_ptr<GPUPrecompute> gpuPrecompute_;
+    std::shared_ptr<const AtmospherePrecomputeKernels> atmosphereKernels_;
 };
 
 EnvironmentLightingSubsystem::EnvironmentLightingSubsystem() = default;
@@ -653,11 +657,18 @@ Result<std::unique_ptr<RenderSubsystemShaderReload>> EnvironmentLightingSubsyste
         return makeError(result.error());
     }
 
+    std::shared_ptr<const AtmospherePrecomputeKernels> nextAtmosphereKernels;
+    if (atmosphereKernels_) {
+        auto prepared = AtmosphereResourcesGPU::prepareKernels(context.device, log);
+        if (!prepared) { return makeError(prepared.error()); }
+        nextAtmosphereKernels = std::move(*prepared);
+    }
     outReload = std::make_unique<ShaderReload>(
         *this,
         std::move(nextPdfCompute),
-        std::move(nextGpuPrecompute));
-    log = "reloaded environment importance and spherical-harmonics shaders";
+        std::move(nextGpuPrecompute),
+        std::move(nextAtmosphereKernels));
+    log = "reloaded environment precompute shaders";
     return outReload;
 }
 
@@ -1222,6 +1233,11 @@ Result<std::shared_ptr<const EnvironmentResourceSet>> EnvironmentLightingSubsyst
                 mediumShared = publication->mediumShared;
                 ++physicalCacheHitCount_;
             } else {
+                if (!atmosphereKernels_) {
+                    auto prepared = AtmosphereResourcesGPU::prepareKernels(device, log);
+                    if (!prepared) { return makeError(prepared.error()); }
+                    atmosphereKernels_ = std::move(*prepared);
+                }
                 publication = std::make_shared<PhysicalPublication>();
                 publication->parameters = parameters;
                 publication->revision = contentRevision;
@@ -1279,8 +1295,8 @@ Result<std::shared_ptr<const EnvironmentResourceSet>> EnvironmentLightingSubsyst
 
                 publication->mediumShared = mediumShared;
                 Result<> result = committedMediumHandle.valid()
-                    ? publication->atmosphere.initialize(device, log, committedMediumHandle)
-                    : publication->atmosphere.initialize(device, log, pendingMediumAtmosphere, expectedMediumParams);
+                    ? publication->atmosphere.initialize(device, log, committedMediumHandle, atmosphereKernels_)
+                    : publication->atmosphere.initialize(device, log, pendingMediumAtmosphere, expectedMediumParams, atmosphereKernels_);
                 if (!result) { return makeError(result.error()); }
 
                 constexpr uint32_t width = AtmosphereResourcesGPU::kRadianceWidth;
@@ -1723,6 +1739,7 @@ void EnvironmentLightingSubsystem::shutdown()
     physicalPublications_.clear();
     pendingFramePublications_.clear();
     mediumPublications_.clear();
+    atmosphereKernels_.reset();
     nextPhysicalAllocationGeneration_ = 0;
     nextMediumAllocationGeneration_ = 0;
     nextContentRevision_ = 0;

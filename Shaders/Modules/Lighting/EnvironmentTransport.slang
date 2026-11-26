@@ -21,6 +21,19 @@ public bool loadPhysicalAtmosphere(EnvironmentResourceParameters resources, out 
     return parameters.settings.y > 0.5;
 }
 
+public float3 physicalCelestialIrradiance(GPUAtmosphereParameters atmosphere, Texture2D<float4> transmittance,
+    ResourceHandle<Texture2D<float4>> cloudShadow, uint slot, float3 worldPosition)
+{
+    float3 positionKm = Metallic.Atmosphere::worldToAtmosphereKm(atmosphere, worldPosition);
+    float cloudT = 1.0;
+    if (cloudShadow.index == 0xffffffffu ||
+        !Metallic.Atmosphere::tryCloudShadowMap(atmosphere, resolveUniform(cloudShadow), positionKm, slot, cloudT)) {
+        cloudT = Metallic.Clouds::transmittance(atmosphere, positionKm,
+            slot == 0u ? atmosphere.sunDirectionRadius.xyz : atmosphere.moonDirectionRadius.xyz);
+    }
+    return Metallic.Atmosphere::solarIrradiance(atmosphere, transmittance, positionKm, slot, cloudT);
+}
+
 public PunctualLightSample sampleCelestialLightAtPosition(StructuredBuffer<GPUCelestialLight> lights,
     uint slot, float3 worldPosition)
 {
@@ -33,15 +46,8 @@ public PunctualLightSample sampleCelestialLightAtPosition(StructuredBuffer<GPUCe
     let resources = getSceneResourceParameterField<EnvironmentResourceParameters>(kSceneEnvironmentOffset);
 #endif
     if (resources.transmittance.index != 0xffffffffu && loadPhysicalAtmosphere(resources, atmosphere)) {
-        float3 positionKm = Metallic.Atmosphere::worldToAtmosphereKm(atmosphere, worldPosition);
-        float cloudT = 1.0;
-        if (resources.cloudShadow.index == 0xffffffffu ||
-            !Metallic.Atmosphere::tryCloudShadowMap(atmosphere, resolveUniform(resources.cloudShadow), positionKm, slot, cloudT)) {
-            cloudT = Metallic.Clouds::transmittance(atmosphere, positionKm,
-                slot == 0u ? atmosphere.sunDirectionRadius.xyz : atmosphere.moonDirectionRadius.xyz);
-        }
-        result.illuminance = Metallic.Atmosphere::solarIrradiance(atmosphere,
-            resolveUniform(resources.transmittance), positionKm, slot, cloudT);
+        result.illuminance = physicalCelestialIrradiance(atmosphere, resolveUniform(resources.transmittance),
+            resources.cloudShadow, slot, worldPosition);
     }
     return result;
 }

@@ -38,11 +38,20 @@ inline bool usesSceneRealtimeGI(const RenderGraph& graph)
     return request != deferred->properties.end() && *request == true;
 }
 
-inline uint64_t realtimeGISceneIdentity(const scene::Scene* scene, const RenderWorld& world)
+inline bool sceneRealtimeGIAllowsPhysicalAtmosphere(const RenderGraph& graph)
 {
-    return scene && scene->realtimeGI() && !world.environment().enabled &&
-        world.worldEnvironment().source != environment::EnvironmentSource::PhysicalAtmosphere ?
-        scene->resourceIdentity() : 0;
+    const auto* reflections = graph.findNode("Reflections");
+    if (!reflections) { return false; }
+    const auto allowed = reflections->properties.find("allowPhysicalAtmosphere");
+    return allowed != reflections->properties.end() && *allowed == true;
+}
+
+inline uint64_t realtimeGISceneIdentity(const scene::Scene* scene, const RenderWorld& world,
+    bool allowPhysicalAtmosphere = false)
+{
+    const bool lightingSupported = world.worldEnvironment().source == environment::EnvironmentSource::PhysicalAtmosphere
+        ? allowPhysicalAtmosphere : !world.environment().enabled;
+    return scene && scene->realtimeGI() && lightingSupported ? scene->resourceIdentity() : 0;
 }
 
 inline RenderGraphProperties applyRealtimeGIProperties(const RenderGraphNode& node, const RealtimeGIProperties& overrides)

@@ -71,8 +71,6 @@ constexpr float kMinViewportCameraSpeed = 0.01f;
 constexpr float kMaxViewportCameraSpeed = 100.0f;
 constexpr float kViewportCameraWheelSpeedStep = 1.25f;
 constexpr float kMaxDollyDisplacement = 0.99f;
-constexpr const char* kDefaultRenderSampleId = render::kDefaultPathTracingSampleId;
-
 bool environmentFlagEnabled(const char* name, bool defaultValue = false)
 {
     const char* value = std::getenv(name);
@@ -2067,16 +2065,18 @@ int EditorApplication::run(
     }
     render::resetSlangShaderHotReloadTracking();
     startupSampleId_ = startupSampleId != nullptr ? startupSampleId : "";
+    startupScenePath_ = startupScenePath != nullptr ? startupScenePath : "";
     if (smokeTest_ && startupSampleId_.empty()) {
         // Allow headless verification of a specific built-in sample, e.g.
         // METALLIC_SMOKE_TEST_SAMPLE=pathtracing-sharc-meet-mat
         const char* smokeSample = std::getenv("METALLIC_SMOKE_TEST_SAMPLE");
-        startupSampleId_ =
-            smokeSample != nullptr && *smokeSample != '\0'
-                ? std::string(smokeSample)
-                : std::string("material-visualization-abeautiful-game");
+        if (smokeSample != nullptr && *smokeSample != '\0') {
+            startupSampleId_ = smokeSample;
+        } else {
+            startupSampleId_ = startupScenePath_.empty()
+                ? render::kDefaultEditorSampleId : "material-visualization-abeautiful-game";
+        }
     }
-    startupScenePath_ = startupScenePath != nullptr ? startupScenePath : "";
     startupStreamAssetPath_ = startupStreamAssetPath != nullptr ? startupStreamAssetPath : "";
     if (!cpuJobBenchmarkConfig_.is_null()) {
         startupSampleId_ = cpuJobBenchmarkConfig_.at("sample").get<std::string>();
@@ -2273,8 +2273,11 @@ int EditorApplication::run(
                     feature.resourceCount > 0 && feature.ageSeconds >= 0.0 && feature.cpuMs >= 0.0;
             };
             const auto* panel = ImGui::FindWindowByName("Streamline Debug");
+            const bool expectsSR = startupSampleId_ == "pathtracing-sample-dlss-sr" ||
+                (startupSampleId_ == render::kDefaultEditorSampleId &&
+                    render::vulkan::deviceCapabilities(*device_).streamlineDlssSr);
             const bool passed = panel != nullptr && panel->WasActive && valid(status.sr) && valid(status.rr) &&
-                (startupSampleId_ != "pathtracing-sample-dlss-sr" || status.sr.successes > 0) &&
+                (!expectsSR || status.sr.successes > 0) &&
                 (startupSampleId_ != "pathtracing-sample-dlss-rr" || status.rr.successes > 0);
             spdlog::info("[Smoke Streamline Debug] passed={}, initialized={}, SR={}/{}, RR={}/{}",
                 passed, status.initialized, status.sr.successes, status.sr.attempts, status.rr.successes, status.rr.attempts);
@@ -2668,7 +2671,7 @@ bool EditorApplication::initializeRhi()
     }
     // Streamline has to hook Vulkan before the device is created. Interactive
     // editor sessions can switch to any built-in sample at runtime, including
-    // DLSS-RR, while an explicit DLSS-RR smoke test also needs the integration.
+    // DLSS-RR, while smoke tests for SR or RR also need the integration.
     // The bundled Streamline interposer rejects layer-owned instance extensions.
     // P2 is a separate diagnostic process; its VBuffer inputs/outputs are requalified.
     const bool enableStreamline = !smokeTest_ || startupSampleRequiresStreamline ||
@@ -7293,7 +7296,8 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
 
     const uint64_t realtimeGIScene = render::detail::usesSceneRealtimeGI(renderGraph_) &&
         device_->capabilities().shaderStorageImageExtendedFormats ?
-        render::detail::realtimeGISceneIdentity(renderWorld_.scene(), renderWorld_) : 0;
+        render::detail::realtimeGISceneIdentity(renderWorld_.scene(), renderWorld_,
+            render::detail::sceneRealtimeGIAllowsPhysicalAtmosphere(renderGraph_)) : 0;
     if (realtimeGIScene != viewportRealtimeGIScene_) {
         viewportCompileFailed_ = false;
         viewportRealtimeGIScene_ = realtimeGIScene;
@@ -7802,7 +7806,7 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
         requestPendingSceneAction(
             PendingSceneAction::LoadSample,
             {},
-            sampleId != nullptr ? sampleId : kDefaultRenderSampleId);
+            sampleId != nullptr ? sampleId : render::kDefaultEditorSampleId);
         return;
     }
     StartupLogScope scope(std::string("Load built-in sample '") + (sampleId != nullptr ? sampleId : "") + "'");
@@ -7971,8 +7975,13 @@ void EditorApplication::resetDefaultRenderGraph()
         loadBuiltInSample(id ? id : render::kDefaultGPUDrivenSampleId);
         return;
     }
-    loadBuiltInSample(render::vulkan::deviceCapabilities(*device_).streamlineDlssRr
-        ? kDefaultRenderSampleId : "pathtracing-sample");
+    if (!startupScenePath_.empty()) {
+        // Keep the general-purpose path tracing preset for explicit startup scene overrides.
+        loadBuiltInSample(render::vulkan::deviceCapabilities(*device_).streamlineDlssRr
+            ? render::kDefaultPathTracingSampleId : "pathtracing-sample");
+        return;
+    }
+    loadBuiltInSample(render::kDefaultEditorSampleId);
 }
 
 void EditorApplication::saveRenderGraph()

@@ -9,6 +9,7 @@
 #include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
+#include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Scene/MeshCards.h"
 #include "Runtime/Scene/MeshDistanceField.h"
@@ -28,12 +29,12 @@ namespace {
 
 constexpr char kShaderModule[] = "Features/DistanceField/SurfaceCacheCapture";
 constexpr uint64_t kCaptureABI = 0x4c554d454e010001ull;
-constexpr uint64_t kResolveABI = 0x4c554d454e01010dull;
+constexpr uint64_t kResolveABI = 0x4c554d454e010113ull;
 constexpr uint64_t kEncodeDepthABI = 0x4c554d454e010104ull;
-constexpr uint64_t kShadowedLightingABI = 0x4c554d454e01010eull;
+constexpr uint64_t kShadowedLightingABI = 0x4c554d454e010114ull;
 constexpr uint64_t kComposeLightingABI = 0x4c554d454e01010full;
-constexpr uint64_t kHardwarePunctualLightingABI = 0x4c554d454e010110ull;
-constexpr uint64_t kHardwareRectLightingABI = 0x4c554d454e010111ull;
+constexpr uint64_t kHardwarePunctualLightingABI = 0x4c554d454e010115ull;
+constexpr uint64_t kHardwareRectLightingABI = 0x4c554d454e010116ull;
 constexpr uint64_t kHardwareRectComposeABI = 0x4c554d454e010112ull;
 constexpr SlangMacroDefine kHardwareLightingDefines[]{{"METALLIC_SURFACE_CACHE_HARDWARE_LOCAL_SHADOWS", "1"},
     {"METALLIC_SURFACE_CACHE_HARDWARE_RECT_SHADOWS", "1"}};
@@ -87,6 +88,11 @@ struct RectLightingParams {
     uint32_t sampleCount;
 };
 
+struct SunAtmosphereParams {
+    ShaderBuffer parameters;
+    ShaderSampledImage transmittance, cloudShadow;
+};
+
 struct alignas(16) ResolveParams {
     ShaderSampledImage albedo, normal, emissive, hardwareDepth;
     ShaderStorageImage depth, lighting;
@@ -98,6 +104,7 @@ struct alignas(16) ResolveParams {
     RectLightingParams rectLighting;
     ShaderStorageImage deterministicIrradiance;
     uint32_t separateLighting;
+    SunAtmosphereParams atmosphere;
 };
 
 struct EncodeDepthParams {
@@ -125,6 +132,8 @@ struct alignas(16) ShadowedLightingParams {
     RectLightingParams rectLighting;
     ShaderStorageImage deterministicIrradiance;
     uint32_t separateLighting;
+    SunAtmosphereParams atmosphere;
+    uint32_t reserved;
 };
 
 struct HardwarePunctualLightingParams {
@@ -155,14 +164,16 @@ static_assert(sizeof(CaptureVertex) == 64 && sizeof(SurfaceCard) == 80);
 static_assert(sizeof(CaptureParams) == 288 && offsetof(CaptureParams, textureTransforms) == 160);
 static_assert(sizeof(RectLightingParams) == 20 && offsetof(RectLightingParams, sampleCount) == 16);
 static_assert(sizeof(ResolveParams) == 112 && offsetof(ResolveParams, updateTiles) == 64 &&
-    offsetof(ResolveParams, rectLighting) == 72 && offsetof(ResolveParams, deterministicIrradiance) == 92);
+    offsetof(ResolveParams, rectLighting) == 72 && offsetof(ResolveParams, deterministicIrradiance) == 92 &&
+    offsetof(ResolveParams, atmosphere) == 100);
 static_assert(sizeof(EncodeDepthParams) == 28 && offsetof(EncodeDepthParams, updateTiles) == 20);
-static_assert(sizeof(ShadowedLightingParams) == 144 && offsetof(ShadowedLightingParams, pageTable) == 64 &&
+static_assert(sizeof(ShadowedLightingParams) == 160 && offsetof(ShadowedLightingParams, pageTable) == 64 &&
     offsetof(ShadowedLightingParams, directIrradiance) == 96 && offsetof(ShadowedLightingParams, updateTiles) == 104 &&
-    offsetof(ShadowedLightingParams, rectLighting) == 112 && offsetof(ShadowedLightingParams, deterministicIrradiance) == 132);
-static_assert(sizeof(HardwarePunctualLightingParams) == 160 && offsetof(HardwarePunctualLightingParams, scene) == 144);
-static_assert(sizeof(HardwareRectLightingParams) == 160 && offsetof(HardwareRectLightingParams, scene) == 144 &&
-    offsetof(HardwareRectLightingParams, samplePhase) == 152);
+    offsetof(ShadowedLightingParams, rectLighting) == 112 && offsetof(ShadowedLightingParams, deterministicIrradiance) == 132 &&
+    offsetof(ShadowedLightingParams, atmosphere) == 140);
+static_assert(sizeof(HardwarePunctualLightingParams) == 176 && offsetof(HardwarePunctualLightingParams, scene) == 160);
+static_assert(sizeof(HardwareRectLightingParams) == 176 && offsetof(HardwareRectLightingParams, scene) == 160 &&
+    offsetof(HardwareRectLightingParams, samplePhase) == 168);
 static_assert(sizeof(ComposeLightingParams) == 84 && offsetof(ComposeLightingParams, cardUpdates) == 36 &&
     offsetof(ComposeLightingParams, rectLighting) == 64);
 static_assert(sizeof(HardwareRectComposeParams) == 96 && offsetof(HardwareRectComposeParams, scene) == 88);
@@ -297,6 +308,7 @@ struct CaptureLighting {
     std::array<float, 3> clipmapEye{};
     uint32_t rectLightSamples = 0;
     Float4 rectGridCenterRadius{};
+    std::optional<std::array<uint64_t, 2>> atmosphereRevisions;
 
     bool sameRectLighting(const CaptureLighting& other) const
     {
@@ -316,7 +328,7 @@ struct CaptureLighting {
     bool sameLights(const CaptureLighting& other) const
     {
         return direction == other.direction && illuminance == other.illuminance &&
-            sunCastsShadow == other.sunCastsShadow && sameLocalLights(other);
+            sunCastsShadow == other.sunCastsShadow && atmosphereRevisions == other.atmosphereRevisions && sameLocalLights(other);
     }
 
     bool tracesShadows() const
@@ -351,6 +363,11 @@ class LumenSurfaceCachePass final : public RasterPass {
 public:
     bool supportsFrameOverlap() const override { return true; }
     bool supportsExternalFrameOverlap() const override { return false; }
+    std::span<const RenderSubsystemId> requiredSubsystems() const override
+    {
+        static constexpr std::array required{EnvironmentLightingSubsystem::kSubsystemId};
+        return required;
+    }
     RenderGraphSceneDependency sceneDependency() const override
     {
         if (hardwarePunctualShadows()) { return {RenderGraphSceneSource::Input, {"accelerationStructure"}}; }
@@ -358,6 +375,8 @@ public:
     }
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override;
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override;
+    Result<> declareResourceRequests(const RenderGraphResourceRequestContext& context,
+        RenderGraphResourceRequestBuilder& builder, std::string& log) override;
     Result<> execute(RenderGraphExecutionContext& context) override;
 
 private:
@@ -1078,6 +1097,24 @@ Result<CardDispatch> makeCardDispatch(Device& device, const AtlasLayout& layout,
         groupsPerTile, (count + kCardsPerDispatchRow - 1u) / kCardsPerDispatchRow}};
 }
 
+Result<> LumenSurfaceCachePass::declareResourceRequests(const RenderGraphResourceRequestContext& context,
+    RenderGraphResourceRequestBuilder& builder, std::string& log)
+{
+    const auto worldEnvironment = resolveWorldEnvironment(context.runtimeScene(), context.world());
+    if (worldEnvironment.source != environment::EnvironmentSource::PhysicalAtmosphere || !worldEnvironment.celestial[0].enabled) {
+        return {};
+    }
+    std::array<double, 3> observer{};
+    if (const auto* view = context.viewConstants()) {
+        const auto& eye = view->current.eye;
+        observer = {eye[0], eye[1], eye[2]};
+    }
+    const auto declared = context.subsystem<EnvironmentLightingSubsystem>()->declareEnvironmentRequest(context, builder,
+        {.environment = worldEnvironment, .observerWorldMetres = observer, .viewId = context.viewKey(), .needCelestial = false}, log);
+    if (!declared) { return makeError(declared.error()); }
+    return {};
+}
+
 Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
 {
     const auto& scene = *context.runtimeScene();
@@ -1096,7 +1133,9 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
     const bool hardwareRect = hardwareRectShadows();
     const bool separate = maxStochasticDirectLightingCardsPerFrame_ != 0u;
     const bool exportIrradiance = exportDirectIrradiance();
-    const auto sun = buildCelestialLightRecords(resolveWorldEnvironment(&scene, context.world()))[0];
+    const auto worldEnvironment = resolveWorldEnvironment(&scene, context.world());
+    const auto sun = buildCelestialLightRecords(worldEnvironment)[0];
+    const auto* atmosphere = context.resources<EnvironmentResourceSet>();
     PublishedSurfaceCache next{.geometry = captureGeometry_, .lighting = {
         .direction = {-sun.direction[0], -sun.direction[1], -sun.direction[2], 0.0f},
         .illuminance = {sun.irradiance[0], sun.irradiance[1], sun.irradiance[2], 0.0f},
@@ -1108,6 +1147,9 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         next.nonSunLightingRevision = world->nonSunLightingRevision();
     }
     auto& lighting = next.lighting;
+    if (atmosphere) {
+        lighting.atmosphereRevisions = std::array{worldEnvironment.atmosphereRevision, worldEnvironment.weatherRevision};
+    }
     const auto resolvedLighting = resolveSceneLighting(&scene, context.world());
     auto rectLights = buildRectLightRecords(resolvedLighting.rectLights);
     if (!rectLights) {
@@ -1373,6 +1415,11 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         params.tileResolution = layout_.tile;
         params.lightDirection = lighting.direction;
         params.illuminance = lighting.illuminance;
+        if (atmosphere) {
+            const auto& resources = atmosphere->lighting;
+            params.atmosphere = {writer.buffer(resources.atmosphereParametersBuffer),
+                writer.sampledImageHandle(resources.transmittanceView), writer.sampledImageHandle(resources.cloudShadowView)};
+        }
         params.updateCount = lightingDispatch->count;
         if (lightingDispatch->tiles) { params.updateTiles = writer.buffer(lightingDispatch->tiles.get()); }
         if (!separate || (!hardwareRect && !rectSampling)) { params.rectLighting = bindRectLighting(writer); }

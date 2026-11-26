@@ -15,6 +15,7 @@ public static const uint kRadiosityMaxFrames = 4u;
 public static const uint kRadiosityDispatchCardsPerRow = 256u;
 public static const uint kRadiosityScheduledCount = 0u;
 public static const uint kRadiosityRefreshCount = 1u;
+public static const float kRadiosityMaxHalfFloat = 65504.0f;
 
 // The last _Texture argument is the SPIR-V Rgba16f image format (2). The
 // persistent atlas reads its own texel through the typed UAV before overwriting
@@ -52,6 +53,7 @@ public struct LumenRadiosityParams
     public float maxTraceDistance;
     public uint viewFrameIndex;
     public uint traceValid;
+    public float maxRayIntensity;
 #ifdef METALLIC_LUMEN_PERSISTENT_CARDS
     public ResourceHandle<StructuredBuffer<uint2>> scheduledCards;
     public ResourceHandle<StructuredBuffer<uint2>> refreshCards;
@@ -195,7 +197,7 @@ public float3 radiosityQuantizeForRenderTarget(float3 color, float jitter)
 {
     float3 error = color * (1.0f / 1024.0f);
     error = asfloat(asuint(error) & ~0x007FFFFFu);
-    return color + error * jitter;
+    return min(color + error * jitter, kRadiosityMaxHalfFloat);
 }
 
 public float3 radiosityQuantizeForRenderTarget(float3 color, int3 coord)

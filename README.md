@@ -199,9 +199,12 @@ build\Source\Debug\Metallic.exe --smoke-test
 
 内置样例由 `RenderSample` 描述（场景、图、环境、预览输出），在编辑器的样例列表中选择，或通过 `Source/Samples/` 下的独立可执行文件直接启动。每个图资产的最终颜色都应接到 `FinalBlitPass.source`。
 
+直接运行 `Metallic.exe` 默认打开 Sponza，使用 Lumen GI、VSM、物理大气和自动曝光。支持 DLSS-SR 的设备默认使用 Quality 档，其余设备使用原生渲染。可在 **Built-in Sample** 中重新打开 **Sponza with GI / Physical Atmosphere**。
+
 | 样例 ID | 名称 | 类别 |
 | --- | --- | --- |
-| `pathtracing-sample` | PathTracingSample（编辑器默认） | Path Tracing |
+| `sponza-gi-atmosphere` | Sponza with GI / Physical Atmosphere（编辑器默认） | GI Playground |
+| `pathtracing-sample` | PathTracingSample | Path Tracing |
 | `pathtracing-meet-mat` | Path Tracing / meet_mat | Path Tracing |
 | `pathtracing-sharc-meet-mat` | Path Tracing / meet_mat / SHaRC | Path Tracing |
 | `pathtracing-sample-dlss-rr` | PathTracingSample / DLSS-RR | Path Tracing |

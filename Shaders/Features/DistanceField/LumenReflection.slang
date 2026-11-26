@@ -49,7 +49,8 @@ struct LumenReflectionParams
     LumenGlobalTraceBindings scene;
     ResourceHandle<Texture2D<float4>> position, normal, specular, sceneColor;
     ResourceHandle<Texture2D<float2>> blueNoise;
-    ResourceHandle<RWTexture2D<float4>> outputReflections, trace, color;
+    ResourceHandle<RWTexture2D<float4>> outputReflections, trace;
+    float maxRayIntensity;
     ResourceHandle<Texture2D<float4>> reflections;
     ViewCameraConstants camera;
     uint width, height, clipmapCount, frameIndex;
@@ -74,7 +75,6 @@ struct LumenReflectionParams
 static const float kGGXSamplingBias = 0.1f;
 static const float kMinReflectionConeAngle = 0.00001f;
 static const float kSurfaceBias = 0.05f; // UE SurfaceBias defaults to 5 cm.
-static const float kMaxRayIntensity = 40.0f;
 static const float kInvRoughnessFadeLength = 1.0f / 0.1f;
 static const uint kReflectionScreenHit = 5u;
 static const uint kReflectionMeshSDFHit = 9u;
@@ -254,11 +254,11 @@ float reflectionRoughnessFade(float maxRoughness, float roughness)
     return saturate((maxRoughness - roughness) * kInvRoughnessFadeLength);
 }
 
-float4 clampReflectionLighting(float3 lighting, float fadeAlpha)
+float4 clampReflectionLighting(float3 lighting, float fadeAlpha, float maxRayIntensity)
 {
     float maxLighting = max(lighting.x, max(lighting.y, lighting.z));
-    if (maxLighting > kMaxRayIntensity) {
-        lighting *= kMaxRayIntensity / maxLighting;
+    if (maxLighting > maxRayIntensity) {
+        lighting *= maxRayIntensity / maxLighting;
     }
     return float4(lighting, fadeAlpha);
 }
@@ -283,7 +283,7 @@ void lumenReflectionTraceMain(uint3 thread : SV_DispatchThreadID)
         rayData = generateReflectionRay(params, pixel, position.xyz, normal, specular.w);
 
         float3 lighting = traceSoftwareReflection(params, pixel, position, normal, rayData, debugTrace, rayHitDistance);
-        reflections = clampReflectionLighting(lighting, fadeAlpha);
+        reflections = clampReflectionLighting(lighting, fadeAlpha, params.maxRayIntensity);
     }
     resolveUniform(params.outputReflections)[pixel] = reflections;
     resolveUniform(params.trace)[pixel] = debugTrace;
@@ -327,7 +327,8 @@ void initializeTiledReflectionTrace(LumenReflectionParams params, uint2 pixel, f
 void writeTiledReflectionTrace(LumenReflectionParams params, uint2 pixel, float3 lighting, float4 debugTrace)
 {
     const float roughness = resolveUniform(params.specular).Load(int3(reflectionRayReceiverPixel(params, pixel), 0)).w;
-    resolveUniform(params.outputReflections)[pixel] = clampReflectionLighting(lighting, reflectionRoughnessFade(params.maxRoughness, roughness));
+    resolveUniform(params.outputReflections)[pixel] = clampReflectionLighting(lighting,
+        reflectionRoughnessFade(params.maxRoughness, roughness), params.maxRayIntensity);
     resolveUniform(params.trace)[pixel] = debugTrace;
 }
 

@@ -459,6 +459,7 @@ public:
             {"lumen_cornell_box.metallic_graph.json", {"Temporal.color", true}},
             {"cornell_box_compare.metallic_graph.json", {"Slider.color", true}},
             {"sponza_gi_realtime.metallic_graph.json", {"Reflections.color", true}},
+            {"sponza_gi_atmosphere.metallic_graph.json", "DLSSSR.color"},
             {"sponza_gi_path_tracing.metallic_graph.json", {"PathTrace.color", true}},
             {"sponza_gi_compare.metallic_graph.json", {"Slider.color", true}},
             {"mesh_distance_field_debug.metallic_graph.json", {"MeshDistanceField.color", true}},

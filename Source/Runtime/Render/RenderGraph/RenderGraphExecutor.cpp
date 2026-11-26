@@ -506,6 +506,7 @@ struct RenderGraphExecutor::Impl {
     HistoryResourceManager graphHistoryResources;
     const scene::Scene* runtimeScene = nullptr;
     bool sceneRealtimeGICapable = false;
+    bool sceneRealtimeGIAllowsPhysicalAtmosphere = false;
     uint64_t realtimeGIScene = 0;
     RealtimeGIProperties realtimeGIProperties;
     RenderSubsystemHost ownedSubsystemHost;
@@ -3907,7 +3908,9 @@ Result<> RenderGraphExecutor::compile(
     const bool sceneRealtimeGI = usesSceneRealtimeGI(authoredGraph);
     const uint64_t previousRealtimeGIScene = impl_->realtimeGIScene;
     impl_->sceneRealtimeGICapable = sceneRealtimeGI && device.capabilities().shaderStorageImageExtendedFormats;
-    impl_->realtimeGIScene = impl_->sceneRealtimeGICapable ? realtimeGISceneIdentity(impl_->runtimeScene, *impl_->world) : 0;
+    impl_->sceneRealtimeGIAllowsPhysicalAtmosphere = sceneRealtimeGIAllowsPhysicalAtmosphere(authoredGraph);
+    impl_->realtimeGIScene = impl_->sceneRealtimeGICapable ? realtimeGISceneIdentity(
+        impl_->runtimeScene, *impl_->world, impl_->sceneRealtimeGIAllowsPhysicalAtmosphere) : 0;
     impl_->realtimeGIProperties.clear();
     std::optional<RenderGraph> resolvedGraph;
     if (hasSceneRealtimeGIRoute(authoredGraph)) {
@@ -6555,7 +6558,8 @@ bool RenderGraphExecutor::compiled() const
         (impl_->renderWidth == view->renderWidth(impl_->width) &&
             impl_->renderHeight == view->renderHeight(impl_->height));
     const bool realtimeGIMatches = !impl_->sceneRealtimeGICapable ||
-        impl_->realtimeGIScene == realtimeGISceneIdentity(impl_->runtimeScene, *impl_->world);
+        impl_->realtimeGIScene == realtimeGISceneIdentity(
+            impl_->runtimeScene, *impl_->world, impl_->sceneRealtimeGIAllowsPhysicalAtmosphere);
     return impl_->isCompiled && resolutionMatches && realtimeGIMatches && (!impl_->hasResourceAliases() ||
         std::none_of(impl_->externalCompletions.begin(), impl_->externalCompletions.end(),
             [](const auto& point) { return point.isCancelled(); }));

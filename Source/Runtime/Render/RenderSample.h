@@ -13,6 +13,8 @@ namespace metallic::render {
 // RR also performs super resolution; the default graph uses its Quality mode.
 inline constexpr const char* kDefaultPathTracingSampleId = "pathtracing-sample-dlss-rr";
 
+inline constexpr const char* kDefaultEditorSampleId = "sponza-gi-atmosphere";
+
 // The standalone GPUDriven executable defaults to streamed MiniZorah with realtime lighting.
 inline constexpr const char* kDefaultGPUDrivenSampleId = "gpu-driven-sample";
 inline constexpr const char* kGPUDrivenZorahFullSampleId = "gpu-driven-zorah-full";
