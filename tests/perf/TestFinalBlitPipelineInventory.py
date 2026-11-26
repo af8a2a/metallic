@@ -25,21 +25,23 @@ def require(condition, reason):
 
 def parse_expected_sources(text):
     blocks = re.findall(
-        r"const\s+std::unordered_map<std::string,\s*std::string>\s+expectedSources\s*\{(.*?)\};",
+        r"const\s+std::unordered_map<std::string,\s*ExpectedPresentation>\s+expectedSources\s*\{(.*?)\};",
         text, re.DOTALL)
     require(len(blocks) == 1, "Expected exactly one expectedSources initializer")
     block = blocks[0]
-    entry = re.compile(r'\s*\{"([^"\\]+\.metallic_graph\.json)",\s*"([^"\\]*)"\},')
+    entry = re.compile(
+        r'\s*\{"([^"\\]+\.metallic_graph\.json)",\s*'
+        r'(?:"([^"\\]*)"|\{\s*"([^"\\]*)",\s*(true|false)\s*\})\s*\},')
     expected = {}
     position = 0
     while block[position:].strip():
         match = entry.match(block, position)
         require(match is not None, "Unparsed expectedSources initializer entry")
-        filename, source = match.groups()
+        filename, source, braced_source, fixed_display = match.groups()
         require(filename not in expected, f"Duplicate expectedSources key: {filename}")
         require(Path(filename).name == filename and "/" not in filename and "\\" not in filename,
                 f"Expected a pipeline basename: {filename}")
-        expected[filename] = source
+        expected[filename] = (source if source is not None else braced_source, fixed_display == "true")
         position = match.end()
     require(expected, "Empty expectedSources initializer")
     return expected
@@ -56,7 +58,7 @@ def validate_inventory(expected, paths):
     return actual
 
 
-def validate_presentation(graph, expected_source):
+def validate_presentation(graph, expected_source, fixed_display=False):
     """Mirror the static part of FinalBlitPipelinesTest::hasFinalOutput exactly."""
     nodes = {}
     node_ids = set()
@@ -74,8 +76,9 @@ def validate_presentation(graph, expected_source):
     physical_nodes = [node for node in nodes.values() if node["type"] in PHYSICAL_TYPES]
     require(all(node.get("properties", {}).get("outputLinear", False) for node in physical_nodes),
             "Physical producers must set outputLinear")
+    needs_exposure = bool(physical_nodes) and not fixed_display
     exposure = nodes.get("AutoExposure")
-    require(bool(physical_nodes) == (exposure is not None), "Physical/AutoExposure presence mismatch")
+    require(needs_exposure == (exposure is not None), "AutoExposure presence mismatch")
     if exposure is not None:
         require(exposure["type"] == "AutoExposurePass", "AutoExposure has wrong pass type")
         require(incoming("AutoExposure.source") == [expected_source],
@@ -89,9 +92,10 @@ def validate_presentation(graph, expected_source):
         expected_source = "DLSSNR.color"
     final = nodes.get("FinalBlit")
     require(final is not None and final["type"] == "FinalBlitPass", "Missing FinalBlitPass terminal")
-    require(not graph.get("outputs", []), "Explicit graph outputs bypass automatic presentation")
-    if physical_nodes:
-        grading = nodes.get("ColorGrading")
+    require(fixed_display or not graph.get("outputs", []), "Explicit graph outputs bypass automatic presentation")
+    grading = nodes.get("ColorGrading")
+    require(not fixed_display or grading is None, "Fixed display must omit ColorGrading")
+    if needs_exposure:
         require(grading is not None and grading["type"] == "ColorGradingLUTPass" and
                 grading.get("properties", {}).get("toneCurve", "aces2") == "aces2",
                 "Physical pipeline needs ACES2 ColorGradingLUTPass")
@@ -111,10 +115,11 @@ class FinalBlitPipelineInventoryTests(unittest.TestCase):
         actual = validate_inventory(expected, sorted((ROOT / "Pipelines").rglob("*.metallic_graph.json")))
         for filename, path in actual.items():
             with self.subTest(pipeline=filename):
-                validate_presentation(json.loads(path.read_text(encoding="utf-8")), expected[filename])
+                source, fixed_display = expected[filename]
+                validate_presentation(json.loads(path.read_text(encoding="utf-8")), source, fixed_display)
 
     def initializer(self, entries):
-        return "const std::unordered_map<std::string, std::string> expectedSources{\n" + entries + "\n};"
+        return "const std::unordered_map<std::string, ExpectedPresentation> expectedSources{\n" + entries + "\n};"
 
     def fixture(self, physical=False, nr=False):
         graph = {
@@ -145,9 +150,17 @@ class FinalBlitPipelineInventoryTests(unittest.TestCase):
         return graph
 
     def test_initializer_parses_exact_sources_and_calibration(self):
-        text = self.initializer('{"a.metallic_graph.json", "Source.color"},\n{"b.metallic_graph.json", ""},')
-        self.assertEqual(parse_expected_sources(text), {"a.metallic_graph.json": "Source.color",
-                                                       "b.metallic_graph.json": ""})
+        text = self.initializer(
+            '{"a.metallic_graph.json", "Source.color"},\n'
+            '{"b.metallic_graph.json", ""},\n'
+            '{"c.metallic_graph.json", {"Trace.color", true}},\n'
+            '{"d.metallic_graph.json", {"Source.color", false}},')
+        self.assertEqual(parse_expected_sources(text), {
+            "a.metallic_graph.json": ("Source.color", False),
+            "b.metallic_graph.json": ("", False),
+            "c.metallic_graph.json": ("Trace.color", True),
+            "d.metallic_graph.json": ("Source.color", False),
+        })
 
     def test_initializer_rejects_duplicate_key(self):
         entry = '{"a.metallic_graph.json", "Source.color"},'
@@ -156,6 +169,7 @@ class FinalBlitPipelineInventoryTests(unittest.TestCase):
 
     def test_initializer_rejects_unparsed_entries(self):
         for entries in ('BROKEN,', '{"a.metallic_graph.json", expression},',
+                        '{"a.metallic_graph.json", {"Source.color", expression}},',
                         '{"a.metallic_graph.json", "Source.color"}, ignored'):
             with self.subTest(entries=entries), self.assertRaisesRegex(ValueError, "Unparsed"):
                 parse_expected_sources(self.initializer(entries))
@@ -216,6 +230,20 @@ class FinalBlitPipelineInventoryTests(unittest.TestCase):
                 graph["nodes"].pop()
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 validate_presentation(graph, "Source.color")
+
+    def test_fixed_display_allows_explicit_debug_outputs(self):
+        graph = self.fixture()
+        graph["nodes"][0]["type"] = "ScenePathTracePass"
+        graph["outputs"] = ["Source.color"]
+        validate_presentation(graph, "Source.color", fixed_display=True)
+
+    def test_fixed_display_rejects_exposure_and_grading(self):
+        with self.assertRaisesRegex(ValueError, "AutoExposure presence mismatch"):
+            validate_presentation(self.fixture(physical=True), "Source.color", fixed_display=True)
+        graph = self.fixture()
+        graph["nodes"].append({"id": 3, "name": "ColorGrading", "type": "ColorGradingLUTPass"})
+        with self.assertRaisesRegex(ValueError, "must omit ColorGrading"):
+            validate_presentation(graph, "Source.color", fixed_display=True)
 
     def test_physical_linear_exposure_and_grading_requirements(self):
         base = self.fixture(physical=True)
