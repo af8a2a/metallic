@@ -7,6 +7,7 @@
 
 #include "Runtime/Environment/Astronomy.h"
 #include "Runtime/Environment/Atmosphere.h"
+#include "Runtime/Environment/VolumetricFog.h"
 #include "Runtime/Environment/Weather.h"
 
 namespace metallic::environment {
@@ -70,6 +71,7 @@ struct EnvironmentSnapshot {
     EnvironmentSource source = EnvironmentSource::HDRI;
     AtmosphereState atmosphere;
     AtmosphereState authoredAtmosphere;
+    VolumetricFogState volumetricFog;
     EnvironmentTimeState time;
     AstronomyState astronomy;
     WeatherState weather;
@@ -90,6 +92,7 @@ struct WorldEnvironment {
     CelestialLight moon{.topOfAtmosphereIrradiance = float3(2.948e-6f, 3.7008e-6f, 3.82396e-6f)};
     EnvironmentSource source = EnvironmentSource::HDRI;
     AtmosphereState atmosphere;
+    VolumetricFogState volumetricFog;
     EnvironmentTimeState time;
     AstronomyState astronomy;
     WeatherState weather;
@@ -118,7 +121,7 @@ inline bool validWorldEnvironment(const WorldEnvironment& world)
     const double atmosphereHeightKm = double(world.atmosphere.topRadiusKm) - world.atmosphere.bottomRadiusKm;
     return validCelestialLight(world.sun) && validCelestialLight(world.moon) &&
         (world.source == EnvironmentSource::HDRI || world.source == EnvironmentSource::PhysicalAtmosphere) &&
-        validAtmosphereState(world.atmosphere) && validEnvironmentTimeState(world.time) &&
+        validAtmosphereState(world.atmosphere) && validVolumetricFog(world.volumetricFog) && validEnvironmentTimeState(world.time) &&
         validAstronomyState(world.astronomy) && validWeatherState(world.weather) &&
         (!activePhysicalClouds || double(world.weather.cloudTopAltitudeKm) <= atmosphereHeightKm);
 }

@@ -1337,6 +1337,11 @@ struct RenderGraphExecutor::Impl {
     {
         resolvedExtents.clear();
         std::unordered_map<std::string, std::vector<std::string>> node2DTextureOutputs;
+        struct DerivedExtent {
+            std::string input, output;
+            uint32_t divisor;
+        };
+        std::vector<DerivedExtent> derived;
         for (const CompiledNode& node : executionList) {
             std::vector<std::string>& outputs = node2DTextureOutputs[node.name];
             for (const RenderGraphField& field : node.reflection.fields()) {
@@ -1346,6 +1351,14 @@ struct RenderGraphExecutor::Impl {
                     continue;
                 }
                 const std::string fullName = makeRenderGraphFieldName(node.name, field.name);
+                if (!field.extentSourceInput.empty()) {
+                    const auto input = inputAliases.find(makeRenderGraphFieldName(node.name, field.extentSourceInput));
+                    if (input == inputAliases.end() || field.extentDivisor == 0 || field.matchOutputExtent) {
+                        log = validationPrefix("invalid derived texture extent for " + fullName);
+                        return makeError(Error::InvalidArgument);
+                    }
+                    derived.push_back({input->second, fullName, field.extentDivisor});
+                }
                 if (field.textureType == TextureType::Texture2D && field.matchOutputExtent) {
                     outputs.push_back(fullName);
                 }
@@ -1555,8 +1568,34 @@ struct RenderGraphExecutor::Impl {
                 }
             }
 
+            for (const auto& relation : derived) {
+                const auto input = resolvedExtents.find(relation.input);
+                if (input == resolvedExtents.end()) {
+                    log = validationPrefix("extent source is not a texture output: " + relation.input);
+                    return makeError(Error::InvalidArgument);
+                }
+                auto& output = resolvedExtents.at(relation.output);
+                const auto tiles = [&](uint32_t n) { return n / relation.divisor + (n % relation.divisor != 0); };
+                if (!constrainDimension(output.width, output.widthSource, tiles(input->second.width),
+                        relation.input, "width", changed) ||
+                    !constrainDimension(output.height, output.heightSource, tiles(input->second.height),
+                        relation.input, "height", changed)) {
+                    return makeError(Error::InvalidArgument);
+                }
+            }
             if (!changed) {
-                break;
+                // Unconstrained upstream textures use the graph's render size. Seed in
+                // producer order, then propagate through any downstream relays.
+                for (const auto& relation : derived) {
+                    auto& source = resolvedExtents.at(relation.input);
+                    if (!source.width || !source.height) {
+                        if (!source.width) { source.width = renderWidth; }
+                        if (!source.height) { source.height = renderHeight; }
+                        changed = true;
+                        break;
+                    }
+                }
+                if (!changed) { break; }
             }
             if (iteration + 1 == maximumIterations) {
                 log = validationPrefix("texture extent constraint resolution did not converge");

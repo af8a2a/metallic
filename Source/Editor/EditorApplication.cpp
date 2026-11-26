@@ -4836,6 +4836,63 @@ void EditorApplication::drawEnvironmentControls()
         ImGui::TextUnformatted("Clock pause freezes astronomy; zero wind freezes cloud drift.");
         ImGui::TreePop();
     }
+    if (ImGui::TreeNode("Volumetric fog")) {
+        auto& fog = celestialEnvironment.volumetricFog;
+        celestialChanged |= ImGui::Checkbox("Enabled", &fog.enabled);
+        celestialChanged |= ImGui::DragFloat("Fog height (m)", &fog.heightMeters, 0.1f);
+        celestialChanged |= ImGui::DragFloat("Density", &fog.density, 0.005f, 0.0f, 10.0f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
+        celestialChanged |= ImGui::DragFloat("Height falloff", &fog.heightFalloff, 0.005f, 0.0f, 2.0f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::TreeNode("Second height layer")) {
+            celestialChanged |= ImGui::DragFloat("Height offset (m)", &fog.secondHeightOffsetMeters, 0.1f);
+            celestialChanged |= ImGui::DragFloat("Density", &fog.secondDensity, 0.005f, 0.0f, 10.0f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
+            celestialChanged |= ImGui::DragFloat("Height falloff", &fog.secondHeightFalloff, 0.005f, 0.0f, 2.0f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
+            ImGui::TreePop();
+        }
+        celestialChanged |= ImGui::ColorEdit3("Albedo", &fog.albedo.x, ImGuiColorEditFlags_Float);
+        celestialChanged |= ImGui::ColorEdit3("Emissive", &fog.emissive.x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+        celestialChanged |= ImGui::InputFloat("Extinction scale", &fog.extinctionScale);
+        celestialChanged |= ImGui::SliderFloat("Scattering distribution", &fog.scatteringDistribution, -0.99f, 0.99f);
+        celestialChanged |= ImGui::InputFloat("Sun scattering intensity", &fog.directionalScatteringIntensity);
+        celestialChanged |= ImGui::InputFloat("View distance (m)", &fog.distanceMeters);
+        celestialChanged |= ImGui::InputFloat("Start distance (m)", &fog.startDistanceMeters);
+        celestialChanged |= ImGui::InputFloat("Near fade distance (m)", &fog.nearFadeInDistanceMeters);
+        if (ImGui::TreeNode("Local fog volumes")) {
+            ImGui::TextWrapped("Enable local fog volumes on the Volumetric Fog render pass to inject these spheres.");
+            if (ImGui::Button("Add volume")) {
+                fog.localVolumes.emplace_back();
+                celestialChanged = true;
+            }
+            for (size_t index = 0; index < fog.localVolumes.size(); ++index) {
+                auto& volume = fog.localVolumes[index];
+                ImGui::PushID(static_cast<int>(index));
+                const bool open = ImGui::TreeNode("volume", "Volume %zu", index + 1);
+                if (open) {
+                    celestialChanged |= ImGui::Checkbox("Enabled", &volume.enabled);
+                    celestialChanged |= ImGui::DragFloat3("Center (m)", volume.centerMeters.data(), 0.1f);
+                    celestialChanged |= ImGui::DragFloat3("Rotation XYZ (deg)", volume.rotationDegrees.data(), 0.5f);
+                    celestialChanged |= ImGui::InputFloat("Radius (m)", &volume.radiusMeters);
+                    celestialChanged |= ImGui::InputFloat("Radial extinction", &volume.radialExtinction);
+                    celestialChanged |= ImGui::InputFloat("Height extinction", &volume.heightExtinction);
+                    celestialChanged |= ImGui::InputFloat("Height falloff", &volume.heightFalloff);
+                    celestialChanged |= ImGui::InputFloat("Unit-sphere height offset", &volume.heightOffset);
+                    celestialChanged |= ImGui::ColorEdit3("Albedo", volume.albedo.data(), ImGuiColorEditFlags_Float);
+                    celestialChanged |= ImGui::ColorEdit3("Emissive", volume.emissive.data(), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+                    celestialChanged |= ImGui::SliderInt("Sort priority", &volume.sortPriority, -127, 127);
+                    const bool remove = ImGui::Button("Remove volume");
+                    ImGui::TreePop();
+                    if (remove) {
+                        fog.localVolumes.erase(fog.localVolumes.begin() + index);
+                        celestialChanged = true;
+                        ImGui::PopID();
+                        break;
+                    }
+                }
+                ImGui::PopID();
+            }
+            ImGui::TreePop();
+        }
+        ImGui::TreePop();
+    }
     if (physicalAtmosphere && ImGui::TreeNode("Atmosphere")) {
         auto& atmosphere = celestialEnvironment.atmosphere;
         const auto editSpectrum = [&](const char* label, float3& value, float maximum) {
@@ -5014,6 +5071,9 @@ void EditorApplication::drawLightingControls()
                 const double maxSourceRadius = 10000.0;
                 changed |= ImGui::DragScalar("Shadow source radius (m)", ImGuiDataType_Double,
                     &p.sourceRadius, 0.01f, &minRange, &maxSourceRadius, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+                const double maxScattering = 65504.0;
+                changed |= ImGui::DragScalar("Volumetric scattering intensity", ImGuiDataType_Double,
+                    &p.volumetricScatteringIntensity, 0.02f, &minRange, &maxScattering, "%.3f", ImGuiSliderFlags_AlwaysClamp);
             }
             if (spot) {
                 float direction[] = {light.direction.x, light.direction.y, light.direction.z};
@@ -6352,6 +6412,10 @@ void EditorApplication::drawSelectedLightComponentInspector()
             &edited.sourceRadius, kSmallStep, &kMinimumValue, &maxSourceRadius, "%.3f", ImGuiSliderFlags_AlwaysClamp);
         trackEditItem();
         changed = radiusChanged || changed;
+        const double maxScattering = 65504.0;
+        changed |= ImGui::DragScalar("Volumetric scattering intensity", ImGuiDataType_Double,
+            &edited.volumetricScatteringIntensity, 0.02f, &kMinimumValue, &maxScattering, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        trackEditItem();
         const bool rangeChanged = ImGui::DragScalar(
             "Range",
             ImGuiDataType_Double,

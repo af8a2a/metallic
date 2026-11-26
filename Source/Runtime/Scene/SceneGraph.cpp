@@ -71,6 +71,7 @@ bool lightUnsupportedPropertiesUnchanged(
     if (current.type == "directional") {
         return current.range == next.range &&
             current.sourceRadius == next.sourceRadius &&
+            current.volumetricScatteringIntensity == next.volumetricScatteringIntensity &&
             current.innerConeAngle == next.innerConeAngle &&
             current.outerConeAngle == next.outerConeAngle;
     }
@@ -191,6 +192,8 @@ bool validLightProperties(const LightProperties& properties)
         !std::isfinite(intensitySI) || intensitySI < 0.0 || intensitySI > 1e12 ||
         !std::isfinite(properties.range) ||
         !std::isfinite(properties.sourceRadius) || properties.sourceRadius < 0.0 || properties.sourceRadius > 10000.0 ||
+        !std::isfinite(properties.volumetricScatteringIntensity) ||
+        properties.volumetricScatteringIntensity < 0.0 || properties.volumetricScatteringIntensity > 65504.0 ||
         !std::isfinite(properties.innerConeAngle) ||
         !std::isfinite(properties.outerConeAngle)) {
         return false;
@@ -232,6 +235,7 @@ bool lightPropertiesNearlyEqual(
         propertyValuesNearlyEqual(lhs.intensity, rhs.intensity) &&
         propertyValuesNearlyEqual(lhs.range, rhs.range) &&
         propertyValuesNearlyEqual(lhs.sourceRadius, rhs.sourceRadius) &&
+        propertyValuesNearlyEqual(lhs.volumetricScatteringIntensity, rhs.volumetricScatteringIntensity) &&
         propertyValuesNearlyEqual(lhs.innerConeAngle, rhs.innerConeAngle) &&
         propertyValuesNearlyEqual(lhs.outerConeAngle, rhs.outerConeAngle);
 }

@@ -1,0 +1,49 @@
+{
+    "name": "Sponza Volumetric Fog",
+    "version": 1,
+    "nodes": [
+        {"id": 1, "name": "VBuffer", "type": "VisibilityBufferPass", "position": {"x": 40, "y": 220},
+            "properties": {"path": "Asset/Sponza/SponzaVolumetricFog.metallic_scene.json", "visualization": "none",
+                "enableClusterRtx": true, "initialLoad": true, "autoLod": false, "lodLevel": 0}},
+        {"id": 2, "name": "Shadows", "type": "VirtualShadowMapLightsPass", "position": {"x": 340, "y": 0},
+            "properties": {"enabled": true, "lightCapacity": 4, "physicalPageBudget": 2048,
+                "compactOutputs": true, "debugOutput": false}},
+        {"id": 3, "name": "Deferred", "type": "VisibilityBufferDeferredPass", "position": {"x": 650, "y": 100},
+            "properties": {"path": "Asset/Sponza/SponzaVolumetricFog.metallic_scene.json", "materialBinning": true, "outputLinear": true}},
+        {"id": 4, "name": "Fog", "type": "VolumetricFogPass", "position": {"x": 650, "y": 420},
+            "properties": {"gridPixelSize": 16, "gridSizeZ": 64, "rayTracedShadows": true, "temporalReprojection": true,
+                "localFogVolumes": true, "localFogStartDistanceMeters": 1.0}},
+        {"id": 5, "name": "FogComposite", "type": "VolumetricFogCompositePass", "position": {"x": 980, "y": 220}, "properties": {}},
+        {"id": 6, "name": "AutoExposure", "type": "AutoExposurePass", "position": {"x": 1300, "y": 220}, "properties": {}},
+        {"id": 7, "name": "ColorGrading", "type": "ColorGradingLUTPass", "position": {"x": 1300, "y": 460},
+            "properties": {"toneCurve": "aces2"}},
+        {"id": 8, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 1620, "y": 220}, "properties": {}}
+    ],
+    "edges": [
+        {"id": 1, "src": "VBuffer.visibility", "dst": "Deferred.visibility"},
+        {"id": 2, "src": "VBuffer.depth", "dst": "Deferred.depth"},
+        {"id": 3, "src": "VBuffer.rasterInfo", "dst": "Deferred.rasterInfo"},
+        {"id": 4, "src": "VBuffer.domain", "dst": "Deferred.domain"},
+        {"id": 5, "src": "VBuffer.depth", "dst": "Shadows.depth"},
+        {"id": 6, "src": "VBuffer.rasterInfo", "dst": "Shadows.rasterInfo"},
+        {"id": 7, "src": "VBuffer.visibility", "dst": "Shadows.visibility"},
+        {"id": 8, "src": "Shadows.shadows", "dst": "Deferred.virtualShadows"},
+        {"id": 9, "src": "Shadows.lights", "dst": "Deferred.virtualShadowLights"},
+        {"id": 10, "src": "VBuffer.depth", "dst": "Fog.depth"},
+        {"id": 11, "src": "VBuffer.rasterInfo", "dst": "Fog.rasterInfo"},
+        {"id": 12, "src": "VBuffer.accelerationStructure", "dst": "Fog.accelerationStructure"},
+        {"id": 13, "src": "Deferred.color", "dst": "FogComposite.sceneColor"},
+        {"id": 14, "src": "VBuffer.depth", "dst": "FogComposite.depth"},
+        {"id": 15, "src": "Fog.integrated", "dst": "FogComposite.integrated"},
+        {"id": 16, "src": "Fog.view", "dst": "FogComposite.view"},
+        {"id": 17, "src": "FogComposite.color", "dst": "AutoExposure.source"},
+        {"id": 18, "src": "AutoExposure.color", "dst": "FinalBlit.source"},
+        {"id": 19, "src": "ColorGrading.lut", "dst": "FinalBlit.lut"}
+    ],
+    "outputs": [],
+    "view": {
+        "camera": {"eye": [8.7, 1.65, 0.15], "center": [-8.0, 3.0, -0.35], "up": [0, 1, 0],
+            "fovDegrees": 60.0, "projection": "perspective", "znear": 0.05, "zfar": 100.0},
+        "temporalJitter": false
+    }
+}

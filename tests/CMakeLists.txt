@@ -527,6 +527,8 @@ add_executable(MetallicRHITests
     rhi/PathTraceMathTests.cpp
     rhi/CelestialLightingTests.cpp
     rhi/AtmosphereTests.cpp
+    rhi/VolumetricFogTests.cpp
+    rhi/VolumetricFogLocalTests.cpp
     rhi/AtmosphereSeamTests.cpp
     rhi/AtmosphereSeamRenderingTests.cpp
     rhi/PhysicalEnvironmentRenderingTests.cpp

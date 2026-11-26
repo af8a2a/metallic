@@ -726,6 +726,12 @@ public:
             .storageReadWrite();
         input.format = render::Format::RGBA8Unorm;
         input.layerCount = inputLayers;
+        if (passProperties.contains("tileSize")) {
+            auto& volume = reflection.addTextureOutput("volume").texture3D(0, 0, 4).storageWrite();
+            volume.extentSourceInput = "input";
+            volume.extentDivisor = passProperties.at("tileSize").get<uint32_t>();
+            volume.format = render::Format::RGBA16Sfloat;
+        }
         reflection.addTextureOutput("color", "Default-sized texture extent consumer output")
             .storageReadWrite()
             .format = render::Format::RGBA8Unorm;
@@ -7123,6 +7129,7 @@ public:
         render::RenderGraphProperties consumerProperties = render::RenderGraphProperties::object();
         consumerProperties["inputWidth"] = kProducerWidth;
         consumerProperties["inputHeight"] = kProducerHeight;
+        consumerProperties["tileSize"] = 16u;
 
         render::RenderGraph graph;
         graph.setName("TextureExtentConstraintPropagation");
@@ -7158,6 +7165,10 @@ public:
 
         const render::RenderGraphResource* producerOutput = executor.outputResource("Producer.color");
         const render::RenderGraphResource* consumerOutput = executor.outputResource("Consumer.color");
+        const auto* volume = executor.outputResource("Consumer.volume");
+        if (!volume || volume->desc.width != 5 || volume->desc.height != 3 || volume->desc.depth != 4) {
+            return RHITestResult::fail("froxel extent did not round the negotiated 80x45 input up to 5x3 tiles");
+        }
         if (producerOutput == nullptr ||
             producerOutput->desc.width != kProducerWidth ||
             producerOutput->desc.height != kProducerHeight) {
@@ -7220,6 +7231,10 @@ public:
                 toString(result) + ": " + log);
         }
         producerOutput = executor.outputResource("Producer.color");
+        volume = executor.outputResource("Consumer.volume");
+        if (!volume || volume->desc.width != 4 || volume->desc.height != 3) {
+            return RHITestResult::fail("froxel extent did not follow the recompiled 64x36 input");
+        }
         if (producerOutput == nullptr ||
             producerOutput->desc.width != kUpdatedProducerWidth ||
             producerOutput->desc.height != kUpdatedProducerHeight) {

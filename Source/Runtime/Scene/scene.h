@@ -368,6 +368,7 @@ struct RenderLight {
     double innerConeAngle = 0.0;
     double outerConeAngle = 0.7853981633974483;
     double sourceRadius = 0.0;
+    double volumetricScatteringIntensity = 1.0;
     LightUnit intensityUnit = LightUnit::SI;
     float4x4 worldMatrix = float4x4::Identity();
     uint64_t contentRevision = 0;

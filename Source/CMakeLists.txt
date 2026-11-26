@@ -125,6 +125,8 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/CopyColorPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/FinalBlitPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ColorGradingLUTPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/VolumetricFogPass.cpp
+    Runtime/Render/Environment/LocalFogVolumePacking.cpp
     Runtime/Render/RenderPass/BuiltinPass/MeshDistanceFieldDebugPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/GlobalDistanceFieldPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/LumenSurfaceCachePass.cpp

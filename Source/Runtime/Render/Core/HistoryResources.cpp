@@ -461,7 +461,8 @@ Result<> HistoryResourceManager::ensureTexture(
     TextureViewDesc viewDesc,
     bool preserveGeometryMotion)
 {
-    if (impl_->device == nullptr || nameIsEmpty(name) || desc.type != TextureType::Texture2D) {
+    if (impl_->device == nullptr || nameIsEmpty(name) ||
+        (desc.type != TextureType::Texture2D && desc.type != TextureType::Texture3D)) {
         return makeError(Error::InvalidArgument);
     }
 

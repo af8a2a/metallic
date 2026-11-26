@@ -600,6 +600,7 @@ public:
                                 if (useView) {
                                     viewCamera = change.at("camera");
                                     if (!view.setCameraProperties(viewCamera)) { return fail("Invalid moving camera"); }
+                                    if (change.value("cameraCut", false)) { view.cameraCut(); }
                                 } else {
                                     graph.setNodeRuntimeProperty(node->id, "camera", change.at("camera"));
                                 }

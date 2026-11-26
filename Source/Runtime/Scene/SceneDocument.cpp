@@ -60,6 +60,7 @@ bool lightPropertiesNearlyEqualForDocument(
         nearlyEqual(lhs.intensity, rhs.intensity) &&
         nearlyEqual(lhs.range, rhs.range) &&
         nearlyEqual(lhs.sourceRadius, rhs.sourceRadius) &&
+        nearlyEqual(lhs.volumetricScatteringIntensity, rhs.volumetricScatteringIntensity) &&
         nearlyEqual(lhs.innerConeAngle, rhs.innerConeAngle) &&
         nearlyEqual(lhs.outerConeAngle, rhs.outerConeAngle);
 }
@@ -183,15 +184,17 @@ bool parseLightProperties(
         return false;
     }
     if (current.type == "directional") {
-        if (value.contains("range") || value.contains("sourceRadius") || value.contains("innerConeAngle") ||
+        if (value.contains("range") || value.contains("sourceRadius") || value.contains("volumetricScatteringIntensity") ||
+            value.contains("innerConeAngle") ||
             value.contains("outerConeAngle")) {
-            reason = "directional lights do not support range, sourceRadius or cone angles";
+            reason = "directional light override contains punctual light properties";
             return false;
         }
         return true;
     }
     if (!readOptionalFiniteNumber(value, "range", properties.range, reason) ||
-        !readOptionalFiniteNumber(value, "sourceRadius", properties.sourceRadius, reason)) {
+        !readOptionalFiniteNumber(value, "sourceRadius", properties.sourceRadius, reason) ||
+        !readOptionalFiniteNumber(value, "volumetricScatteringIntensity", properties.volumetricScatteringIntensity, reason)) {
         return false;
     }
     if (current.type == "spot") {
@@ -360,6 +363,7 @@ nlohmann::json serializeLightProperties(const LightProperties& properties)
     if (properties.type != "directional") {
         value["range"] = properties.range;
         value["sourceRadius"] = properties.sourceRadius;
+        value["volumetricScatteringIntensity"] = properties.volumetricScatteringIntensity;
     }
     if (properties.type == "spot") {
         value["innerConeAngle"] = properties.innerConeAngle;
@@ -501,6 +505,106 @@ bool parseAtmosphere(const nlohmann::json& value, environment::AtmosphereState& 
     }
     if (!environment::validAtmosphereState(atmosphere)) {
         reason = "invalid atmosphere radius, center, coefficient, density, anisotropy or albedo";
+        return false;
+    }
+    return true;
+}
+
+using FogState = environment::VolumetricFogState;
+using environment::LocalFogVolume;
+constexpr std::pair<const char*, float FogState::*> kFogScalars[] = {
+    {"density", &FogState::density}, {"heightFalloff", &FogState::heightFalloff}, {"heightMeters", &FogState::heightMeters},
+    {"secondDensity", &FogState::secondDensity}, {"secondHeightFalloff", &FogState::secondHeightFalloff},
+    {"secondHeightOffsetMeters", &FogState::secondHeightOffsetMeters}, {"extinctionScale", &FogState::extinctionScale},
+    {"scatteringDistribution", &FogState::scatteringDistribution},
+    {"directionalScatteringIntensity", &FogState::directionalScatteringIntensity}, {"distanceMeters", &FogState::distanceMeters},
+    {"startDistanceMeters", &FogState::startDistanceMeters}, {"nearFadeInDistanceMeters", &FogState::nearFadeInDistanceMeters},
+};
+
+constexpr std::pair<const char*, float LocalFogVolume::*> kLocalFogScalars[] = {
+    {"radiusMeters", &LocalFogVolume::radiusMeters}, {"radialExtinction", &LocalFogVolume::radialExtinction},
+    {"heightExtinction", &LocalFogVolume::heightExtinction}, {"heightFalloff", &LocalFogVolume::heightFalloff},
+    {"heightOffset", &LocalFogVolume::heightOffset},
+};
+
+constexpr std::pair<const char*, std::array<float, 3> LocalFogVolume::*> kLocalFogVectors[] = {
+    {"centerMeters", &LocalFogVolume::centerMeters}, {"rotationDegrees", &LocalFogVolume::rotationDegrees},
+    {"albedo", &LocalFogVolume::albedo}, {"emissive", &LocalFogVolume::emissive},
+};
+
+nlohmann::json serializeVolumetricFog(const FogState& fog)
+{
+    nlohmann::json value = {{"enabled", fog.enabled}, {"albedo", {fog.albedo.x, fog.albedo.y, fog.albedo.z}},
+        {"emissive", {fog.emissive.x, fog.emissive.y, fog.emissive.z}}};
+    for (const auto& [name, field] : kFogScalars) {
+        value[name] = fog.*field;
+    }
+    for (const auto& volume : fog.localVolumes) {
+        nlohmann::json entry = {{"enabled", volume.enabled}, {"sortPriority", volume.sortPriority}};
+        for (const auto& [name, field] : kLocalFogScalars) { entry[name] = volume.*field; }
+        for (const auto& [name, field] : kLocalFogVectors) { entry[name] = volume.*field; }
+        value["localVolumes"].push_back(std::move(entry));
+    }
+    return value;
+}
+
+bool parseLocalFogVolume(const nlohmann::json& value, LocalFogVolume& volume, std::string& reason)
+{
+    if (!value.is_object() || (value.contains("enabled") && !value["enabled"].is_boolean())) {
+        reason = "local fog volume must be an object with an optional boolean enabled field";
+        return false;
+    }
+    volume.enabled = value.value("enabled", true);
+    if (const auto priority = value.find("sortPriority"); priority != value.end()) {
+        if (!priority->is_number_integer() || priority->get<double>() < -127 || priority->get<double>() > 127) {
+            reason = "sortPriority must be an integer from -127 to 127";
+            return false;
+        }
+        volume.sortPriority = priority->get<int>();
+    }
+    for (const auto& [name, field] : kLocalFogScalars) {
+        double number = volume.*field;
+        if (!readOptionalFiniteNumber(value, name, number, reason)) { return false; }
+        volume.*field = static_cast<float>(number);
+    }
+    for (const auto& [name, field] : kLocalFogVectors) {
+        const auto vector = value.find(name);
+        if (vector == value.end()) { continue; }
+        if (!vector->is_array() || vector->size() != 3 ||
+            !std::ranges::all_of(*vector, [](const auto& component) { return component.is_number(); })) {
+            reason = std::string(name) + " must be a three-number array";
+            return false;
+        }
+        volume.*field = vector->get<std::array<float, 3>>();
+    }
+    return true;
+}
+
+bool parseVolumetricFog(const nlohmann::json& value, FogState& fog, std::string& reason)
+{
+    if (!value.is_object() || (value.contains("enabled") && !value["enabled"].is_boolean())) {
+        reason = "volumetricFog must be an object with a boolean enabled field";
+        return false;
+    }
+    fog.enabled = value.value("enabled", fog.enabled);
+    for (const auto& [name, field] : kFogScalars) {
+        double number = fog.*field;
+        if (!readOptionalFiniteNumber(value, name, number, reason)) { return false; }
+        fog.*field = static_cast<float>(number);
+    }
+    if (!readOptionalSpectrum(value, "albedo", fog.albedo, reason) ||
+        !readOptionalSpectrum(value, "emissive", fog.emissive, reason)) {
+        return false;
+    }
+    if (const auto volumes = value.find("localVolumes"); volumes != value.end()) {
+        if (!volumes->is_array()) { reason = "localVolumes must be an array"; return false; }
+        fog.localVolumes.clear();
+        for (const auto& entry : *volumes) {
+            if (!parseLocalFogVolume(entry, fog.localVolumes.emplace_back(), reason)) { return false; }
+        }
+    }
+    if (!environment::validVolumetricFog(fog)) {
+        reason = "invalid fog layer, albedo, emission, scattering or view distance";
         return false;
     }
     return true;
@@ -1838,6 +1942,13 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                             return false;
                         }
                     }
+                    if (environment.contains("volumetricFog")) {
+                        std::string reason;
+                        if (!parseVolumetricFog(environment["volumetricFog"], worldEnvironment_.volumetricFog, reason)) {
+                            documentWarning_ = "Invalid world.environment.volumetricFog: " + reason;
+                            return false;
+                        }
+                    }
                     if (environment.contains("time")) {
                         std::string reason;
                         if (!parseEnvironmentTime(environment["time"], worldEnvironment_.time, reason)) {
@@ -2395,6 +2506,9 @@ bool SceneDocument::save(std::string& message)
             {"visible", environment_.visible},
         }},
     };
+    if (!(worldEnvironment_.volumetricFog == environment::VolumetricFogState{})) {
+        document["world"]["environment"]["volumetricFog"] = serializeVolumetricFog(worldEnvironment_.volumetricFog);
+    }
     if (!decals().empty()) {
         document["world"]["decals"] = serializeDecals(*this, documentPath_.parent_path());
     }

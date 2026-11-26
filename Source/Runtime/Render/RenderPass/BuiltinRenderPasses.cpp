@@ -42,6 +42,10 @@ void registerBuiltInRenderGraphPasses()
     registerRenderGraphPassType("ColorGradingLUTPass",
         "Compose ACES 2.0, grading and custom LUTs into a scene-linear-input 3D display LUT",
         []() { return builtin_pass::createColorGradingLUTPass(); });
+    registerRenderGraphPassType("VolumetricFogPass", "Scatter and integrate directional lighting in a camera froxel volume",
+        []() { return builtin_pass::createVolumetricFogPass(); });
+    registerRenderGraphPassType("VolumetricFogCompositePass", "Apply integrated fog at the opaque surface or sky depth",
+        []() { return builtin_pass::createVolumetricFogCompositePass(); });
     registerRenderGraphPassType("MeshDistanceFieldDebugPass", "Trace shared object-space mesh distance fields",
         []() { return builtin_pass::createMeshDistanceFieldDebugPass(); });
     registerRenderGraphPassType("GlobalDistanceFieldPass", "Compose mesh distance fields into a bounded world-space volume",

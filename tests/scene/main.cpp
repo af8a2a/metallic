@@ -145,6 +145,7 @@ void expectLightProperties(
     EXPECT_NEAR(actual.outerConeAngle, expected.outerConeAngle, 0.000000001)
         << label << " outerConeAngle";
     EXPECT_DOUBLE_EQ(actual.sourceRadius, expected.sourceRadius) << label << " sourceRadius";
+    EXPECT_DOUBLE_EQ(actual.volumetricScatteringIntensity, expected.volumetricScatteringIntensity);
 }
 
 void expectCameraSnapshot(
@@ -178,6 +179,7 @@ void expectLightSnapshot(
     EXPECT_NEAR(actual.outerConeAngle, expected.outerConeAngle, 0.000000001)
         << label << " outerConeAngle";
     EXPECT_DOUBLE_EQ(actual.sourceRadius, expected.sourceRadius) << label << " sourceRadius";
+    EXPECT_DOUBLE_EQ(actual.volumetricScatteringIntensity, expected.volumetricScatteringIntensity);
 }
 
 void expectTextureInfo(
@@ -4168,6 +4170,8 @@ void testSceneDocumentPropertyRoundTrip(const std::filesystem::path& baseDirecto
     editedLight.innerConeAngle = 0.2;
     editedLight.outerConeAngle = 1.57079632679489661923;
     editedLight.sourceRadius = 0.125;
+    EXPECT_DOUBLE_EQ(authoredLight.volumetricScatteringIntensity, 1.0);
+    editedLight.volumetricScatteringIntensity = 2.5;
 
     ASSERT_TRUE(document.setObjectCameraProperties(
         perspectiveObject.entity(),
@@ -4313,6 +4317,8 @@ void testSceneDocumentPropertyRoundTrip(const std::filesystem::path& baseDirecto
     EXPECT_DOUBLE_EQ(savedLightProperties.value("intensity", 0.0), editedLight.intensity);
     EXPECT_DOUBLE_EQ(savedLightProperties.value("range", 0.0), editedLight.range);
     EXPECT_DOUBLE_EQ(savedLightProperties.value("sourceRadius", 0.0), editedLight.sourceRadius);
+    EXPECT_DOUBLE_EQ(savedLightProperties.at("volumetricScatteringIntensity").get<double>(),
+        editedLight.volumetricScatteringIntensity);
     EXPECT_DOUBLE_EQ(
         savedLightProperties.value("innerConeAngle", 0.0),
         editedLight.innerConeAngle);
@@ -5625,6 +5631,12 @@ TEST(Photometry, UnitsAndValidation)
     EXPECT_FALSE(validLightProperties(light));
     light.sourceRadius = 0.25;
     EXPECT_TRUE(validLightProperties(light));
+    for (double invalid : {-1.0, 65505.0, std::numeric_limits<double>::quiet_NaN()}) {
+        light.volumetricScatteringIntensity = invalid;
+        EXPECT_FALSE(validLightProperties(light));
+    }
+    light.volumetricScatteringIntensity = 0.0;
+    EXPECT_TRUE(validLightProperties(light));
     LightingSettings settings;
     settings.lights.emplace_back().properties.type = "directional";
     settings.lights[0].direction = float3(0.0f);
@@ -5665,6 +5677,7 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
         light.properties.intensityUnit = LightUnit::EV100;
         light.properties.intensity = -1.0;
         light.properties.sourceRadius = type == std::string_view("point") ? 0.25 : 0.5;
+        light.properties.volumetricScatteringIntensity = type == std::string_view("point") ? 0.0 : 3.5;
         light.position = float3(-1.0f, 2.0f, 3.0f);
         light.direction = float3(0.0f, -2.0f, -1.0f);
         light.enabled = light.properties.type != "point";
@@ -5714,6 +5727,7 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
         EXPECT_EQ(light.properties.intensityUnit, LightUnit::EV100);
         EXPECT_DOUBLE_EQ(light.properties.intensity, -1.0);
         EXPECT_DOUBLE_EQ(light.properties.sourceRadius, lighting.lights[i + 1].properties.sourceRadius);
+        EXPECT_DOUBLE_EQ(light.properties.volumetricScatteringIntensity, lighting.lights[i + 1].properties.volumetricScatteringIntensity);
         EXPECT_FLOAT_EQ(light.position.x, -1.0f);
         EXPECT_FLOAT_EQ(light.direction.y, -2.0f);
         EXPECT_EQ(light.enabled, lighting.lights[i + 1].enabled);
@@ -5946,6 +5960,27 @@ TEST(WorldEnvironment, PhysicalAtmosphereDocumentRoundTripAndTransactionalReject
     world.atmosphere.ozoneWidthKm = 12.0f;
     world.atmosphere.groundAlbedo = float3(0.1f, 0.2f, 0.4f);
     world.atmosphere.maxAerialDistanceKm = 2000.0f;
+    auto& fog = world.volumetricFog;
+    fog.enabled = true;
+    fog.density = 0.47f;
+    fog.heightFalloff = 0.18f;
+    fog.heightMeters = -3.0f;
+    fog.secondDensity = 0.11f;
+    fog.secondHeightFalloff = 0.07f;
+    fog.secondHeightOffsetMeters = 4.0f;
+    fog.albedo = float3(0.6f, 0.8f, 0.9f);
+    fog.emissive = float3(0.1f, 0.0f, 0.3f);
+    fog.startDistanceMeters = 1.0f;
+    fog.distanceMeters = 49.0f;
+    fog.nearFadeInDistanceMeters = 2.0f;
+    fog.extinctionScale = 1.4f;
+    fog.scatteringDistribution = -0.28f;
+    fog.directionalScatteringIntensity = 1.6f;
+    fog.localVolumes.push_back({.enabled = false, .centerMeters = {-10.0f, 5.0f, 1.0f},
+        .rotationDegrees = {2.0f, 30.0f, 15.0f}, .radiusMeters = 3.0f, .radialExtinction = 0.3f,
+        .heightExtinction = 1.5f, .heightFalloff = 58.0f, .heightOffset = -0.25f,
+        .albedo = {1.0f, 0.4f, 0.3f}, .emissive = {0.2f, 0.3f, 0.6f}, .sortPriority = -5});
+    fog.localVolumes.emplace_back();
     world.sun.enabled = true;
     world.sun.topOfAtmosphereIrradiance = float3(1.4f, 1.8f, 1.9f);
     world.moon.topOfAtmosphereIrradiance = float3(0.00001f, 0.000012f, 0.000009f);
@@ -5962,7 +5997,14 @@ TEST(WorldEnvironment, PhysicalAtmosphereDocumentRoundTripAndTransactionalReject
     ASSERT_TRUE(restored.load(sidecar)) << restored.documentWarning();
     EXPECT_EQ(restored.worldEnvironment(), world);
     const auto identity = restored.resourceIdentity();
-    const std::array<nlohmann::json, 9> invalidSettings{
+    EXPECT_EQ(restored.environmentSnapshot().volumetricFog, fog);
+    const std::array<nlohmann::json, 15> invalidSettings{
+        nlohmann::json{{"volumetricFog", {{"localVolumes", "sphere"}}}},
+        nlohmann::json{{"volumetricFog", {{"localVolumes", {{{"sortPriority", 1.5}}}}}}},
+        nlohmann::json{{"volumetricFog", {{"localVolumes", {{{"radiusMeters", 0.0}}}}}}},
+        nlohmann::json{{"volumetricFog", {{"albedo", {0.5, 1.1, 0.8}}}}},
+        nlohmann::json{{"volumetricFog", {{"scatteringDistribution", -1.0}}}},
+        nlohmann::json{{"volumetricFog", {{"startDistanceMeters", 70.0}, {"distanceMeters", 60.0}}}},
         nlohmann::json{{"source", "weather"}}, nlohmann::json{{"source", 2}},
         nlohmann::json{{"atmosphere", {{"planetCenter", {0.0, 1.0}}}}},
         nlohmann::json{{"atmosphere", {{"topRadiusKm", 10.0}}}},
@@ -5983,12 +6025,14 @@ TEST(WorldEnvironment, PhysicalAtmosphereDocumentRoundTripAndTransactionalReject
     auto legacy = saved;
     legacy["world"]["environment"].erase("source");
     legacy["world"]["environment"].erase("atmosphere");
+    legacy["world"]["environment"].erase("volumetricFog");
     legacy["world"]["environment"]["sun"].erase("topOfAtmosphereIrradiance");
     legacy["world"]["environment"]["moon"].erase("topOfAtmosphereIrradiance");
     writeTextFile(sidecar, legacy.dump(2));
     ASSERT_TRUE(restored.load(sidecar)) << restored.documentWarning();
     EXPECT_EQ(restored.worldEnvironment().source, EnvironmentSource::HDRI);
     EXPECT_EQ(restored.worldEnvironment().atmosphere, AtmosphereState{});
+    EXPECT_EQ(restored.worldEnvironment().volumetricFog, VolumetricFogState{});
     EXPECT_EQ(restored.worldEnvironment().sun.illuminance, world.sun.illuminance);
 }
 

@@ -1946,6 +1946,7 @@ public:
         };
         virtualLights[0].properties.intensity = 25.0;
         virtualLights[0].properties.sourceRadius = 0.25;
+        virtualLights[0].properties.volumetricScatteringIntensity = 0.75;
         virtualLights[0].properties.intensityUnit = scene::LightUnit::Candela;
         virtualLights[1].properties.intensity = 0.0;
         virtualLights[2].enabled = false;
@@ -1968,6 +1969,7 @@ public:
             records[2].source.sourceVirtualLightIndex != 0 ||
             records[0].source.gpu.colorIntensity[3] != 4.0f ||
             records[0].source.gpu.spot[2] != 0.125f || records[2].source.gpu.spot[2] != 0.25f ||
+            records[0].source.gpu.spot[3] != 1.0f || records[2].source.gpu.spot[3] != 0.75f ||
             records[2].source.gpu.colorIntensity[3] != 25.0f ||
             records[1].source.enabled || records[3].source.enabled ||
             records[4].source.enabled) {

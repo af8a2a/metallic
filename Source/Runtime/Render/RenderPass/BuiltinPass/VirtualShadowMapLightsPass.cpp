@@ -204,7 +204,7 @@ public:
             runtimeIntSetting("pageSize", "Page Size", 128, 16, 128),
             runtimeIntSetting("virtualPagesPerAxis", "Virtual Pages per Axis", 16, 1, 128),
             runtimeIntSetting("clipmapCount", "Clipmap / Local Mip Levels", 4, 1, 12),
-            runtimeIntSetting("maxWorkItems", "Per-face Raster Work Budget", 65535, 1, 4 * 1024 * 1024),
+            runtimeIntSetting("maxWorkItems", "Per-face Raster Work Budget", VirtualShadowMapSettings{}.maxWorkItems, 1, 4 * 1024 * 1024),
             runtimeFloatSetting("firstClipmapExtent", "First Directional Half-width (m)", 4, 0.01f, 10000),
             runtimeBoolSetting("continuousDirectionalBasis", "Continuous Directional Basis", false),
             runtimeFloatSetting("maxPagePoolLoadFactor", "Target Page Pool Load (0 Off)", VirtualShadowMapResolutionController::kDefaultLoadFactor, 0, 1),

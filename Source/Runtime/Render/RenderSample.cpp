@@ -1175,6 +1175,9 @@ std::vector<const RenderSample*> builtInRenderSamples()
         "Sponza with Lumen GI, virtual shadows, physical daylight, DLSS Super Resolution, and auto exposure.",
         "Asset/Sponza/SponzaGIAtmosphere.metallic_scene.json",
         "Pipelines/Samples/sponza_gi_atmosphere.metallic_graph.json", true};
+    static const GIPlaygroundSample sponzaVolumetricFog{"sponza-volumetric-fog", "Sponza / Volumetric Fog",
+        "Directional light shafts through the Sponza atrium with ray-traced opaque fog shadows.",
+        "Asset/Sponza/SponzaVolumetricFog.metallic_scene.json", "Pipelines/Samples/sponza_volumetric_fog.metallic_graph.json"};
     static const GIPlaygroundSample sponzaGIPathTracing{"sponza-gi-path-tracing", "Sponza with GI / Path Tracing",
         "Progressive OpenPBR path tracing of the sunlit Sponza atrium.",
         sponzaGIScene, "Pipelines/Samples/sponza_gi_path_tracing.metallic_graph.json"};
@@ -1221,6 +1224,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &lumenReflection,
         &sponzaGIRealtime,
         &sponzaGIAtmosphere,
+        &sponzaVolumetricFog,
         &sponzaGIPathTracing,
         &sponzaGICompare,
         &realtimeLighting,

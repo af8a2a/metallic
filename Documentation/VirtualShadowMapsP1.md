@@ -34,10 +34,10 @@ P1 每帧重新标页、分配和绘制。固定 shader/pipeline 按 Device 和 
 | `clipmapCount` | 4 | 细 clipmap 层数，另有一层全场景粗级 |
 | `firstClipmapExtent` | 4 | 第一层半幅，单位米 |
 | `physicalPageCount` | 256 | 含粗级页的池容量；默认 D32 图集裸内存 16 MiB |
-| `maxWorkItems` | 65535 | 细页 triangle/page 工作容量；粗级绘制独立 |
+| `maxWorkItems` | 1,048,576 | 每个投影面的细页 triangle/page 工作项上限。常规光栅路径每项占 8 字节，默认队列占 8 MiB |
 | `shadowBias` | 0.002 | 向光源的世界单位 bias |
 
-OpenPBR sample 为 88,264 authored triangles 单独设置 `maxWorkItems=1048576`（工作 buffer 8 MiB），并固定 VBuffer `autoLod=false, lodLevel=0`。主视图简化几何与完整 resident caster 不一致会产生自阴影斑块；固定 LOD 是 P1 演示的明确限制，尚未实现跨视图几何误差控制。
+OpenPBR sample 有 88,264 个 authored triangles，使用同样的工作项预算，并固定 VBuffer `autoLod=false, lodLevel=0`。主视图简化几何与完整 resident caster 不一致会产生自阴影斑块；固定 LOD 是 P1 演示的明确限制，尚未实现跨视图几何误差控制。
 
 debug：细级为 `(levelCode, 0.5, 0)`，粗级为蓝色，背景黑色，投影外洋红。`VirtualShadowMapPages` 检查点另提供 atlas、page table、projection buffer。
 

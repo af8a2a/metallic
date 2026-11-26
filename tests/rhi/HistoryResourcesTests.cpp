@@ -9,6 +9,7 @@
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 
 #include <array>
+#include <cstring>
 #include <memory>
 #include <string>
 
@@ -115,6 +116,86 @@ public:
             return RHITestResult::fail("missing texture returned a handle");
         }
 
+        return RHITestResult::pass();
+    }
+};
+
+class HistoryVolumeLifecycleTest : public RHITest {
+public:
+    HistoryVolumeLifecycleTest()
+    {
+        type = RHITestType::Resource;
+        name = "history_volume_lifecycle";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        constexpr std::array<float, 4> slices{0.0f, 0.25f, 0.5f, 1.0f};
+        TextureDesc desc{.type = TextureType::Texture3D,
+            .usage = TextureUsageBits::Storage | TextureUsageBits::Sampled |
+                TextureUsageBits::TransferSource | TextureUsageBits::TransferDestination,
+            .format = Format::R32Sfloat, .width = 1, .height = 1, .depth = static_cast<uint32_t>(slices.size())};
+        HistoryResourceManager manager;
+        if (!manager.initialize(context.device) || !manager.ensureTexture("volume", desc)) {
+            return RHITestResult::fail("Could not create the history volume and its views");
+        }
+        auto upload = context.device.createBuffer({.size = sizeof(slices), .usage = BufferUsageBits::TransferSource,
+            .memoryLocation = MemoryLocation::HostUpload});
+        auto readback = context.device.createBuffer({.size = sizeof(slices), .usage = BufferUsageBits::TransferDestination,
+            .memoryLocation = MemoryLocation::HostReadback});
+        if (!upload || !readback) { return RHITestResult::fail("Could not create volume transfer buffers"); }
+        void* mapped = (*upload)->map();
+        if (!mapped) { return RHITestResult::fail("Could not map volume upload"); }
+        std::memcpy(mapped, slices.data(), sizeof(slices));
+        (*upload)->flush();
+        (*upload)->unmap();
+
+        manager.beginFrame(0);
+        const auto current = manager.texture("volume", HistorySlot::Current);
+        {
+            bench::GPUCommands write(context.graphicsQueue);
+            auto source = (*upload)->slice();
+            if (!source || !write.initialize(context.device) ||
+                !manager.transitionTexture(*write.commands, "volume", HistorySlot::Current, ResourceState::TransferDestination) ||
+                !write.commands->copyBufferToTexture({.texture = current.texture, .buffer = *source,
+                    .width = 1, .height = 1, .depth = desc.depth}) ||
+                !write.submitAndWait()) {
+                return RHITestResult::fail("Could not write distinct values to the history volume slices");
+            }
+        }
+        manager.markWritten("volume");
+        manager.beginFrame(1);
+        const auto previous = manager.texture("volume", HistorySlot::Previous);
+        if (!previous.valid || previous.view != current.view || manager.texture("volume", HistorySlot::Current).valid) {
+            return RHITestResult::fail("The submitted volume view was not preserved across frames");
+        }
+        {
+            bench::GPUCommands read(context.graphicsQueue);
+            auto destination = (*readback)->slice();
+            const BufferBarrierDesc toHost{.buffer = readback->get(),
+                .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                .after = {PipelineStageBits::Host, AccessBits::HostRead}};
+            if (!destination || !read.initialize(context.device) ||
+                !manager.transitionTexture(*read.commands, "volume", HistorySlot::Previous, ResourceState::TransferSource) ||
+                !read.commands->copyTextureToBuffer({.texture = previous.texture, .buffer = *destination,
+                    .width = 1, .height = 1, .depth = desc.depth}) ||
+                !read.commands->synchronize({.buffers = {&toHost, 1}}) || !read.submitAndWait()) {
+                return RHITestResult::fail("Could not read the previous volume slices");
+            }
+        }
+        mapped = (*readback)->map();
+        if (!mapped) { return RHITestResult::fail("Could not map volume readback"); }
+        (*readback)->invalidate();
+        const bool matches = std::memcmp(mapped, slices.data(), sizeof(slices)) == 0;
+        (*readback)->unmap();
+        if (!matches) { return RHITestResult::fail("Previous volume slice values changed across frames"); }
+
+        desc.depth = 2;
+        if (!manager.ensureTexture("volume", desc) || manager.hasPrevious("volume") ||
+            manager.texture("volume", HistorySlot::Current).desc->depth != desc.depth) {
+            return RHITestResult::fail("Changing only the slice count must invalidate and resize the volume");
+        }
         return RHITestResult::pass();
     }
 };
@@ -665,6 +746,7 @@ public:
 METALLIC_REGISTER_RHI_TEST(HistoryInvalidationScopesTest);
 METALLIC_REGISTER_RHI_TEST(HistoryTexturePlannedStateTest);
 METALLIC_REGISTER_RHI_TEST(HistoryTextureLifecycleTest);
+METALLIC_REGISTER_RHI_TEST(HistoryVolumeLifecycleTest);
 METALLIC_REGISTER_RHI_TEST(HistoryBufferLifecycleTest);
 METALLIC_REGISTER_RHI_TEST(HistoryBufferViewLifecycleTest);
 METALLIC_REGISTER_RHI_TEST(HistoryResourceTransitionSmokeTest);

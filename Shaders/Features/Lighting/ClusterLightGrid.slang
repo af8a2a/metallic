@@ -6,6 +6,7 @@ module ClusterLightGrid;
 import ShaderCore;
 using Metallic;
 import Lighting;
+import VolumetricFogPunctual;
 using Metallic.Lighting;
 
 #define gClusterParams gParams.grid
@@ -113,7 +114,13 @@ bool clusterLightGridOverlaps(
         float3 radial = delta - projected * axis;
         float radialLengthSq = dot(radial, radial);
         if (isfinite(radialLengthSq) && radialLengthSq > tolerance * tolerance) {
-            float cosine = clamp(light.spot.y, 1e-4, 1.0);
+            // In fog UE enforces a 0.001-radian minimum cone width. Keep both
+            // the authored surface cone and this slightly wider cone in the grid.
+            float outerCosine = light.spot.y;
+            if (light.spot.w > 0.0f && light.spot.x - outerCosine <= 0.001f) {
+                outerCosine = min(outerCosine, fogSpotAngles(light.spot.xy).x);
+            }
+            float cosine = clamp(outerCosine, 1e-4, 1.0);
             float tangent = sqrt(max(1.0 - cosine * cosine, 0.0)) / cosine;
             float3 planeNormal = radial * rsqrt(radialLengthSq) - tangent * axis;
             float planeDistance = dot(planeNormal, delta);

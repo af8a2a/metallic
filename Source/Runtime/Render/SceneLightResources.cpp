@@ -229,6 +229,7 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
         light.spot[0] = static_cast<float>(std::cos(properties.innerConeAngle));
         light.spot[1] = static_cast<float>(std::cos(properties.outerConeAngle));
         light.spot[2] = static_cast<float>(properties.sourceRadius);
+        light.spot[3] = static_cast<float>(properties.volumetricScatteringIntensity);
         record.gpu = light;
         record.enabled = true;
     };
@@ -248,6 +249,7 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
                 .range = light.range, .innerConeAngle = light.innerConeAngle,
                 .outerConeAngle = light.outerConeAngle, .intensityUnit = light.intensityUnit,
                 .sourceRadius = light.sourceRadius,
+                .volumetricScatteringIntensity = light.volumetricScatteringIntensity,
             }, float3(m.a03, m.a13, m.a23), light.type == "point"
                 ? float3(0.0f, -1.0f, 0.0f) : float3(-m.a02, -m.a12, -m.a22));
         }

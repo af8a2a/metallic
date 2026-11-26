@@ -179,6 +179,9 @@ struct RenderGraphField {
     DisplayColorEncoding colorEncoding = DisplayColorEncoding::sRGB;
     // Disable for resampled inputs or auxiliary 2D outputs sized independently of the pass.
     bool matchOutputExtent = true;
+    // An independent output can cover one texel per tile of a negotiated input.
+    std::string extentSourceInput;
+    uint32_t extentDivisor = 1;
     uint32_t width = 0;
     uint32_t height = 0;
     // ResourceType::Texture2D is the legacy graph texture category. The native

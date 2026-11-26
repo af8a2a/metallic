@@ -2891,6 +2891,7 @@ void applyLightProperties(RenderLight& light, const LightProperties& properties)
     light.innerConeAngle = properties.innerConeAngle;
     light.outerConeAngle = properties.outerConeAngle;
     light.sourceRadius = properties.sourceRadius;
+    light.volumetricScatteringIntensity = properties.volumetricScatteringIntensity;
 }
 
 RenderCamera makeRenderCamera(

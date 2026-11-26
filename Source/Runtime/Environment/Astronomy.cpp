@@ -271,6 +271,7 @@ EnvironmentSnapshot evaluateWorldEnvironment(const WorldEnvironment& authored, d
     result.time = authored.time;
     result.astronomy = authored.astronomy;
     result.weather = authored.weather;
+    result.volumetricFog = authored.volumetricFog;
     result.elapsedSeconds = std::isfinite(elapsedSeconds) ? elapsedSeconds : 0.0;
     const double julianDate = runtimeJulianDateUTC && std::isfinite(*runtimeJulianDateUTC)
         ? std::clamp(*runtimeJulianDateUTC, kMinimumJulianDateUTC, kMaximumJulianDateUTC)

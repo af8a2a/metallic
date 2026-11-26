@@ -1,0 +1,51 @@
+{
+    "version": 4,
+    "nodes": [
+        {"sourceId": "view", "nodeIndex": 0, "sourceName": "VSM Near-to-Far Camera",
+         "localMatrix": [0.02992671, 0.0, -0.99955210, 0.0,
+                         0.08050355, 0.99675141, 0.00241029, 0.0,
+                         0.99630496, -0.08053962, 0.02982949, 0.0,
+                         8.7, 1.65, 0.15, 1.0]}
+    ],
+    "world": {
+        "environment": {
+            "enabled": true,
+            "path": "../ABeautifulGame/environment.hdr",
+            "intensity": 0.2,
+            "visible": true,
+            "sun": {
+                "enabled": true,
+                "direction": [0.48, -0.865, -0.15],
+                "color": [1.0, 0.93, 0.82],
+                "illuminance": 6.0
+            },
+            "volumetricFog": {
+                "enabled": true,
+                "density": 0.45,
+                "heightFalloff": 0.18,
+                "distanceMeters": 60,
+                "albedo": [0.95, 0.95, 0.95],
+                "scatteringDistribution": 0.25,
+                "directionalScatteringIntensity": 4.0,
+                "localVolumes": [
+                    {"centerMeters": [-4.0, 0.9, -0.75], "radiusMeters": 3.0,
+                     "radialExtinction": 0.55, "heightExtinction": 0.6, "heightFalloff": 1000.0,
+                     "albedo": [0.82, 0.88, 0.95]}
+                ]
+            }
+        },
+        "lighting": {
+            "exposureEV100": 0.0,
+            "autoExposure": {"enabled": false},
+            "lights": [
+                {"type": "point", "name": "West arcade lamp", "position": [-4.0, 1.8, -0.75],
+                 "color": [1.0, 0.62, 0.36], "intensity": 18.0, "intensityUnit": "candela",
+                 "range": 4.0, "volumetricScatteringIntensity": 1.0}
+            ]
+        }
+    },
+    "sources": [
+        {"id": "sponza", "path": "glTF/Sponza.gltf"},
+        {"id": "view", "path": "SponzaVSMCamera.gltf"}
+    ]
+}
