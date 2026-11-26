@@ -430,7 +430,8 @@ public:
             return {RenderGraphSceneSource::Input, {"rasterInfo", "accelerationStructure"}};
         }
         return visibilityDeferred_
-            ? RenderGraphSceneDependency{RenderGraphSceneSource::Input, {"visibility", "depth", "rasterInfo"}}
+            ? RenderGraphSceneDependency{.source = RenderGraphSceneSource::Input, .inputs = {"visibility", "depth", "rasterInfo"},
+                .recompileOnTransform = false}
             : RenderGraphSceneDependency{RenderGraphSceneSource::World};
     }
 

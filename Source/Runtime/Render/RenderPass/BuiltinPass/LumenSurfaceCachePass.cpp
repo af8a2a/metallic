@@ -370,8 +370,11 @@ public:
     }
     RenderGraphSceneDependency sceneDependency() const override
     {
-        if (hardwarePunctualShadows()) { return {RenderGraphSceneSource::Input, {"accelerationStructure"}}; }
-        return {RenderGraphSceneSource::World};
+        if (hardwarePunctualShadows()) {
+            return {.source = RenderGraphSceneSource::Input, .inputs = {"accelerationStructure"},
+                .recompileOnTransform = false};
+        }
+        return {.source = RenderGraphSceneSource::World, .recompileOnTransform = false};
     }
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override;
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override;

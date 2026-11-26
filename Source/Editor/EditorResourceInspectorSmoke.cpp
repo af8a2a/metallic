@@ -257,6 +257,21 @@ bool writePPM(const std::filesystem::path& path, std::span<const uint8_t> bytes,
 }
 } // namespace
 
+bool EditorApplication::exportSmokeMainViewport(const std::filesystem::path& path)
+{
+    if (!frameSubmissions_.wait() || !graphExecutor_->waitForSubmittedWork()) { return false; }
+    auto* draw = ImGui::GetDrawData();
+    const uint32_t width = uint32_t(draw->DisplaySize.x * draw->FramebufferScale.x);
+    const uint32_t height = uint32_t(draw->DisplaySize.y * draw->FramebufferScale.y);
+    const auto format = displayOutput_.mode == render::DisplayOutputMode::HDR10_PQ
+        ? render::Format::RGBA16Sfloat : swapchain_->format();
+    auto image = device_->createTexture({.usage = render::TextureUsageBits::ColorAttachment |
+        render::TextureUsageBits::TransferSource, .format = format, .width = width, .height = height});
+    std::vector<uint8_t> pixels;
+    return image && readInspectorImage(*device_, *graphicsQueue_, imguiBackend_, **image, pixels, draw) &&
+        writePPM(path, pixels, width, height, format, displayOutput_.paperWhiteNits);
+}
+
 bool EditorApplication::runResourceInspectorBenchmark(const std::filesystem::path& output, const char* sample)
 {
     using Clock = std::chrono::steady_clock;

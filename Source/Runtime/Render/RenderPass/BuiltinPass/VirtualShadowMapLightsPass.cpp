@@ -86,7 +86,8 @@ public:
     }
     RenderGraphSceneDependency sceneDependency() const override
     {
-        return {RenderGraphSceneSource::Input, {"depth", "rasterInfo", "visibility"}};
+        return {.source = RenderGraphSceneSource::Input, .inputs = {"depth", "rasterInfo", "visibility"},
+            .recompileOnTransform = false};
     }
     RenderPassReflection reflect(const RenderGraphCompileContext& context) const override
     {

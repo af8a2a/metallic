@@ -64,7 +64,8 @@ class VolumetricFogPass final : public ComputePass {
 public:
     RenderGraphSceneDependency sceneDependency() const override
     {
-        return {RenderGraphSceneSource::Input, {"depth", "rasterInfo", "accelerationStructure"}};
+        return {.source = RenderGraphSceneSource::Input, .inputs = {"depth", "rasterInfo", "accelerationStructure"},
+            .recompileOnTransform = false};
     }
     std::span<const RenderSubsystemId> requiredSubsystems() const override
     {
@@ -404,7 +405,7 @@ Result<> VolumetricFogPass::execute(RenderGraphExecutionContext& context)
     if (conservative) { lightUses.push_back({"conservativeDepth", Access::TextureSampleRead}); }
     if (rayTraced) { lightUses.push_back({"shadow", Access::TextureSampleRead}); }
     const auto* globalHistory = context.historyResources();
-    const auto revision = globalHistory ? globalHistory->reprojectionInvalidationRevision() : 0;
+    const auto revision = (globalHistory ? *globalHistory : context.graphHistoryResources()).reprojectionInvalidationRevision();
     const auto* view = context.viewConstants();
     const auto cut = view ? view->frame[3] : 0;
     std::vector<RenderGraphTextureImport> imports;
@@ -502,7 +503,8 @@ class VolumetricFogCompositePass final : public ComputePass {
 public:
     RenderGraphSceneDependency sceneDependency() const override
     {
-        return {RenderGraphSceneSource::Input, {"integrated", "view"}};
+        return {.source = RenderGraphSceneSource::Input, .inputs = {"integrated", "view"},
+            .recompileOnTransform = false};
     }
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {

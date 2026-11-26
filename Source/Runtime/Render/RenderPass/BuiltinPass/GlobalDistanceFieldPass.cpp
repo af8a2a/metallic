@@ -447,7 +447,10 @@ public:
 
     bool supportsFrameOverlap() const override { return usePages_; }
     bool supportsExternalFrameOverlap() const override { return false; }
-    RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
+    RenderGraphSceneDependency sceneDependency() const override
+    {
+        return {.source = RenderGraphSceneSource::World, .recompileOnTransform = false};
+    }
 
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {

@@ -305,6 +305,14 @@ struct RenderGraphExecutor::Impl {
         std::string path;
         bool localView = false;
         bool operator==(const SceneBinding&) const = default;
+
+        bool matchesExceptTransform(const SceneBinding& previous) const
+        {
+            auto previousVersion = previous.version;
+            previousVersion[4] = version[4]; // World transform revision.
+            return source == previous.source && path == previous.path &&
+                localView == previous.localView && version == previousVersion;
+        }
     };
 
     static SceneBinding captureSceneBinding(const scene::Scene* source)
@@ -1174,7 +1182,8 @@ struct RenderGraphExecutor::Impl {
         return {};
     }
 
-    Result<> refreshFrameSceneBindings(HistoryResourceManager* history, std::string& log)
+    Result<> refreshFrameSceneBindings(HistoryResourceManager* history, std::string& log,
+        CPUProfileScope* profile = nullptr)
     {
         std::vector<SceneBinding> bindings;
         Result<> result = resolveSceneBindings(bindings, log);
@@ -1186,10 +1195,7 @@ struct RenderGraphExecutor::Impl {
             const auto& previous = executionList[index].sceneBinding;
             if (bindings[index] == previous) { continue; }
             changed = true;
-            auto withCurrentTransform = previous;
-            // SceneBinding::version[4] is the world transform revision.
-            withCurrentTransform.version[4] = bindings[index].version[4];
-            geometryMotion &= bindings[index] == withCurrentTransform;
+            geometryMotion &= bindings[index].matchesExceptTransform(previous);
         }
         if (!changed) { return {}; }
         // Prepare the entire scene dependency set before recording any pass. Old
@@ -1209,9 +1215,20 @@ struct RenderGraphExecutor::Impl {
             .displayOutput = displayOutput,
             .presentationWidth = width, .presentationHeight = height,
         };
+        uint32_t recompiledPasses = 0;
         for (size_t index = 0; index < executionList.size(); ++index) {
             auto& node = executionList[index];
             if (node.sceneDependency.source == RenderGraphSceneSource::None || (!forceRefresh && bindings[index] == node.sceneBinding)) { continue; }
+            const bool keepCompiledPass = !forceRefresh && !node.sceneDependency.recompileOnTransform &&
+                bindings[index].matchesExceptTransform(node.sceneBinding);
+            if (keepCompiledPass) {
+                if (node.preparedScene != nullptr) {
+                    result = streamerSubsystem()->prepareScene(node.sceneRequirements, node.effectiveProperties,
+                        bindings[index].source, node.preparedScene, log, context.debugReadback);
+                    if (!result) { return result; }
+                }
+                continue;
+            }
             applySceneProperties(node, bindings[index]);
             auto nodeContext = contextForScene(context, bindings[index]);
             result = prepareNodeScene(node, nodeContext, log);
@@ -1219,12 +1236,14 @@ struct RenderGraphExecutor::Impl {
             result = node.pass->prepare(nodeContext, log);
             if (result) { result = node.pass->compile(nodeContext, log); }
             if (!result) { log = "Scene refresh failed for pass '" + node.name + "': " + log; return result; }
+            ++recompiledPasses;
             // Scene refresh keeps exported graph handles stable for external users.
             if (node.pass->reflect(nodeContext) != node.reflection) {
                 log = "Scene refresh changed the resource contract of pass '" + node.name + "'; rebuild the graph";
                 return makeError(Error::InvalidArgument);
             }
         }
+        if (profile != nullptr) { profile->work("recompiledPasses", recompiledPasses); }
         for (size_t index = 0; index < executionList.size(); ++index) {
             executionList[index].sceneBinding = bindings[index];
         }
@@ -5096,7 +5115,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         })) { return makeError(Error::InvalidArgument); }
 
     std::string sceneLog;
-    Result<> sceneResult = impl_->refreshFrameSceneBindings(desc.historyResources, sceneLog);
+    Result<> sceneResult = impl_->refreshFrameSceneBindings(desc.historyResources, sceneLog, &preparationPhase);
     if (!sceneResult) { spdlog::error("[RenderGraph] {}", sceneLog); return sceneResult; }
 
     phase.next("graph.preflight");

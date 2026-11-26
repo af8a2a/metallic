@@ -53,6 +53,7 @@ void printUsage()
         "Metallic options:\n"
         "  --debug-control                               Enable local Agent debug control\n"
         "  --smoke-test                                  Render one frame and exit\n"
+        "  --gizmo-smoke-test                            Run a hidden Sponza viewport drag and undo/redo test\n"
         "  --resource-inspector-smoke <directory>         Test GPU resource inspection and export native UI/evidence\n"
         "  --scene <path>                                Override the sample scene (glTF or USD)\n"
         "  --wait-for-graphics-debugger                  Wait before Vulkan initialization\n"
@@ -174,6 +175,7 @@ int main(int argc, char** argv)
     metallic::NsightLaunchOptions nsightOptions;
     metallic::render::ShaderWarmupLaunchOptions warmupOptions;
     bool smokeTest = false;
+    bool gizmoSmokeTest = false;
     bool rhiSmokeTest = false;
     bool rhiTrianglePreviewTest = false;
     bool rhiBindlessDescriptorHeapSmokeTest = false;
@@ -199,6 +201,9 @@ int main(int argc, char** argv)
             printUsage();
             return 0;
         } else if (argument == "--smoke-test") {
+            smokeTest = true;
+        } else if (argument == "--gizmo-smoke-test") {
+            gizmoSmokeTest = true;
             smokeTest = true;
         } else if (argument == "--resource-inspector-smoke") {
             if (index + 1 >= argc || std::string_view(argv[index + 1]).starts_with("--")) {
@@ -310,5 +315,6 @@ int main(int argc, char** argv)
         nsightOptions.mode,
         nsightShaderDebug,
         debugControl, false, warmupOptions.skip, metallic::render::LookDevRenderPath::Comparison,
-        resourceInspectorSmokeOutput.empty() ? nullptr : resourceInspectorSmokeOutput.c_str());
+        resourceInspectorSmokeOutput.empty() ? nullptr : resourceInspectorSmokeOutput.c_str(),
+        gizmoSmokeTest);
 }

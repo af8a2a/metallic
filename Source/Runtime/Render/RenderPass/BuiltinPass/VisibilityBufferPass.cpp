@@ -188,7 +188,10 @@ public:
         return streamEnabled_ && properties().value("compactClas", true) && streamRuntime_ &&
             streamRuntime_->sceneReady();
     }
-    RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
+    RenderGraphSceneDependency sceneDependency() const override
+    {
+        return {.source = RenderGraphSceneSource::World, .recompileOnTransform = false};
+    }
 
     ~VisibilityBufferPass() override
     {

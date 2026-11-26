@@ -402,6 +402,22 @@ shader-request checks completed normally. Generated evidence stays outside sourc
 `.cache/OpenPBRSplitAcceptance`, `.cache/OpenPBRSplitClosure` and
 `.cache/OpenPBRSplitRRPerf`.
 
+## Run the viewport gizmo regression from the CLI
+
+```powershell
+.\build-relwithdebinfo\Source\Metallic.exe --gizmo-smoke-test
+```
+
+The command runs a hidden editor with a fixed 640 × 360 render view. It sends
+mouse input through the viewport gizmo, checks that the selected object moves
+each frame, and verifies undo and redo. The `[Smoke Gizmo]` line reports mean
+frame wall time, mean scene binding refresh time, and the total number of pass
+recompiles over the measured drag. Set `METALLIC_SMOKE_TEST_SAMPLE` to select
+another Sponza sample. If it has a `Floor Decals` camera, the command tests both
+that camera node and the `Sponza Opaque` mesh node.
+Set `METALLIC_GIZMO_SMOKE_CAPTURE` to an output `.ppm` path to save the final
+editor frame after timing.
+
 ## Release and optimized debugging
 
 Native configure and build presets provide both optimized configurations:

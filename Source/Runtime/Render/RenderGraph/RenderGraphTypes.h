@@ -727,6 +727,9 @@ enum class RenderGraphSceneSource { None, World, Input };
 struct RenderGraphSceneDependency {
     RenderGraphSceneSource source = RenderGraphSceneSource::None;
     std::vector<std::string> inputs;
+    // Passes that read current transforms during execution can reuse compiled
+    // state across transform edits. Prepared scene resources still synchronize.
+    bool recompileOnTransform = true;
     bool operator==(const RenderGraphSceneDependency&) const = default;
 };
 

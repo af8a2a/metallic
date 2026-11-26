@@ -52,6 +52,7 @@ public:
     void notifySceneChanged(RenderChangeBits changes = RenderChangeBits::Lighting |
         RenderChangeBits::Geometry | RenderChangeBits::Material |
         RenderChangeBits::InvalidateTemporalHistory);
+    void notifySceneTransformChanged(bool geometryChanged);
     const scene::Scene* scene() const { return scene_; }
 
     void setEnvironment(EnvironmentSettings settings);
@@ -78,13 +79,14 @@ public:
     float sunIrradianceMax() const { return sunIrradianceMax_; }
 
     uint64_t sceneRevision() const { return sceneRevision_; }
-    // Only geometry/material changes require GPUScene content fingerprints.
+    // Only changes to geometry or material payloads require GPUScene content fingerprints.
     uint64_t sceneContentRevision() const { return sceneContentRevision_; }
     uint64_t environmentRevision() const { return environmentRevision_; }
     // Surface Cache and legacy consumers still receive all Lighting bits.
     RenderChangeBits consumeChanges(bool* sunLightingOnly = nullptr);
 
 private:
+    void publishSceneChange(RenderChangeBits changes, bool contentChanged);
     void markLightingChanged(bool sunOnly = false);
     void updateEvaluatedEnvironment(bool authoredChange = false, bool sunOnly = false);
     const scene::Scene* scene_ = nullptr;

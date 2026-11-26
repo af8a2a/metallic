@@ -2013,7 +2013,8 @@ int EditorApplication::run(
     bool gpuDrivenScenesOnly,
     bool skipShaderWarmup,
     render::LookDevRenderPath lookDevRenderPath,
-    const char* resourceInspectorSmokeOutput)
+    const char* resourceInspectorSmokeOutput,
+    bool gizmoSmokeTest)
 {
     lookDevRenderPath_ = lookDevRenderPath;
     gpuDrivenScenesOnly_ = gpuDrivenScenesOnly;
@@ -2042,6 +2043,7 @@ int EditorApplication::run(
     } taskSystemShutdownGuard;
 
     smokeTest_ = smokeTest;
+    if (gizmoSmokeTest) { gizmoSmokeInput_.emplace(); }
     streamlineDebugOpen_ = environmentFlagEnabled("METALLIC_STREAMLINE_DEBUG") ||
         (smokeTest && environmentFlagEnabled("METALLIC_SMOKE_TEST_STREAMLINE_DEBUG"));
     waitForGraphicsDebugger_ = waitForGraphicsDebugger && !smokeTest;
@@ -2160,6 +2162,11 @@ int EditorApplication::run(
             spdlog::error("Smoke test scene load did not complete: {}", sceneStatus_);
             shutdown();
             return 1;
+        }
+        if (gizmoSmokeInput_) {
+            const bool passed = runGizmoSmokeTest();
+            shutdown();
+            return passed ? 0 : 1;
         }
         if (render::RenderGraphNode* previewNode = activePreviewRenderGraphNode();
             previewNode != nullptr && previewNode->type == "ScenePathTracePass") {
@@ -2561,7 +2568,9 @@ bool EditorApplication::initialize()
     }
 
     SDL_SetWindowPosition(window_, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-    if ((!smokeTest_ || !environmentFlagEnabled("METALLIC_SMOKE_TEST_HIDDEN")) &&
+    const bool hiddenSmokeTest = gizmoSmokeInput_ ||
+        (smokeTest_ && environmentFlagEnabled("METALLIC_SMOKE_TEST_HIDDEN"));
+    if (!hiddenSmokeTest &&
         !environmentFlagEnabled("METALLIC_FULL_ROAM_HIDDEN") &&
         !std::getenv("METALLIC_CPU_JOB_BENCH_OUTPUT")) { SDL_ShowWindow(window_); }
 
@@ -2591,9 +2600,9 @@ bool EditorApplication::initialize()
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-        if ((!smokeTest_ || !environmentFlagEnabled("METALLIC_SMOKE_TEST_HIDDEN")) &&
-        !environmentFlagEnabled("METALLIC_FULL_ROAM_HIDDEN") &&
-        !std::getenv("METALLIC_CPU_JOB_BENCH_OUTPUT")) {
+        if (!hiddenSmokeTest &&
+            !environmentFlagEnabled("METALLIC_FULL_ROAM_HIDDEN") &&
+            !std::getenv("METALLIC_CPU_JOB_BENCH_OUTPUT")) {
             io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
         }
         io.ConfigDpiScaleFonts = true;
@@ -3225,6 +3234,15 @@ bool EditorApplication::renderFrame()
         auto profileScope = profiler_.editorScope("ImGui NewFrame");
         if (!imguiBackend_.newFrame()) { running_ = false; return false; }
         ImGui_ImplSDL3_NewFrame();
+        if (gizmoSmokeInput_) {
+            gizmoSmokeInput_->center.reset();
+            if (gizmoSmokeInput_->pointer) {
+                const auto [x, y] = *gizmoSmokeInput_->pointer;
+                ImGuiIO& io = ImGui::GetIO();
+                io.AddMousePosEvent(x, y);
+                io.AddMouseButtonEvent(ImGuiMouseButton_Left, gizmoSmokeInput_->mouseDown);
+            }
+        }
         ImGui::NewFrame();
         ImGuizmo::BeginFrame();
     }
@@ -5409,9 +5427,7 @@ int32_t EditorApplication::selectedNodeIndex() const
 
 void EditorApplication::notifySceneTransformChanged(bool geometryChanged)
 {
-    renderWorld_.notifySceneChanged(
-        render::RenderChangeBits::InvalidateTemporalHistory |
-        (geometryChanged ? render::RenderChangeBits::Geometry : render::RenderChangeBits::Lighting));
+    renderWorld_.notifySceneTransformChanged(geometryChanged);
     historyResources_.invalidateAll(geometryChanged ? render::HistoryInvalidationReason::GeometryMotion :
         render::HistoryInvalidationReason::Discontinuity);
     historyFrameIndex_ = 0;
@@ -6606,6 +6622,13 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
         properties["camera"],
         static_cast<float>(viewportView_.renderWidth(viewportTextureWidth_)),
         static_cast<float>(viewportView_.renderHeight(viewportTextureHeight_)));
+    if (gizmoSmokeInput_) {
+        const auto& world = transform->worldMatrix;
+        ImVec2 center;
+        if (projectWorldToViewport(float3(world.a03, world.a13, world.a23), matrices, min, max, center)) {
+            gizmoSmokeInput_->center = std::array{center.x, center.y};
+        }
+    }
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
     ImGuizmo::SetRect(min.x, min.y, max.x - min.x, max.y - min.y);
     ImGuizmo::SetOrthographic(matrices.orthographic);
@@ -8273,32 +8296,37 @@ void EditorApplication::applyLoadedSceneCamera()
         }
     }
 
+    applySceneCamera(*selectedCamera);
+}
+
+void EditorApplication::applySceneCamera(const scene::RenderCamera& camera)
+{
     constexpr double kPi = 3.14159265358979323846;
     auto cameraProperties = viewportView_.cameraProperties();
     cameraProperties["projection"] =
-        selectedCamera->type == scene::CameraType::Orthographic ? "orthographic" : "perspective";
-    const double yfov = selectedCamera->yfov > 0.0 ? selectedCamera->yfov : 0.7853981633974483;
+        camera.type == scene::CameraType::Orthographic ? "orthographic" : "perspective";
+    const double yfov = camera.yfov > 0.0 ? camera.yfov : 0.7853981633974483;
     const double radius = std::max(static_cast<double>(scene_.bounds().radius()), 1.0);
-    const double znear = std::max(selectedCamera->znear, radius * 0.001);
-    const double zfar = selectedCamera->zfar > znear
-        ? selectedCamera->zfar
+    const double znear = std::max(camera.znear, radius * 0.001);
+    const double zfar = camera.zfar > znear
+        ? camera.zfar
         : std::max(znear + 0.001, radius * 100.0);
     cameraProperties["fovDegrees"] = static_cast<float>(std::clamp(yfov * 180.0 / kPi, 1.0, 179.0));
     cameraProperties["znear"] = static_cast<float>(znear);
     cameraProperties["zfar"] = static_cast<float>(zfar);
-    if (selectedCamera->type == scene::CameraType::Orthographic) {
+    if (camera.type == scene::CameraType::Orthographic) {
         cameraProperties["orthoHeight"] =
-            static_cast<float>(std::max(selectedCamera->ymag * 2.0, 0.0001));
+            static_cast<float>(std::max(camera.ymag * 2.0, 0.0001));
     }
-    storeVec3Property(cameraProperties, "eye", selectedCamera->eye);
-    storeVec3Property(cameraProperties, "center", selectedCamera->center);
-    storeVec3Property(cameraProperties, "up", selectedCamera->up);
+    storeVec3Property(cameraProperties, "eye", camera.eye);
+    storeVec3Property(cameraProperties, "center", camera.center);
+    storeVec3Property(cameraProperties, "up", camera.up);
 
     if (!viewportView_.setCameraProperties(cameraProperties)) { return; }
     viewportView_.cameraCut();
     historyResources_.invalidateAll();
     viewportPreviewNeedsRender_ = true;
-    renderGraphStatus_ = "Applied scene camera: " + selectedCamera->name;
+    renderGraphStatus_ = "Applied scene camera: " + camera.name;
 }
 
 void EditorApplication::setEnvironmentPath(const std::filesystem::path& path)

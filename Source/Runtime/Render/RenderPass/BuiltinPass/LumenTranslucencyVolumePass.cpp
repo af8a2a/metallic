@@ -20,7 +20,8 @@ public:
     QueueType queueType() const override { return QueueType::Graphics; }
     RenderGraphSceneDependency sceneDependency() const override
     {
-        return {RenderGraphSceneSource::Input, {"depth", "rasterInfo"}};
+        return {.source = RenderGraphSceneSource::Input, .inputs = {"depth", "rasterInfo"},
+            .recompileOnTransform = false};
     }
     std::span<const RenderSubsystemId> requiredSubsystems() const override
     {

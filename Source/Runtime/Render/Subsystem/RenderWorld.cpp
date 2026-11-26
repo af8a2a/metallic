@@ -41,6 +41,19 @@ void RenderWorld::setScene(const scene::Scene* scene)
 
 void RenderWorld::notifySceneChanged(RenderChangeBits changes)
 {
+    publishSceneChange(changes, hasRenderChange(changes, RenderChangeBits::Geometry | RenderChangeBits::Material));
+}
+
+void RenderWorld::notifySceneTransformChanged(bool geometryChanged)
+{
+    // GPUScene consumes the current instance matrices independently of its
+    // primitive and material fingerprints.
+    publishSceneChange(RenderChangeBits::InvalidateTemporalHistory |
+        (geometryChanged ? RenderChangeBits::Geometry : RenderChangeBits::Lighting), false);
+}
+
+void RenderWorld::publishSceneChange(RenderChangeBits changes, bool contentChanged)
+{
     if (scene_ != nullptr && scene_->sceneGraph().lifetimeRevision() != sceneGraphLifetimeRevision_) {
         // Revert/clear can replace a SceneDocument at the same address without
         // going through the normal editor load completion path.
@@ -50,10 +63,7 @@ void RenderWorld::notifySceneChanged(RenderChangeBits changes)
     }
     sceneResourceIdentity_ = scene_ != nullptr ? scene_->resourceIdentity() : 0;
     ++sceneRevision_;
-    if (hasRenderChange(changes, RenderChangeBits::Geometry) ||
-        hasRenderChange(changes, RenderChangeBits::Material)) {
-        ++sceneContentRevision_;
-    }
+    if (contentChanged) { ++sceneContentRevision_; }
     if (hasRenderChange(changes, RenderChangeBits::Lighting)) { ++nonSunLightingRevision_; }
     pendingChanges_ |= changes;
 }

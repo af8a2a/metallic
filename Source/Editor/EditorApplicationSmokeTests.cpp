@@ -746,6 +746,129 @@ bool EditorApplication::runSliderDebugSmokeTest()
     return true;
 }
 
+bool EditorApplication::runGizmoSmokeTest()
+{
+    const auto expect = [](bool condition, const char* message) {
+        if (!condition) { spdlog::error("[Smoke Gizmo] {}", message); }
+        return condition;
+    };
+    const auto render = [&] {
+        auto profileFrame = profiler_.beginFrame();
+        return waitForFrameSlotBeforeInput() && renderFrame() && viewportPreviewValid_;
+    };
+    const auto drag = [&](int32_t nodeIndex, std::string name, bool geometry) {
+        const scene::ConstSceneObject object = scene_.objectForNode(nodeIndex);
+        if (!expect(object && object.hasComponent<scene::TransformComponent>(), "Find editable Sponza node")) {
+            return false;
+        }
+        resetTransformHistory();
+        sceneSelection_ = SceneSelection{
+            .type = SceneSelectionType::Node,
+            .object = object.entity(),
+            .sceneLifetimeRevision = scene_.sceneGraph().lifetimeRevision(),
+            .index = nodeIndex,
+            .nodeIndex = nodeIndex,
+        };
+        const auto& transform = object.getComponent<scene::TransformComponent>();
+        const float3 position(transform.worldMatrix.a03, transform.worldMatrix.a13, transform.worldMatrix.a23);
+        applySceneCamera(scene::RenderCamera{
+            .eye = position + float3(7.2f, 2.65f, 0.35f),
+            .center = position + float3(0.0f, 0.75f, 0.0f),
+            .yfov = 1.047197551196598,
+            .znear = 0.05,
+            .zfar = 100.0,
+        });
+        auto& input = *gizmoSmokeInput_;
+        input.pointer.reset();
+        constexpr uint32_t kReadyFrameLimit = 120;
+        constexpr uint32_t kWarmupFrames = 12;
+        uint32_t readyFrames = 0;
+        for (uint32_t frame = 0; frame < kReadyFrameLimit && readyFrames < kWarmupFrames; ++frame) {
+            if (!render()) { return false; }
+            readyFrames = input.center ? readyFrames + 1 : 0;
+        }
+        if (!expect(readyFrames == kWarmupFrames, "Viewport gizmo becomes available after scene streaming")) {
+            return false;
+        }
+
+        const auto [centerX, centerY] = *input.center;
+        const auto before = transform.localMatrix;
+        input.pointer = std::array{centerX, centerY};
+        if (!render() || !expect(viewportGizmoCapturingMouse_, "Pointer hovers the translation handle")) {
+            return false;
+        }
+        input.mouseDown = true;
+        if (!render() || !expect(gizmoWasUsing_, "Mouse press starts the translation gesture")) { return false; }
+
+        constexpr uint32_t kDragFrames = 16;
+        double frameMilliseconds = 0.0;
+        double bindingMilliseconds = 0.0;
+        uint64_t recompiledPasses = 0;
+        const auto geometryBefore = scene_.geometryTransformRevision();
+        const auto graphGeneration = graphExecutor_->executionStats().graphGeneration;
+        for (uint32_t frame = 1; frame <= kDragFrames; ++frame) {
+            const auto previous = transform.localMatrix;
+            input.pointer = std::array{centerX + 2.0f * float(frame), centerY};
+            const auto begin = std::chrono::steady_clock::now();
+            if (!render() || !expect(gizmoWasUsing_ && !scene::matrixNearlyEqual(transform.localMatrix, previous),
+                    "Each drag frame updates the selected transform")) {
+                return false;
+            }
+            frameMilliseconds += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - begin).count();
+            const auto& stats = graphExecutor_->executionStats();
+            const auto refresh = std::ranges::find(stats.preparation, "Refresh scene bindings",
+                &render::RenderGraphProfileSection::name);
+            if (!expect(stats.graphGeneration == graphGeneration && refresh != stats.preparation.end(),
+                    "RenderGraph executes the drag frame without rebuilding the graph")) {
+                return false;
+            }
+            bindingMilliseconds += refresh->cpuMilliseconds;
+            const auto recompiles = std::ranges::find(refresh->cpuWork, "recompiledPasses",
+                &render::CPUProfileWorkCounter::name);
+            if (recompiles != refresh->cpuWork.end()) { recompiledPasses += recompiles->value; }
+        }
+        input.mouseDown = false;
+        if (!render() || !expect(!gizmoWasUsing_ && transformCommands_.size() == 1 && scene_.dirty(),
+                "Mouse release commits one undoable transform")) {
+            return false;
+        }
+        if (!expect((scene_.geometryTransformRevision() != geometryBefore) == geometry,
+                "Mesh motion updates the geometry revision and camera motion preserves it")) {
+            return false;
+        }
+        const auto after = transform.localMatrix;
+        undoTransform();
+        if (!expect(scene::matrixNearlyEqual(transform.localMatrix, before) && !scene_.dirty(),
+                "Undo restores the original transform") || !render()) {
+            return false;
+        }
+        redoTransform();
+        if (!expect(scene::matrixNearlyEqual(transform.localMatrix, after) && scene_.dirty(),
+                "Redo restores the completed drag") || !render()) {
+            return false;
+        }
+        spdlog::info("[Smoke Gizmo] node='{}' frames={} meanFrameMs={:.3f} meanBindingRefreshMs={:.3f} recompiledPasses={}",
+            name, kDragFrames, frameMilliseconds / kDragFrames, bindingMilliseconds / kDragFrames, recompiledPasses);
+        return true;
+    };
+
+    viewportView_.setRenderResolution(640, 360);
+    const auto& cameras = scene_.cameras();
+    const auto camera = std::ranges::find(cameras, "Floor Decals", &scene::RenderCamera::name);
+    if (camera != cameras.end() && !drag(camera->nodeIndex, camera->name, false)) { return false; }
+    const auto& nodes = scene_.nodes();
+    const auto mesh = std::ranges::find(nodes, "Sponza Opaque", &scene::SceneNode::name);
+    if (!expect(mesh != nodes.end(), "Sponza Opaque is available in the chosen sample") ||
+        !drag(static_cast<int32_t>(mesh - nodes.begin()), mesh->name, true)) {
+        return false;
+    }
+    if (const char* path = std::getenv("METALLIC_GIZMO_SMOKE_CAPTURE"); path && *path) {
+        return expect(exportSmokeMainViewport(path), "Export the final editor frame as a PPM image");
+    }
+    return true;
+}
+
 bool EditorApplication::runMultiViewportSmokeTest()
 {
     auto expect = [](bool condition, const char* message) {

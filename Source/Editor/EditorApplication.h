@@ -22,6 +22,7 @@
 #include <array>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -47,7 +48,8 @@ public:
         bool gpuDrivenScenesOnly = false,
         bool skipShaderWarmup = true,
         render::LookDevRenderPath lookDevRenderPath = render::LookDevRenderPath::Comparison,
-        const char* resourceInspectorSmokeOutput = nullptr);
+        const char* resourceInspectorSmokeOutput = nullptr,
+        bool gizmoSmokeTest = false);
 
 private:
     enum class PendingSceneAction : int32_t;
@@ -60,6 +62,8 @@ private:
     bool renderFrame();
     bool runMultiViewportSmokeTest();
     bool runSliderDebugSmokeTest();
+    bool runGizmoSmokeTest();
+    bool exportSmokeMainViewport(const std::filesystem::path& path);
     bool runSceneSwitchSmokeTest();
     bool runExitSmokeTest();
     bool runZorahFullRoamBenchmark();
@@ -185,6 +189,7 @@ private:
     void addRecentScenePath(const std::filesystem::path& path);
     void applyLoadedSceneToRenderGraph(const std::filesystem::path& path);
     void applyLoadedSceneCamera();
+    void applySceneCamera(const scene::RenderCamera& camera);
     void setEnvironmentPath(const std::filesystem::path& path);
     void addRenderGraphNode(std::string type, ImVec2 screenPosition);
     void markRenderGraphOutput(std::string outputName);
@@ -338,6 +343,12 @@ private:
     render::RenderGraphProperties cpuJobBenchmarkConfig_;
     uint32_t cpuJobRecordingWorkerLimit_ = 0;
     bool smokeTest_ = false;
+    struct GizmoSmokeInput {
+        std::optional<std::array<float, 2>> pointer;
+        std::optional<std::array<float, 2>> center;
+        bool mouseDown = false;
+    };
+    std::optional<GizmoSmokeInput> gizmoSmokeInput_;
     bool waitForGraphicsDebugger_ = false;
     bool nsightGraphicsCaptureRequested_ = false;
     render::profiling::NsightCaptureMode nsightMode_ = render::profiling::NsightCaptureMode::GPUTrace;
