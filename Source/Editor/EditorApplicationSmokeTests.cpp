@@ -758,6 +758,30 @@ bool EditorApplication::runGizmoSmokeTest()
         return waitForFrameSlotBeforeInput() && renderFrame() && viewportPreviewValid_;
     };
     auto& input = *gizmoSmokeInput_;
+    const auto pressAlignView = [&](SDL_Keymod modifiers = SDL_KMOD_LCTRL | SDL_KMOD_LSHIFT) {
+        const auto sendKey = [&](bool down) {
+            SDL_Event event{};
+            event.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+            event.key.windowID = SDL_GetWindowID(window_);
+            event.key.scancode = SDL_SCANCODE_F;
+            event.key.key = SDLK_F;
+            event.key.mod = down ? modifiers : SDL_KMOD_NONE;
+            event.key.down = down;
+            if (!expect(SDL_PushEvent(&event), "Send alignment key through SDL")) { return false; }
+            pollEvents();
+            return running_ && render();
+        };
+        return sendKey(true) && sendKey(false);
+    };
+    const auto cameraPose = [](const render::ViewCamera& camera) {
+        const float3 eye(camera.eye[0], camera.eye[1], camera.eye[2]);
+        const float3 center(camera.center[0], camera.center[1], camera.center[2]);
+        const float3 up(camera.up[0], camera.up[1], camera.up[2]);
+        const float3 forward = normalize(center - eye);
+        const float3 right = normalize(cross(forward, up));
+        return float4x4(float4(right, 0.0f), float4(cross(right, forward), 0.0f),
+            float4(-forward, 0.0f), float4(eye, 1.0f));
+    };
     const auto boundsEdgesDrawn = [&](std::optional<size_t> edgeCount = std::nullopt) {
         return !input.boundsEdges.empty() && (!edgeCount || input.boundsEdges.size() == *edgeCount) &&
             std::ranges::all_of(input.boundsEdges, [](const auto& edge) {
@@ -895,6 +919,37 @@ bool EditorApplication::runGizmoSmokeTest()
         const auto* selected = selectedDecal();
         return expect(selected && selected->id == decalId, "Click the Floor Medallion in the Scene Graph");
     };
+    const auto sceneBrowserHasInput = [](ImGuiWindow* browser) {
+        const auto& context = *ImGui::GetCurrentContext();
+        return context.NavWindow && ImGui::IsWindowChildOf(context.NavWindow, browser, false, false) &&
+            context.HoveredWindow && ImGui::IsWindowChildOf(context.HoveredWindow, browser, false, false);
+    };
+    const auto clickSceneBrowserWorldItem = [&](scene::WorldItemId item, ImGuiWindow* browser) {
+        ImGui::FocusWindow(browser);
+        // Expand the item's ancestry, then clear selection so the click must select the actual row.
+        sceneSelection_ = SceneSelection{
+            .type = SceneSelectionType::WorldItem,
+            .sceneLifetimeRevision = scene_.sceneGraph().lifetimeRevision(),
+            .worldItem = item,
+        };
+        sceneTreeSelection_ = scene::kNullSceneEntity;
+        if (!render()) { return false; }
+        ImGui::SetScrollY(browser, browser->ScrollMax.y);
+        input.sceneTreeRow.reset();
+        input.sceneTreeWorldItemProbe = item;
+        if (!render() || !expect(input.sceneTreeRow.has_value(), "Find the Arcade spotlight row in the Scene Browser")) {
+            return false;
+        }
+        input.pointer = *input.sceneTreeRow;
+        input.sceneTreeWorldItemProbe.reset();
+        sceneSelection_ = {};
+        if (!render()) { return false; }
+        input.mouseDown = true;
+        if (!render()) { return false; }
+        input.mouseDown = false;
+        return render() && expect(selectedWorldItem() == item && sceneBrowserHasInput(browser),
+            "Click Arcade spotlight while leaving the Scene Browser focused and hovered");
+    };
     const auto checkShowcaseWorldItems = [&] {
         using scene::WorldItemId;
         using scene::WorldItemType;
@@ -1020,13 +1075,34 @@ bool EditorApplication::runGizmoSmokeTest()
             undoTransform();
             const auto name = scene_.worldItemName(item);
             spdlog::info("[Smoke Gizmo] worldItem='{}' frames={} boundEdges={}", name, kDragFrames, afterBounds.size());
+            if (name == "Arcade spotlight") {
+                resetTransformHistory();
+                auto* browser = ImGui::FindWindowByName("Scene Browser");
+                if (!expect(browser != nullptr, "Find the Scene Browser") ||
+                    !clickSceneBrowserWorldItem(item, browser)) { return false; }
+                const auto before = *worldItemTransform(item);
+                if (!pressAlignView(SDL_KMOD_LSHIFT) ||
+                    !expect(editor::worldItemGizmoTransformsEqual(*worldItemTransform(item), before, GizmoOperation::AlignPose) &&
+                        transformCommands_.empty(), "Shift+F alone leaves the selected spotlight in place")) { return false; }
+                if (!pressAlignView()) { return false; }
+                const auto after = *worldItemTransform(item);
+                const auto expected = editor::editWorldItemGizmoTransform(before, cameraPose(cameraBefore), GizmoOperation::AlignPose);
+                if (!expect(expected && editor::worldItemGizmoTransformsEqual(after, *expected, GizmoOperation::AlignPose) &&
+                        viewportView_.camera() == cameraBefore && sceneBrowserHasInput(browser) &&
+                        transformCommands_.size() == 1 && scene_.dirty(),
+                        "Ctrl+Shift+F aligns Arcade spotlight with Scene Browser focused and hovered")) { return false; }
+                undoTransform();
+                if (!expect(editor::worldItemGizmoTransformsEqual(*worldItemTransform(item), before, GizmoOperation::AlignPose) &&
+                        !scene_.dirty(), "One undo restores Arcade spotlight")) { return false; }
+                spdlog::info("[Smoke Gizmo] Ctrl+Shift+F aligns Arcade spotlight after a Scene Browser click");
+            }
             if (item != iesSpotItem) { continue; }
 
             const auto readSpotlight = [&] {
                 return *std::ranges::find(scene_.lighting().lights, item.id, &scene::PunctualLight::stableId);
             };
             const auto samePose = [](const scene::PunctualLight& a, const scene::PunctualLight& b) {
-                return length(a.direction - b.direction) < 0.0001f &&
+                return length(a.position - b.position) < 0.0001f && length(a.direction - b.direction) < 0.0001f &&
                     std::abs(a.iesRollDegrees - b.iesRollDegrees) < 0.001f &&
                     std::abs(a.properties.range - b.properties.range) < 0.0001;
             };
@@ -1058,6 +1134,32 @@ bool EditorApplication::runGizmoSmokeTest()
             }
             gizmoOperation_ = GizmoOperation::Translate;
             spdlog::info("[Smoke Gizmo] IES spotlight rotate and scale preserve projector parameters and support undo and redo");
+
+            resetTransformHistory();
+            auto alignCamera = viewportView_.camera();
+            alignCamera.eye = {4.6f, 2.65f, 0.1f};
+            alignCamera.center = {1.72f, 0.05f, -0.15f};
+            alignCamera.up = {0.0f, 1.0f, -0.3f};
+            if (!expect(viewportView_.setCamera(alignCamera), "Set a rolled view for IES spotlight alignment")) { return false; }
+            const auto beforeAlign = readSpotlight();
+            if (!pressAlignView()) { return false; }
+            const auto afterAlign = readSpotlight();
+            if (!expect(scene::matrixNearlyEqual(editor::worldItemGizmoMatrix(editor::captureWorldItemGizmoTransform(afterAlign)),
+                    cameraPose(alignCamera), 0.0001f) && viewportView_.camera() == alignCamera &&
+                    afterAlign.iesProfile == beforeAlign.iesProfile &&
+                    scene::lightPropertiesNearlyEqual(afterAlign.properties, beforeAlign.properties) &&
+                    transformCommands_.size() == 1 && scene_.dirty(),
+                    "Ctrl+Shift+F aligns the IES spotlight position, direction and roll in one edit")) { return false; }
+            if (const char* path = std::getenv("METALLIC_ALIGN_VIEW_GIZMO_SMOKE_CAPTURE"); path && *path &&
+                !expect(exportSmokeMainViewport(path), "Export the view-aligned IES spotlight")) { return false; }
+            undoTransform();
+            if (!expect(samePose(readSpotlight(), beforeAlign) && !scene_.dirty(),
+                    "Undo restores the IES spotlight pose")) { return false; }
+            redoTransform();
+            if (!expect(samePose(readSpotlight(), afterAlign) && scene_.dirty(),
+                    "Redo restores the view-aligned IES spotlight pose")) { return false; }
+            undoTransform();
+            spdlog::info("[Smoke Gizmo] Ctrl+Shift+F aligns the IES spotlight to the camera and supports undo and redo");
         }
         return true;
     };
@@ -1253,6 +1355,28 @@ bool EditorApplication::runGizmoSmokeTest()
         if (!viewportView_.setCamera(perspective)) { return false; }
         undoTransform();
         spdlog::info("[Smoke Gizmo] Decal bounds follow drag, undo and redo, and respect the toggle and near-plane clipping");
+
+        resetTransformHistory();
+        const auto beforeAlign = *selectedDecal();
+        auto expected = cameraPose(perspective);
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+            const auto& column = beforeAlign.worldFromDecal[axis];
+            expected[axis] = expected[axis] * length(float3(column.x, column.y, column.z));
+        }
+        if (!pressAlignView()) { return false; }
+        const auto afterAlign = *selectedDecal();
+        if (!expect(scene::matrixNearlyEqual(afterAlign.worldFromDecal, expected, 0.0001f) &&
+                afterAlign.baseColorTexture == beforeAlign.baseColorTexture && viewportView_.camera() == perspective &&
+                transformCommands_.size() == 1 && scene_.dirty(),
+                "Ctrl+Shift+F aligns the decal to the camera and preserves its projector dimensions")) { return false; }
+        undoTransform();
+        if (!expect(scene::matrixNearlyEqual(selectedDecal()->worldFromDecal, beforeAlign.worldFromDecal) && !scene_.dirty(),
+                "Undo restores the decal projector pose")) { return false; }
+        redoTransform();
+        if (!expect(scene::matrixNearlyEqual(selectedDecal()->worldFromDecal, afterAlign.worldFromDecal) && scene_.dirty(),
+                "Redo restores the view-aligned decal projector pose")) { return false; }
+        undoTransform();
+        spdlog::info("[Smoke Gizmo] Ctrl+Shift+F aligns the decal to the camera and supports undo and redo");
         if (!checkShowcaseWorldItems()) { return false; }
     }
     const auto& nodes = scene_.nodes();

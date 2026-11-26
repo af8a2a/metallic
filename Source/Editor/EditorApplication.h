@@ -150,7 +150,9 @@ private:
         GizmoOperation operation);
     void discardRemovedWorldItemEdits();
     int32_t selectedNodeIndex() const;
-    bool setSelectedObjectWorldMatrix(const float4x4& worldMatrix, std::string& reason);
+    bool canAlignSelectedObjectToView() const;
+    void alignSelectedObjectToView();
+    bool setSelectedObjectWorldMatrix(const float4x4& worldMatrix, GizmoOperation operation, std::string& reason);
     void notifySceneTransformChanged(bool geometryChanged);
     void notifyScenePropertiesChanged();
     bool setDecalWorldMatrix(const scene::RenderDecal& decal, const float4x4& worldMatrix);

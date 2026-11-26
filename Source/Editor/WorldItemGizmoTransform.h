@@ -13,7 +13,7 @@
 
 namespace metallic::editor {
 
-enum class WorldItemGizmoOperation { Translate, Rotate, Scale };
+enum class WorldItemGizmoOperation { Translate, Rotate, Scale, AlignPose };
 
 struct WorldItemGizmoCapabilities {
     bool rotate = false;
@@ -229,17 +229,19 @@ inline std::optional<WorldItemGizmoTransform> editWorldItemGizmoTransform(WorldI
     const float4x4& matrix, WorldItemGizmoOperation operation)
 {
     using namespace world_item_gizmo_detail;
-    if (operation == WorldItemGizmoOperation::Translate) {
+    const bool align = operation == WorldItemGizmoOperation::AlignPose;
+    if (operation == WorldItemGizmoOperation::Translate || align) {
         const auto position = xyz(matrix[3]);
         if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z)) {
             return std::nullopt;
         }
         std::visit([&](auto& value) { value.position = position; }, transform);
-        return transform;
+        if (!align) { return transform; }
     }
 
     const auto capabilities = worldItemGizmoCapabilities(transform);
-    if (operation == WorldItemGizmoOperation::Rotate ? !capabilities.rotate : !capabilities.scale) {
+    if (align && !capabilities.rotate) { return transform; }
+    if (operation == WorldItemGizmoOperation::Scale ? !capabilities.scale : !capabilities.rotate) {
         return std::nullopt;
     }
     std::array axes{xyz(matrix[0]), xyz(matrix[1]), xyz(matrix[2])};
@@ -268,7 +270,8 @@ inline bool worldItemGizmoTransformsEqual(const WorldItemGizmoTransform& lhs, co
         const auto* b = std::get_if<T>(&rhs);
         if (b == nullptr) { return false; }
         if (operation == WorldItemGizmoOperation::Translate) { return close(a.position, b->position); }
-        const bool rotation = operation == WorldItemGizmoOperation::Rotate;
+        if (operation == WorldItemGizmoOperation::AlignPose && !close(a.position, b->position)) { return false; }
+        const bool rotation = operation != WorldItemGizmoOperation::Scale;
         if constexpr (std::is_same_v<T, FogGizmoTransform>) {
             const auto& x = a.rotationDegrees;
             const auto& y = b->rotationDegrees;
@@ -288,12 +291,13 @@ inline void applyWorldItemGizmoTransform(environment::LocalFogVolume& volume, co
     WorldItemGizmoOperation operation)
 {
     const auto& value = std::get<FogGizmoTransform>(transform);
-    switch (operation) {
-    case WorldItemGizmoOperation::Translate:
+    if (operation == WorldItemGizmoOperation::Translate || operation == WorldItemGizmoOperation::AlignPose) {
         volume.centerMeters = {value.position.x, value.position.y, value.position.z};
-        break;
-    case WorldItemGizmoOperation::Rotate: volume.rotationDegrees = value.rotationDegrees; break;
-    case WorldItemGizmoOperation::Scale: volume.radiusMeters = value.radius; break;
+    }
+    if (operation == WorldItemGizmoOperation::Rotate || operation == WorldItemGizmoOperation::AlignPose) {
+        volume.rotationDegrees = value.rotationDegrees;
+    } else if (operation == WorldItemGizmoOperation::Scale) {
+        volume.radiusMeters = value.radius;
     }
 }
 
@@ -301,13 +305,15 @@ inline void applyWorldItemGizmoTransform(scene::PunctualLight& light, const Worl
     WorldItemGizmoOperation operation)
 {
     const auto& value = std::get<PunctualLightGizmoTransform>(transform);
-    switch (operation) {
-    case WorldItemGizmoOperation::Translate: light.position = value.position; break;
-    case WorldItemGizmoOperation::Rotate:
+    if (operation == WorldItemGizmoOperation::Translate || operation == WorldItemGizmoOperation::AlignPose) {
+        light.position = value.position;
+    }
+    if (operation == WorldItemGizmoOperation::Rotate ||
+        (operation == WorldItemGizmoOperation::AlignPose && (value.spot || value.usesIES))) {
         light.direction = value.direction;
         if (value.usesIES && light.iesProfile) { light.iesRollDegrees = value.iesRollDegrees; }
-        break;
-    case WorldItemGizmoOperation::Scale: light.properties.range = value.range; break;
+    } else if (operation == WorldItemGizmoOperation::Scale) {
+        light.properties.range = value.range;
     }
 }
 
@@ -315,17 +321,16 @@ inline void applyWorldItemGizmoTransform(scene::RectLight& light, const WorldIte
     WorldItemGizmoOperation operation)
 {
     const auto& value = std::get<RectLightGizmoTransform>(transform);
-    switch (operation) {
-    case WorldItemGizmoOperation::Translate: light.position = value.position; break;
-    case WorldItemGizmoOperation::Rotate:
+    if (operation == WorldItemGizmoOperation::Translate || operation == WorldItemGizmoOperation::AlignPose) {
+        light.position = value.position;
+    }
+    if (operation == WorldItemGizmoOperation::Rotate || operation == WorldItemGizmoOperation::AlignPose) {
         light.direction = value.direction;
         light.rollDegrees = value.rollDegrees;
-        break;
-    case WorldItemGizmoOperation::Scale:
+    } else if (operation == WorldItemGizmoOperation::Scale) {
         light.width = value.width;
         light.height = value.height;
         light.range = value.range;
-        break;
     }
 }
 

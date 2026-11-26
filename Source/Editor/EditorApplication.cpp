@@ -66,6 +66,7 @@ constexpr const char* kRenderPassDragPayload = "METALLIC_RENDER_PASS_TYPE";
 constexpr uint32_t kSwapchainImageCount = 3;
 constexpr uint32_t kMinSwapchainImageCount = 2;
 constexpr int kNoViewportCameraDragButton = -1;
+constexpr ImGuiKeyChord kAlignSelectionToViewShortcut = ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_F;
 constexpr float kKeyboardMoveRate = 2.5f;
 constexpr float kFastCameraMoveMultiplier = 5.0f;
 constexpr float kSlowCameraMoveMultiplier = 0.1f;
@@ -3805,6 +3806,10 @@ void EditorApplication::drawDockspace()
                     transformCommandCursor_ < transformCommands_.size())) {
                 redoTransform();
             }
+            if (ImGui::MenuItem("Align Selection to View", ImGui::GetKeyChordName(kAlignSelectionToViewShortcut),
+                    false, canAlignSelectedObjectToView())) {
+                alignSelectedObjectToView();
+            }
             ImGui::EndMenu();
         }
 
@@ -3831,6 +3836,14 @@ void EditorApplication::drawPanels()
     {
         auto profileScope = profiler_.editorScope("Scene Panel");
         drawScenePanel();
+    }
+    // Process the selection click first. Camera alignment only needs the scene and the view camera.
+    if (ImGui::IsKeyChordPressed(kAlignSelectionToViewShortcut) && !ImGui::GetIO().WantTextInput &&
+        ImGui::GetTopMostPopupModal() == nullptr && !gizmoWasUsing_ && !ImGuizmo::IsUsingAny() &&
+        !inspectorTransformEditing_ && !inspectorPropertyEditing_ &&
+        !(viewportCameraDragButton_ != kNoViewportCameraDragButton && ImGui::IsMouseDown(viewportCameraDragButton_)) &&
+        canAlignSelectedObjectToView()) {
+        alignSelectedObjectToView();
     }
     {
         auto profileScope = profiler_.editorScope("Runtime Settings Panel");
@@ -6078,19 +6091,79 @@ bool EditorApplication::setDecalWorldMatrix(const scene::RenderDecal& decal, con
     return true;
 }
 
+bool EditorApplication::canAlignSelectedObjectToView() const
+{
+    if (!scene_.valid() || pendingSceneLoad_.valid() || pendingSceneResourcePreparation_ || fullRoamActive_) {
+        return false;
+    }
+    if (selectedDecal() || selectedWorldItem()) { return true; }
+    const auto object = selectedSceneObject();
+    return object.hasComponent<scene::TransformComponent>() && object.hasComponent<scene::SourceNodeComponent>() &&
+        !object.hasComponent<scene::GeneratedComponent>();
+}
+
+void EditorApplication::alignSelectedObjectToView()
+{
+    const auto item = selectedWorldItem();
+    const auto* decal = selectedDecal();
+    const auto* instance = selectedRenderNode();
+    const auto object = selectedSceneObject();
+    const auto* transform = object.tryGetComponent<scene::TransformComponent>();
+    const auto* currentWorld = decal ? &decal->worldFromDecal : instance ? &instance->worldMatrix :
+        transform ? &transform->worldMatrix : nullptr;
+    if (!item && !currentWorld) { return; }
+
+    const auto camera = cameraFrameFrom(viewportView_.cameraProperties());
+    // Cameras, decal projectors and directional local lights all look along local -Z.
+    float4x4 world(float4(camera.right, 0.0f), float4(camera.viewUp, 0.0f),
+        float4(-camera.forward, 0.0f), float4(camera.eye, 1.0f));
+    if (currentWorld) {
+        const float determinant = affineDeterminant(*currentWorld);
+        if (!std::isfinite(determinant) || determinant == 0.0f) {
+            sceneStatus_ = "The selected transform is singular.";
+            return;
+        }
+        for (size_t axis = 0; axis < 3; ++axis) {
+            const auto& column = (*currentWorld)[axis];
+            const float scale = std::hypot(column.x, column.y, column.z);
+            world[axis] = world[axis] * (axis == 0 && determinant < 0.0f ? -scale : scale);
+        }
+    }
+
+    constexpr auto operation = GizmoOperation::AlignPose;
+    const auto capture = [&]() -> SceneEditValue {
+        if (item) { return WorldItemTransformEditValue{*item, *worldItemTransform(*item), operation}; }
+        if (const auto* selected = selectedDecal()) {
+            return DecalTransformEditValue{selected->id, selected->worldFromDecal};
+        }
+        if (instance) { return PrimitiveTransformEditValue{sceneSelection_.renderNodeIndex, instance->localTransform}; }
+        return transform->localMatrix;
+    };
+    finishActiveTransformTransactions();
+    auto before = capture();
+    std::string reason;
+    if (!setSelectedObjectWorldMatrix(world, operation, reason)) {
+        sceneStatus_ = std::move(reason);
+        return;
+    }
+    pushSceneEditCommand(object.entity(), scene_.sceneGraph().lifetimeRevision(), std::move(before), capture());
+    sceneStatus_ = "Aligned selection to the viewport camera.";
+}
+
 bool EditorApplication::setSelectedObjectWorldMatrix(
     const float4x4& worldMatrix,
+    GizmoOperation operation,
     std::string& reason)
 {
     if (const auto item = selectedWorldItem()) {
         const auto current = *worldItemTransform(*item);
         const auto* start = std::get_if<WorldItemTransformEditValue>(&gizmoStartValue_);
         // ImGuizmo reports the scale relative to the beginning of the drag.
-        const auto& base = gizmoOperation_ == GizmoOperation::Scale && start && start->item == *item
+        const auto& base = operation == GizmoOperation::Scale && start && start->item == *item
             ? start->transform : current;
-        const auto edited = editor::editWorldItemGizmoTransform(base, worldMatrix, gizmoOperation_);
-        if (edited && (editor::worldItemGizmoTransformsEqual(current, *edited, gizmoOperation_) ||
-                setWorldItemTransform(*item, *edited, gizmoOperation_))) { return true; }
+        const auto edited = editor::editWorldItemGizmoTransform(base, worldMatrix, operation);
+        if (edited && (editor::worldItemGizmoTransformsEqual(current, *edited, operation) ||
+                setWorldItemTransform(*item, *edited, operation))) { return true; }
         reason = "The fog or light transform edit was rejected.";
         return false;
     }
@@ -6115,7 +6188,7 @@ bool EditorApplication::setSelectedObjectWorldMatrix(
     if (const auto* instance = selectedRenderNode()) {
         if (scene::matrixNearlyEqual(instance->worldMatrix, worldMatrix)) { return true; }
         const auto index = sceneSelection_.renderNodeIndex;
-        const bool applied = gizmoOperation_ == GizmoOperation::Translate
+        const bool applied = operation == GizmoOperation::Translate
             ? scene_.setRenderNodeWorldPosition(index, float3(worldMatrix.a03, worldMatrix.a13, worldMatrix.a23))
             : scene_.setRenderNodeWorldTransform(index, worldMatrix);
         if (!applied) {
@@ -7449,7 +7522,7 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
             editedWorld.a23 -= pivotOffset.z;
         }
         std::string reason;
-        if (!setSelectedObjectWorldMatrix(editedWorld, reason) && !reason.empty()) {
+        if (!setSelectedObjectWorldMatrix(editedWorld, gizmoOperation, reason) && !reason.empty()) {
             sceneStatus_ = reason;
         }
     }
