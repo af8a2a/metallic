@@ -1011,12 +1011,18 @@ bool readInteger(const nlohmann::json& value, T& result)
     return true;
 }
 
-bool readPrimitiveOffset(const nlohmann::json& value, int32_t& primitiveIndex, float3& localOffset)
+bool readPrimitiveOverride(const nlohmann::json& value, bool legacyOffset,
+    int32_t& primitiveIndex, float4x4& localTransform)
 {
     if (!value.is_object() || !value.contains("primitiveIndex") ||
         !readInteger(value["primitiveIndex"], primitiveIndex) || primitiveIndex < 0 ||
         !value.contains("primitiveName") || !value["primitiveName"].is_string()) {
         return false;
+    }
+    if (!legacyOffset) {
+        const auto matrix = value.find("localMatrix");
+        std::string reason;
+        return matrix != value.end() && readMatrix(*matrix, localTransform, reason);
     }
     const auto offset = value.find("offset");
     if (offset == value.end() || !offset->is_array() || offset->size() != 3 ||
@@ -1024,7 +1030,7 @@ bool readPrimitiveOffset(const nlohmann::json& value, int32_t& primitiveIndex, f
         return false;
     }
     const auto components = offset->get<std::array<float, 3>>();
-    localOffset = float3(components[0], components[1], components[2]);
+    localTransform.SetupByTranslation(float3(components[0], components[1], components[2]));
     return true;
 }
 
@@ -1492,6 +1498,20 @@ bool SceneDocument::setObjectWorldMatrix(SceneEntity object, const float4x4& wor
         !Scene::setObjectWorldMatrix(object, worldMatrix)) {
         return false;
     }
+    dirty_ = true;
+    return true;
+}
+
+bool SceneDocument::setRenderNodeLocalTransform(int32_t renderNodeIndex, const float4x4& localTransform)
+{
+    if (!Scene::setRenderNodeLocalTransform(renderNodeIndex, localTransform)) { return false; }
+    dirty_ = true;
+    return true;
+}
+
+bool SceneDocument::setRenderNodeWorldTransform(int32_t renderNodeIndex, const float4x4& worldTransform)
+{
+    if (!Scene::setRenderNodeWorldTransform(renderNodeIndex, worldTransform)) { return false; }
     dirty_ = true;
     return true;
 }
@@ -2341,37 +2361,38 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
             }
         }
 
-        if (version >= 3 && overrideValue.contains("primitiveOffsets")) {
-            recognizedOverride = true;
-            const auto& offsets = overrideValue["primitiveOffsets"];
-            const MeshComponent* mesh = object.tryGetComponent<MeshComponent>();
-            if (mesh == nullptr || !offsets.is_array()) {
-                appendWarning(documentWarning_, "Skipped " + nodeDescription + " primitiveOffsets.");
-            } else {
-                for (const auto& offset : offsets) {
+        if (version >= 3) {
+            const auto applyPrimitiveOverrides = [&](const char* field, bool legacyOffset) {
+                const auto values = overrideValue.find(field);
+                if (values == overrideValue.end()) { return; }
+                recognizedOverride = true;
+                const MeshComponent* mesh = object.tryGetComponent<MeshComponent>();
+                if (mesh == nullptr || !values->is_array()) {
+                    appendWarning(documentWarning_, "Skipped " + nodeDescription + ' ' + field + '.');
+                    return;
+                }
+                for (const auto& value : *values) {
                     int32_t primitiveIndex = kInvalidSceneIndex;
-                    float3 localOffset;
-                    if (!readPrimitiveOffset(offset, primitiveIndex, localOffset)) {
-                        appendWarning(documentWarning_, "Skipped an invalid " + nodeDescription + " primitive offset.");
+                    float4x4 localTransform;
+                    if (!readPrimitiveOverride(value, legacyOffset, primitiveIndex, localTransform)) {
+                        appendWarning(documentWarning_, "Skipped an invalid " + nodeDescription + " primitive transform.");
                         continue;
                     }
                     const auto instance = std::ranges::find_if(mesh->renderNodeIndices, [&](int32_t renderNodeIndex) {
                         const auto& renderNode = renderNodes()[static_cast<size_t>(renderNodeIndex)];
                         const auto& primitive = renderPrimitives()[static_cast<size_t>(renderNode.renderPrimitiveIndex)];
-                        return primitive.primitiveIndex == primitiveIndex && offset["primitiveName"] == primitive.name;
+                        return primitive.primitiveIndex == primitiveIndex && value["primitiveName"] == primitive.name;
                     });
                     if (instance == mesh->renderNodeIndices.end()) {
-                        appendWarning(documentWarning_, "Skipped " + nodeDescription + " offset for a changed primitive.");
-                    } else {
-                        const float3& currentOffset = renderNodes()[static_cast<size_t>(*instance)].localOffset;
-                        if ((currentOffset.x != localOffset.x || currentOffset.y != localOffset.y ||
-                             currentOffset.z != localOffset.z) &&
-                            !Scene::setRenderNodeLocalOffset(*instance, localOffset)) {
-                            appendWarning(documentWarning_, "Skipped an invalid " + nodeDescription + " primitive offset.");
-                        }
+                        appendWarning(documentWarning_, "Skipped " + nodeDescription + " transform for a changed primitive.");
+                    } else if (renderNodes()[static_cast<size_t>(*instance)].localTransform != localTransform &&
+                        !Scene::setRenderNodeLocalTransform(*instance, localTransform)) {
+                        appendWarning(documentWarning_, "Skipped an invalid " + nodeDescription + " primitive transform.");
                     }
                 }
-            }
+            };
+            applyPrimitiveOverrides("primitiveOffsets", true);
+            applyPrimitiveOverrides("primitiveTransforms", false);
         }
 
         if (version >= 3 && overrideValue.contains("camera")) {
@@ -2618,16 +2639,24 @@ bool SceneDocument::save(std::string& message)
         if (const MeshComponent* mesh = object.tryGetComponent<MeshComponent>()) {
             for (const int32_t renderNodeIndex : mesh->renderNodeIndices) {
                 const auto& instance = renderNodes()[static_cast<size_t>(renderNodeIndex)];
-                const float3& offset = instance.localOffset;
-                if (offset.x == 0.0f && offset.y == 0.0f && offset.z == 0.0f) {
+                if (instance.localTransform == float4x4::Identity()) {
                     continue;
                 }
                 const auto& primitive = renderPrimitives()[static_cast<size_t>(instance.renderPrimitiveIndex)];
-                nodeOverride["primitiveOffsets"].push_back({
+                nlohmann::json primitiveOverride{
                     {"primitiveIndex", primitive.primitiveIndex},
                     {"primitiveName", primitive.name},
-                    {"offset", {offset.x, offset.y, offset.z}},
-                });
+                };
+                const float3& offset = instance.localOffset;
+                float4x4 translation;
+                translation.SetupByTranslation(offset);
+                if (instance.localTransform == translation) {
+                    primitiveOverride["offset"] = {offset.x, offset.y, offset.z};
+                    nodeOverride["primitiveOffsets"].push_back(std::move(primitiveOverride));
+                } else {
+                    primitiveOverride["localMatrix"] = serializeMatrix(instance.localTransform);
+                    nodeOverride["primitiveTransforms"].push_back(std::move(primitiveOverride));
+                }
                 hasOverride = true;
             }
         }

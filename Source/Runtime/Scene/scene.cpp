@@ -406,14 +406,19 @@ float3 matrixTranslation(const float4x4& matrix)
     return float3(matrix.a03, matrix.a13, matrix.a23);
 }
 
-float4x4 renderNodeWorldMatrix(const float4x4& ownerWorldMatrix, const float3& localOffset)
+bool matrixIsAffine(const float4x4& matrix)
 {
-    if (localOffset.x == 0.0f && localOffset.y == 0.0f && localOffset.z == 0.0f) {
-        return ownerWorldMatrix;
-    }
-    float4x4 translation;
-    translation.SetupByTranslation(localOffset);
-    return ownerWorldMatrix * translation;
+    return matrix.a30 == 0.0f && matrix.a31 == 0.0f && matrix.a32 == 0.0f && matrix.a33 == 1.0f;
+}
+
+bool matrixIsFinite(const float4x4& matrix)
+{
+    return std::ranges::all_of(matrix.a, [](float value) { return std::isfinite(value); });
+}
+
+float4x4 renderNodeWorldMatrix(const float4x4& ownerWorldMatrix, const float4x4& localTransform)
+{
+    return localTransform == float4x4::Identity() ? ownerWorldMatrix : ownerWorldMatrix * localTransform;
 }
 
 Bounds transformBounds(const Bounds& bounds, const float4x4& matrix)
@@ -5413,28 +5418,64 @@ bool Scene::setObjectWorldMatrix(SceneEntity object, const float4x4& worldMatrix
     return true;
 }
 
-bool Scene::setRenderNodeLocalOffset(int32_t renderNodeIndex, const float3& localOffset)
+bool Scene::setRenderNodeLocalTransform(int32_t renderNodeIndex, const float4x4& localTransform)
 {
     if (!validIndex(renderNodeIndex, renderNodes_.size()) ||
-        !std::isfinite(localOffset.x) || !std::isfinite(localOffset.y) || !std::isfinite(localOffset.z)) {
+        !matrixIsAffine(localTransform) || !matrixIsFinite(localTransform)) {
         return false;
     }
     RenderNode& renderNode = renderNodes_[static_cast<size_t>(renderNodeIndex)];
-    if (renderNode.localOffset.x == localOffset.x && renderNode.localOffset.y == localOffset.y &&
-        renderNode.localOffset.z == localOffset.z) {
+    if (renderNode.localTransform == localTransform) {
+        return false;
+    }
+    float4x4 inverse = localTransform;
+    inverse.Invert();
+    if (!matrixIsFinite(inverse) || inverse.a33 == 0.0f) {
         return false;
     }
     const float4x4 worldMatrix = renderNodeWorldMatrix(
-        nodes_[static_cast<size_t>(renderNode.nodeIndex)].worldMatrix, localOffset);
-    if (!std::ranges::all_of(worldMatrix.a, [](float component) { return std::isfinite(component); })) {
+        nodes_[static_cast<size_t>(renderNode.nodeIndex)].worldMatrix, localTransform);
+    if (!matrixIsFinite(worldMatrix)) {
         return false;
     }
     sceneGraph_.advanceRenderNodeTransformRevision();
-    renderNode.localOffset = localOffset;
+    renderNode.localTransform = localTransform;
+    renderNode.localOffset = matrixTranslation(localTransform);
     renderNode.worldMatrix = worldMatrix;
     renderNode.transformRevision = transformRevision();
     refreshTransforms();
     return true;
+}
+
+bool Scene::setRenderNodeWorldTransform(int32_t renderNodeIndex, const float4x4& worldTransform)
+{
+    if (!validIndex(renderNodeIndex, renderNodes_.size()) ||
+        !matrixIsAffine(worldTransform) || !matrixIsFinite(worldTransform)) {
+        return false;
+    }
+    const RenderNode& renderNode = renderNodes_[static_cast<size_t>(renderNodeIndex)];
+    if (renderNode.worldMatrix == worldTransform) {
+        return false;
+    }
+    float4x4 worldToOwner = nodes_[static_cast<size_t>(renderNode.nodeIndex)].worldMatrix;
+    if (!matrixIsAffine(worldToOwner) || !SceneGraph::tryInvertAffineMatrix(worldToOwner)) {
+        return false;
+    }
+    // The general inverse can round the homogeneous component away from one.
+    worldToOwner.a33 = 1.0f;
+    return setRenderNodeLocalTransform(renderNodeIndex, worldToOwner * worldTransform);
+}
+
+bool Scene::setRenderNodeLocalOffset(int32_t renderNodeIndex, const float3& localOffset)
+{
+    if (!validIndex(renderNodeIndex, renderNodes_.size())) {
+        return false;
+    }
+    float4x4 localTransform = renderNodes_[static_cast<size_t>(renderNodeIndex)].localTransform;
+    localTransform.a03 = localOffset.x;
+    localTransform.a13 = localOffset.y;
+    localTransform.a23 = localOffset.z;
+    return setRenderNodeLocalTransform(renderNodeIndex, localTransform);
 }
 
 bool Scene::setRenderNodeWorldPosition(int32_t renderNodeIndex, const float3& worldPosition)
@@ -5605,7 +5646,7 @@ void Scene::refreshTransforms()
             continue;
         }
         const SceneNode& node = nodes_[static_cast<size_t>(renderNode.nodeIndex)];
-        const float4x4 worldMatrix = renderNodeWorldMatrix(node.worldMatrix, renderNode.localOffset);
+        const float4x4 worldMatrix = renderNodeWorldMatrix(node.worldMatrix, renderNode.localTransform);
         if (!matrixNearlyEqual(renderNode.worldMatrix, worldMatrix)) {
             renderNode.worldMatrix = worldMatrix;
             renderNode.transformRevision = revision;

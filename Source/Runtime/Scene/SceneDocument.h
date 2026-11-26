@@ -36,6 +36,8 @@ public:
     bool revert(std::string& message);
     bool setObjectLocalMatrix(SceneEntity object, const float4x4& localMatrix);
     bool setObjectWorldMatrix(SceneEntity object, const float4x4& worldMatrix);
+    bool setRenderNodeLocalTransform(int32_t renderNodeIndex, const float4x4& localTransform);
+    bool setRenderNodeWorldTransform(int32_t renderNodeIndex, const float4x4& worldTransform);
     bool setRenderNodeLocalOffset(int32_t renderNodeIndex, const float3& localOffset);
     bool setRenderNodeWorldPosition(int32_t renderNodeIndex, const float3& worldPosition);
     bool setObjectCameraProperties(SceneEntity object, const CameraProperties& properties);

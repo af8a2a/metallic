@@ -7085,7 +7085,7 @@ TEST(SceneEditing, CompositeDocumentRoundTrip)
     testCompositeSceneDocumentRoundTrip(prepareOutputDirectory());
 }
 
-TEST(SceneEditing, PrimitiveInstanceOffsetRoundTrip)
+TEST(SceneEditing, PrimitiveInstanceTransformRoundTrip)
 {
     using namespace metallic::scene;
     const auto directory = prepareOutputDirectory() / "primitive_instance_offset";
@@ -7144,17 +7144,72 @@ TEST(SceneEditing, PrimitiveInstanceOffsetRoundTrip)
 
     std::string message;
     ASSERT_TRUE(document.save(message)) << message;
+    nlohmann::json sidecar;
+    {
+        std::ifstream stream(manifestPath);
+        ASSERT_TRUE(stream.good());
+        stream >> sidecar;
+    }
+    ASSERT_EQ(sidecar["nodes"].size(), 1u);
+    ASSERT_EQ(sidecar["nodes"][0]["primitiveOffsets"].size(), 1u);
+    EXPECT_FALSE(sidecar["nodes"][0].contains("primitiveTransforms"));
     ASSERT_TRUE(document.load(manifestPath)) << document.lastLoadResult().error;
     EXPECT_TRUE(document.documentWarning().empty()) << document.documentWarning();
     EXPECT_FALSE(document.dirty());
     ASSERT_EQ(document.renderNodes().size(), 2u);
-    expectVec3(document.renderNodes()[0].localOffset, float3(2.0f, -1.0f, 0.0f), "saved local offset");
+    expectVec3(document.renderNodes()[0].localOffset, float3(2.0f, -1.0f, 0.0f), "legacy local offset");
     expectVec3(translation(document.renderNodes()[0].worldMatrix),
-        float3(18.0f, 6.0f, 3.0f), "saved primitive position");
+        float3(18.0f, 6.0f, 3.0f), "legacy primitive position");
     expectVec3(translation(document.renderNodes()[1].worldMatrix),
         float3(15.0f, 2.0f, 3.0f), "saved sibling position");
 
+    const float4x4 siblingWorld = document.renderNodes()[1].worldMatrix;
+    const uint64_t reloadedSiblingRevision = document.renderNodes()[1].transformRevision;
+    float4x4 rotation;
+    constexpr float angle = 0.5f;
+    rotation.SetupByRotationX(angle);
+    float4x4 scale;
+    scale.SetupByScale(float3(2.0f, 0.5f, 3.0f));
+    float4x4 worldTransform = rotation * scale;
+    worldTransform.a03 = 18.0f;
+    worldTransform.a13 = 6.0f;
+    worldTransform.a23 = 3.0f;
+    ASSERT_TRUE(document.setRenderNodeWorldTransform(0, worldTransform));
+    EXPECT_TRUE(document.dirty());
+    EXPECT_TRUE(matrixNearlyEqual(document.renderNodes()[0].worldMatrix, worldTransform, 0.00001f));
+    EXPECT_TRUE(document.renderNodes()[1].worldMatrix == siblingWorld);
+    EXPECT_EQ(document.renderNodes()[1].transformRevision, reloadedSiblingRevision);
+    EXPECT_EQ(document.geometryTransformRevision(), document.transformRevision());
+    expectVec3(document.bounds().max, float3(20.0f, 6.0f + 0.5f * std::cos(angle),
+        3.0f + 0.5f * std::sin(angle)), "rotated and scaled scene bounds");
+
+    const float4x4 localTransform = document.renderNodes()[0].localTransform;
+    ASSERT_TRUE(document.save(message)) << message;
+    ASSERT_TRUE(document.load(manifestPath)) << document.lastLoadResult().error;
+    EXPECT_TRUE(document.documentWarning().empty()) << document.documentWarning();
+    EXPECT_FALSE(document.dirty());
+    EXPECT_TRUE(document.renderNodes()[0].localTransform == localTransform);
+    EXPECT_TRUE(matrixNearlyEqual(document.renderNodes()[0].worldMatrix, worldTransform, 0.00001f));
+    EXPECT_TRUE(document.renderNodes()[1].localTransform == float4x4::Identity());
+
+    const uint64_t revertedRevision = document.transformRevision();
+    float4x4 rejected = float4x4::Identity();
+    rejected.a22 = 0.0f;
+    EXPECT_FALSE(document.setRenderNodeLocalTransform(0, rejected));
+    rejected = worldTransform;
+    rejected.a30 = 0.125f;
+    EXPECT_FALSE(document.setRenderNodeWorldTransform(0, rejected));
+    EXPECT_FALSE(document.setRenderNodeWorldTransform(0, document.renderNodes()[0].worldMatrix));
+    EXPECT_EQ(document.transformRevision(), revertedRevision);
+    EXPECT_FALSE(document.dirty());
+
     ASSERT_TRUE(document.setRenderNodeLocalOffset(0, float3(0.0f, 0.0f, 0.0f)));
+    float4x4 localWithoutTranslation = localTransform;
+    localWithoutTranslation.a03 = 0.0f;
+    localWithoutTranslation.a13 = 0.0f;
+    localWithoutTranslation.a23 = 0.0f;
+    EXPECT_TRUE(document.renderNodes()[0].localTransform == localWithoutTranslation);
+    ASSERT_TRUE(document.setRenderNodeLocalTransform(0, float4x4::Identity()));
     EXPECT_TRUE(document.dirty());
     ASSERT_TRUE(document.save(message)) << message;
     ASSERT_TRUE(document.load(manifestPath)) << document.lastLoadResult().error;
@@ -7166,6 +7221,7 @@ TEST(SceneEditing, PrimitiveInstanceOffsetRoundTrip)
     ASSERT_TRUE(document.setObjectLocalMatrix(reloadedOwner.entity(), ownerLocal));
     const uint64_t singularRevision = document.transformRevision();
     EXPECT_FALSE(document.setRenderNodeWorldPosition(0, targetPosition));
+    EXPECT_FALSE(document.setRenderNodeWorldTransform(0, worldTransform));
     EXPECT_EQ(document.transformRevision(), singularRevision);
     expectVec3(document.renderNodes()[0].localOffset,
         float3(0.0f, 0.0f, 0.0f), "offset after rejected singular owner");

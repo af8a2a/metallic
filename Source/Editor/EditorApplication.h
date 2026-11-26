@@ -6,6 +6,7 @@
 #include "Editor/EditorResourceInspector.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanImGuiBackend.h"
 #include "Editor/EditorMaterialGraph.h"
+#include "Editor/WorldItemGizmoTransform.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Debug/WorkControlShaderTrace.h"
 #include "Editor/NVMLMonitor.h"
@@ -55,6 +56,7 @@ public:
 
 private:
     enum class PendingSceneAction : int32_t;
+    using GizmoOperation = editor::WorldItemGizmoOperation;
 
     bool initialize();
     void shutdown();
@@ -142,7 +144,9 @@ private:
     std::optional<scene::WorldItemId> selectedWorldItem() const;
     std::optional<size_t> findWorldItemIndex(scene::WorldItemId item) const;
     std::optional<float3> worldItemPosition(scene::WorldItemId item) const;
-    bool setWorldItemPosition(scene::WorldItemId item, const float3& position);
+    std::optional<editor::WorldItemGizmoTransform> worldItemTransform(scene::WorldItemId item) const;
+    bool setWorldItemTransform(scene::WorldItemId item, const editor::WorldItemGizmoTransform& transform,
+        GizmoOperation operation);
     void discardRemovedWorldItemEdits();
     int32_t selectedNodeIndex() const;
     bool setSelectedObjectWorldMatrix(const float4x4& worldMatrix, std::string& reason);
@@ -155,26 +159,27 @@ private:
         int32_t materialIndex = scene::kInvalidSceneIndex;
         scene::RenderMaterial properties;
     };
-    struct PrimitiveMoveEditValue {
+    struct PrimitiveTransformEditValue {
         int32_t renderNodeIndex = scene::kInvalidSceneIndex;
-        float3 localOffset{0.0f};
+        float4x4 localTransform;
     };
     struct DecalTransformEditValue {
         uint32_t id;
         float4x4 worldMatrix;
     };
-    struct WorldItemMoveEditValue {
+    struct WorldItemTransformEditValue {
         scene::WorldItemId item;
-        float3 position;
+        editor::WorldItemGizmoTransform transform;
+        GizmoOperation operation;
     };
     using SceneEditValue = std::variant<
         float4x4,
         scene::CameraProperties,
         scene::LightProperties,
         MaterialEditValue,
-        PrimitiveMoveEditValue,
+        PrimitiveTransformEditValue,
         DecalTransformEditValue,
-        WorldItemMoveEditValue>;
+        WorldItemTransformEditValue>;
     void pushSceneEditCommand(
         scene::SceneEntity object,
         uint64_t sceneLifetimeRevision,
@@ -277,12 +282,6 @@ private:
         int32_t renderNodeIndex = scene::kInvalidSceneIndex;
         std::optional<uint32_t> decalId;
         std::optional<scene::WorldItemId> worldItem;
-    };
-
-    enum class GizmoOperation : uint8_t {
-        Translate,
-        Rotate,
-        Scale,
     };
 
     enum class PendingSceneAction : int32_t {
@@ -392,6 +391,7 @@ private:
     struct GizmoSmokeInput {
         std::optional<std::array<float, 2>> pointer;
         std::optional<std::array<float, 2>> center;
+        float gizmoExtent = 0.0f;
         std::vector<std::array<float, 4>> boundsEdges;
         bool mouseDown = false;
         bool rightMouseDown = false;

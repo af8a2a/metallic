@@ -9,6 +9,7 @@
 
 #include "imgui.h"
 #include "imgui_internal.h"
+#include "ImGuizmo.h"
 
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
@@ -769,6 +770,47 @@ bool EditorApplication::runGizmoSmokeTest()
             return std::ranges::equal(actual, reference, [](float a, float b) { return std::abs(a - b) < 0.05f; });
         });
     };
+    const auto dragLinearGizmo = [&](GizmoOperation operation, bool checkBounds) {
+        gizmoOperation_ = operation;
+        resetTransformHistory();
+        input.pointer.reset();
+        if (!render() || !expect(input.center && input.drewGizmo, "Draw the rotate or scale gizmo")) { return false; }
+        const auto center = *input.center;
+        std::array<float, 2> start = center;
+        std::array<float, 2> end{center[0] + 25.0f, center[1]};
+        if (operation == GizmoOperation::Rotate) {
+            // ImGuizmo's screen ring includes the projected extents of its axis rings.
+            const float nominalRadius = 0.06f * input.gizmoExtent;
+            bool hovered = false;
+            for (const float offset : {0.0f, -6.0f, 6.0f, -12.0f, 12.0f}) {
+                const float radius = nominalRadius + offset;
+                start = {center[0] + radius, center[1]};
+                input.pointer = start;
+                if (!render()) { return false; }
+                if (viewportGizmoCapturingMouse_ && ImGuizmo::IsOver(ImGuizmo::ROTATE_SCREEN)) {
+                    const float diagonal = radius * 0.70710678f;
+                    end = {center[0] + diagonal, center[1] + diagonal};
+                    hovered = true;
+                    break;
+                }
+            }
+            if (!expect(hovered, "Hover the screen rotation ring")) { return false; }
+        } else {
+            input.pointer = start;
+            if (!render() || !expect(viewportGizmoCapturingMouse_, "Hover the uniform scale handle")) { return false; }
+        }
+        input.mouseDown = true;
+        if (!render() || !expect(gizmoWasUsing_, "Start the rotate or scale gesture")) { return false; }
+        for (const float step : {0.5f, 1.0f}) {
+            const auto previousBounds = input.boundsEdges;
+            input.pointer = std::array{std::lerp(start[0], end[0], step), std::lerp(start[1], end[1], step)};
+            if (!render() || !expect(gizmoWasUsing_ && (!checkBounds || (boundsEdgesDrawn() && !boundsMatch(previousBounds))),
+                    "Rotated or scaled bounds follow the drag in the same frame")) { return false; }
+        }
+        input.mouseDown = false;
+        return render() && expect(!gizmoWasUsing_ && transformCommands_.size() == 1 && scene_.dirty(),
+            "Rotate or scale commits one undoable transform");
+    };
     const auto treeFrame = [&](bool down, const std::optional<std::array<float, 2>>& pointer = std::nullopt) {
         auto& io = ImGui::GetIO();
         if (pointer) { io.AddMousePosEvent((*pointer)[0], (*pointer)[1]); }
@@ -886,6 +928,10 @@ bool EditorApplication::runGizmoSmokeTest()
                 hasGroupedLight("point", false) && hasGroupedLight("spot", false) && hasGroupedLight("spot", true),
                 "The showcase groups fog, a point light, two spotlights including one with IES, and two rect lights")) { return false; }
         const auto captureItem = *std::ranges::find(children, WorldItemType::RectLight, &WorldItemId::type);
+        const auto iesSpot = std::ranges::find_if(scene_.lighting().lights, [](const scene::PunctualLight& light) {
+            return light.properties.type == "spot" && light.iesProfile;
+        });
+        const WorldItemId iesSpotItem{WorldItemType::PunctualLight, iesSpot->stableId};
         const int childDepth = nodeDepth(group) + 1;
         input.sceneTreeProbe = group.entity();
         sceneSelection_ = {};
@@ -974,6 +1020,44 @@ bool EditorApplication::runGizmoSmokeTest()
             undoTransform();
             const auto name = scene_.worldItemName(item);
             spdlog::info("[Smoke Gizmo] worldItem='{}' frames={} boundEdges={}", name, kDragFrames, afterBounds.size());
+            if (item != iesSpotItem) { continue; }
+
+            const auto readSpotlight = [&] {
+                return *std::ranges::find(scene_.lighting().lights, item.id, &scene::PunctualLight::stableId);
+            };
+            const auto samePose = [](const scene::PunctualLight& a, const scene::PunctualLight& b) {
+                return length(a.direction - b.direction) < 0.0001f &&
+                    std::abs(a.iesRollDegrees - b.iesRollDegrees) < 0.001f &&
+                    std::abs(a.properties.range - b.properties.range) < 0.0001;
+            };
+            for (const auto operation : {GizmoOperation::Rotate, GizmoOperation::Scale}) {
+                const auto before = readSpotlight();
+                if (!dragLinearGizmo(operation, true)) { return false; }
+                const auto after = readSpotlight();
+                const auto lightBounds = input.boundsEdges;
+                const bool rotate = operation == GizmoOperation::Rotate;
+                const bool edited = rotate
+                    ? length(after.direction - before.direction) > 0.1f &&
+                        std::abs(after.iesRollDegrees - before.iesRollDegrees) > 0.1f &&
+                        after.properties.range == before.properties.range
+                    : length(after.direction - before.direction) < 0.0001f && after.iesRollDegrees == before.iesRollDegrees &&
+                        std::abs(after.properties.range - before.properties.range * 1.25) < 0.001;
+                if (!expect(edited && length(after.position - before.position) < 0.000001f && after.iesProfile == before.iesProfile &&
+                        after.properties.innerConeAngle == before.properties.innerConeAngle &&
+                        after.properties.outerConeAngle == before.properties.outerConeAngle,
+                        "IES spotlight rotation edits direction and roll, and uniform scale edits only range")) { return false; }
+                undoTransform();
+                if (!render() || !expect(samePose(readSpotlight(), before) && !scene_.dirty() && boundsMatch(beforeBounds),
+                        "Undo restores the IES spotlight pose and bounds")) { return false; }
+                redoTransform();
+                if (!render() || !expect(samePose(readSpotlight(), after) && scene_.dirty() && boundsMatch(lightBounds),
+                        "Redo restores the IES spotlight pose and bounds")) { return false; }
+                if (const char* path = std::getenv("METALLIC_LIGHT_TRS_GIZMO_SMOKE_CAPTURE"); rotate && path && *path &&
+                    !expect(exportSmokeMainViewport(path), "Export the rotated IES spotlight and bounds")) { return false; }
+                undoTransform();
+            }
+            gizmoOperation_ = GizmoOperation::Translate;
+            spdlog::info("[Smoke Gizmo] IES spotlight rotate and scale preserve projector parameters and support undo and redo");
         }
         return true;
     };
@@ -1183,6 +1267,43 @@ bool EditorApplication::runGizmoSmokeTest()
         if (!expect(exportSmokeMainViewport(path), "Export the primitive gizmo frame as a PPM image")) { return false; }
     }
     undoTransform();
+    const auto& primitiveInstance = scene_.renderNodes()[sections.front()];
+    const auto& primitiveSibling = scene_.renderNodes()[sections[1]];
+    const auto owner = scene_.objectForNode(meshNode);
+    const auto ownerWorld = owner.getComponent<scene::TransformComponent>().worldMatrix;
+    const auto siblingWorld = primitiveSibling.worldMatrix;
+    const auto primitiveCenter = scene_.renderPrimitives()[primitiveInstance.renderPrimitiveIndex].localBounds.center();
+    const auto axisLengths = [](const float4x4& matrix) {
+        return float3(length(float3(matrix.a00, matrix.a10, matrix.a20)),
+            length(float3(matrix.a01, matrix.a11, matrix.a21)), length(float3(matrix.a02, matrix.a12, matrix.a22)));
+    };
+    for (const auto operation : {GizmoOperation::Rotate, GizmoOperation::Scale}) {
+        const auto before = primitiveInstance.worldMatrix;
+        const auto beforeLengths = axisLengths(before);
+        const auto beforeCenter = before * float4(primitiveCenter, 1.0f);
+        const auto beforeRevision = scene_.geometryTransformRevision();
+        if (!dragLinearGizmo(operation, startupSampleId_ == "sponza-technology-showcase" && startupScenePath_.empty())) {
+            return false;
+        }
+        const auto after = primitiveInstance.worldMatrix;
+        const auto afterCenter = after * float4(primitiveCenter, 1.0f);
+        const auto expectedLengths = operation == GizmoOperation::Rotate ? beforeLengths : beforeLengths * 1.25f;
+        if (!expect(!scene::matrixNearlyEqual(before, after) && scene_.geometryTransformRevision() > beforeRevision &&
+                length(axisLengths(after) - expectedLengths) < 0.0001f &&
+                length(float3(afterCenter.x - beforeCenter.x, afterCenter.y - beforeCenter.y, afterCenter.z - beforeCenter.z)) < 0.0001f &&
+                scene::matrixNearlyEqual(owner.getComponent<scene::TransformComponent>().worldMatrix, ownerWorld) &&
+                scene::matrixNearlyEqual(primitiveSibling.worldMatrix, siblingWorld),
+                "Rotating and scaling a primitive keeps its bounds center, mesh owner, and siblings in place")) { return false; }
+        undoTransform();
+        if (!expect(scene::matrixNearlyEqual(primitiveInstance.worldMatrix, before) && !scene_.dirty(),
+                "Undo restores the primitive transform")) { return false; }
+        redoTransform();
+        if (!expect(scene::matrixNearlyEqual(primitiveInstance.worldMatrix, after) && scene_.dirty(),
+                "Redo restores the primitive transform")) { return false; }
+        undoTransform();
+    }
+    gizmoOperation_ = GizmoOperation::Translate;
+    spdlog::info("[Smoke Gizmo] Primitive rotate and scale preserve pivot and support undo and redo");
     if (!drag(meshNode, meshName, true)) { return false; }
 
     input.pointer.reset();

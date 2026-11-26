@@ -4388,6 +4388,13 @@ void EditorApplication::drawInspectorPanel()
 
     if (instance) {
         ImGui::Text("Local offset: %s", scene::formatVec3(instance->localOffset).c_str());
+        const auto& local = instance->localTransform;
+        if (affineDeterminant(local) > 0.0f && !matrixHasShear(local)) {
+            float position[3], rotation[3], scale[3];
+            ImGuizmo::DecomposeMatrixToComponents(local.a, position, rotation, scale);
+            ImGui::Text("Local rotation (deg): %s", scene::formatVec3(float3(rotation[0], rotation[1], rotation[2])).c_str());
+            ImGui::Text("Local scale: %s", scene::formatVec3(float3(scale[0], scale[1], scale[2])).c_str());
+        }
         ImGui::Separator();
     } else if (selectedObject) {
         drawSelectedNodeTransformInspector();
@@ -5908,32 +5915,42 @@ std::optional<scene::WorldItemId> EditorApplication::selectedWorldItem() const
 
 std::optional<float3> EditorApplication::worldItemPosition(scene::WorldItemId item) const
 {
+    const auto transform = worldItemTransform(item);
+    if (!transform) { return std::nullopt; }
+    return std::visit([](const auto& value) { return value.position; }, *transform);
+}
+
+std::optional<editor::WorldItemGizmoTransform> EditorApplication::worldItemTransform(scene::WorldItemId item) const
+{
     const auto index = findWorldItemIndex(item);
     if (!index) { return std::nullopt; }
     switch (item.type) {
-    case scene::WorldItemType::LocalFogVolume: {
-        const auto& center = scene_.worldEnvironment().volumetricFog.localVolumes[*index].centerMeters;
-        return float3(center[0], center[1], center[2]);
-    }
-    case scene::WorldItemType::PunctualLight: return scene_.lighting().lights[*index].position;
-    case scene::WorldItemType::RectLight: return scene_.lighting().rectLights[*index].position;
+    case scene::WorldItemType::LocalFogVolume:
+        return editor::captureWorldItemGizmoTransform(scene_.worldEnvironment().volumetricFog.localVolumes[*index]);
+    case scene::WorldItemType::PunctualLight:
+        return editor::captureWorldItemGizmoTransform(scene_.lighting().lights[*index]);
+    case scene::WorldItemType::RectLight:
+        return editor::captureWorldItemGizmoTransform(scene_.lighting().rectLights[*index]);
     }
     return std::nullopt;
 }
 
-bool EditorApplication::setWorldItemPosition(scene::WorldItemId item, const float3& position)
+bool EditorApplication::setWorldItemTransform(scene::WorldItemId item, const editor::WorldItemGizmoTransform& transform,
+    GizmoOperation operation)
 {
     const auto index = findWorldItemIndex(item);
     if (!index) { return false; }
-    if (const auto previous = worldItemPosition(item); previous && length(*previous - position) <= 0.000001f) { return true; }
     if (item.type == scene::WorldItemType::LocalFogVolume) {
         auto environment = scene_.worldEnvironment();
-        environment.volumetricFog.localVolumes[*index].centerMeters = {position.x, position.y, position.z};
+        editor::applyWorldItemGizmoTransform(environment.volumetricFog.localVolumes[*index], transform, operation);
         if (!scene_.setWorldEnvironment(std::move(environment))) { return false; }
     } else {
         auto lighting = scene_.lighting();
-        if (item.type == scene::WorldItemType::PunctualLight) { lighting.lights[*index].position = position; }
-        else { lighting.rectLights[*index].position = position; }
+        if (item.type == scene::WorldItemType::PunctualLight) {
+            editor::applyWorldItemGizmoTransform(lighting.lights[*index], transform, operation);
+        } else {
+            editor::applyWorldItemGizmoTransform(lighting.rectLights[*index], transform, operation);
+        }
         if (!scene_.setLighting(std::move(lighting))) { return false; }
         renderWorld_.setLighting(scene_.lighting());
     }
@@ -5946,7 +5963,7 @@ void EditorApplication::discardRemovedWorldItemEdits()
 {
     if (sceneSelection_.worldItem && !findWorldItemIndex(*sceneSelection_.worldItem)) { sceneSelection_ = {}; }
     for (size_t i = transformCommands_.size(); i > 0; --i) {
-        const auto* edit = std::get_if<WorldItemMoveEditValue>(&transformCommands_[i - 1].before);
+        const auto* edit = std::get_if<WorldItemTransformEditValue>(&transformCommands_[i - 1].before);
         if (edit == nullptr || findWorldItemIndex(edit->item)) { continue; }
         transformCommands_.erase(transformCommands_.begin() + static_cast<ptrdiff_t>(i - 1));
         if (i <= transformCommandCursor_) { --transformCommandCursor_; }
@@ -6026,8 +6043,15 @@ bool EditorApplication::setSelectedObjectWorldMatrix(
     std::string& reason)
 {
     if (const auto item = selectedWorldItem()) {
-        if (setWorldItemPosition(*item, float3(worldMatrix.a03, worldMatrix.a13, worldMatrix.a23))) { return true; }
-        reason = "The fog or light position edit was rejected.";
+        const auto current = *worldItemTransform(*item);
+        const auto* start = std::get_if<WorldItemTransformEditValue>(&gizmoStartValue_);
+        // ImGuizmo reports the scale relative to the beginning of the drag.
+        const auto& base = gizmoOperation_ == GizmoOperation::Scale && start && start->item == *item
+            ? start->transform : current;
+        const auto edited = editor::editWorldItemGizmoTransform(base, worldMatrix, gizmoOperation_);
+        if (edited && (editor::worldItemGizmoTransformsEqual(current, *edited, gizmoOperation_) ||
+                setWorldItemTransform(*item, *edited, gizmoOperation_))) { return true; }
+        reason = "The fog or light transform edit was rejected.";
         return false;
     }
     if (const auto* decal = selectedDecal()) {
@@ -6050,9 +6074,12 @@ bool EditorApplication::setSelectedObjectWorldMatrix(
     }
     if (const auto* instance = selectedRenderNode()) {
         if (scene::matrixNearlyEqual(instance->worldMatrix, worldMatrix)) { return true; }
-        if (!scene_.setRenderNodeWorldPosition(sceneSelection_.renderNodeIndex,
-                float3(worldMatrix.a03, worldMatrix.a13, worldMatrix.a23))) {
-            reason = "The primitive position could not be converted through its owning node.";
+        const auto index = sceneSelection_.renderNodeIndex;
+        const bool applied = gizmoOperation_ == GizmoOperation::Translate
+            ? scene_.setRenderNodeWorldPosition(index, float3(worldMatrix.a03, worldMatrix.a13, worldMatrix.a23))
+            : scene_.setRenderNodeWorldTransform(index, worldMatrix);
+        if (!applied) {
+            reason = "The primitive transform could not be converted through its owning node.";
             return false;
         }
         notifySceneTransformChanged(true);
@@ -6111,18 +6138,18 @@ void EditorApplication::pushSceneEditCommand(
         const auto* afterMaterial = std::get_if<MaterialEditValue>(&after);
         valuesEqual = afterMaterial != nullptr && beforeMaterial->materialIndex == afterMaterial->materialIndex &&
             scene::materialPropertiesEqual(beforeMaterial->properties, afterMaterial->properties);
-    } else if (const auto* beforeMove = std::get_if<PrimitiveMoveEditValue>(&before)) {
-        const auto* afterMove = std::get_if<PrimitiveMoveEditValue>(&after);
-        valuesEqual = afterMove != nullptr && beforeMove->renderNodeIndex == afterMove->renderNodeIndex &&
-            length(beforeMove->localOffset - afterMove->localOffset) <= 0.000001f;
+    } else if (const auto* beforePrimitive = std::get_if<PrimitiveTransformEditValue>(&before)) {
+        const auto* afterPrimitive = std::get_if<PrimitiveTransformEditValue>(&after);
+        valuesEqual = afterPrimitive && beforePrimitive->renderNodeIndex == afterPrimitive->renderNodeIndex &&
+            scene::matrixNearlyEqual(beforePrimitive->localTransform, afterPrimitive->localTransform);
     } else if (const auto* beforeDecal = std::get_if<DecalTransformEditValue>(&before)) {
         const auto* afterDecal = std::get_if<DecalTransformEditValue>(&after);
         valuesEqual = afterDecal != nullptr && beforeDecal->id == afterDecal->id &&
             scene::matrixNearlyEqual(beforeDecal->worldMatrix, afterDecal->worldMatrix);
-    } else if (const auto* beforeItem = std::get_if<WorldItemMoveEditValue>(&before)) {
-        const auto* afterItem = std::get_if<WorldItemMoveEditValue>(&after);
+    } else if (const auto* beforeItem = std::get_if<WorldItemTransformEditValue>(&before)) {
+        const auto* afterItem = std::get_if<WorldItemTransformEditValue>(&after);
         valuesEqual = afterItem && beforeItem->item == afterItem->item &&
-            length(beforeItem->position - afterItem->position) <= 0.000001f;
+            editor::worldItemGizmoTransformsEqual(beforeItem->transform, afterItem->transform, beforeItem->operation);
     }
     const auto* beforeMaterial = std::get_if<MaterialEditValue>(&before);
     const auto* afterMaterial = std::get_if<MaterialEditValue>(&after);
@@ -6134,8 +6161,8 @@ void EditorApplication::pushSceneEditCommand(
     } else if (const auto* beforeDecal = std::get_if<DecalTransformEditValue>(&before)) {
         const auto* afterDecal = std::get_if<DecalTransformEditValue>(&after);
         validTarget = afterDecal && afterDecal->id == beforeDecal->id && findDecal(beforeDecal->id);
-    } else if (const auto* beforeItem = std::get_if<WorldItemMoveEditValue>(&before)) {
-        const auto* afterItem = std::get_if<WorldItemMoveEditValue>(&after);
+    } else if (const auto* beforeItem = std::get_if<WorldItemTransformEditValue>(&before)) {
+        const auto* afterItem = std::get_if<WorldItemTransformEditValue>(&after);
         validTarget = afterItem && beforeItem->item == afterItem->item && findWorldItemIndex(beforeItem->item);
     } else {
         validTarget = object != scene::kNullSceneEntity && scene_.sceneGraph().object(object);
@@ -6257,15 +6284,17 @@ bool EditorApplication::applySceneEditValue(
     scene::SceneEntity object,
     const SceneEditValue& value)
 {
-    if (const auto* move = std::get_if<WorldItemMoveEditValue>(&value)) {
-        return setWorldItemPosition(move->item, move->position);
+    if (const auto* transform = std::get_if<WorldItemTransformEditValue>(&value)) {
+        const auto current = worldItemTransform(transform->item);
+        return current && (editor::worldItemGizmoTransformsEqual(*current, transform->transform, transform->operation) ||
+            setWorldItemTransform(transform->item, transform->transform, transform->operation));
     }
     if (const auto* transform = std::get_if<DecalTransformEditValue>(&value)) {
         const auto* decal = findDecal(transform->id);
         return decal && setDecalWorldMatrix(*decal, transform->worldMatrix);
     }
-    if (const auto* move = std::get_if<PrimitiveMoveEditValue>(&value)) {
-        if (!scene_.setRenderNodeLocalOffset(move->renderNodeIndex, move->localOffset)) { return false; }
+    if (const auto* transform = std::get_if<PrimitiveTransformEditValue>(&value)) {
+        if (!scene_.setRenderNodeLocalTransform(transform->renderNodeIndex, transform->localTransform)) { return false; }
         notifySceneTransformChanged(true);
         return true;
     }
@@ -6323,19 +6352,19 @@ void EditorApplication::finishViewportGizmoTransaction()
 {
     if (gizmoWasUsing_ && gizmoEditingSceneLifetime_ == scene_.sceneGraph().lifetimeRevision()) {
         const auto editedObject = scene_.sceneGraph().object(gizmoEditingObject_);
-        if (const auto* move = std::get_if<PrimitiveMoveEditValue>(&gizmoStartValue_)) {
-            const auto& instance = scene_.renderNodes()[move->renderNodeIndex];
+        if (const auto* primitive = std::get_if<PrimitiveTransformEditValue>(&gizmoStartValue_)) {
+            const auto& instance = scene_.renderNodes()[primitive->renderNodeIndex];
             pushSceneEditCommand(gizmoEditingObject_, gizmoEditingSceneLifetime_, gizmoStartValue_,
-                PrimitiveMoveEditValue{move->renderNodeIndex, instance.localOffset});
+                PrimitiveTransformEditValue{primitive->renderNodeIndex, instance.localTransform});
         } else if (const auto* before = std::get_if<DecalTransformEditValue>(&gizmoStartValue_)) {
             if (const auto* decal = findDecal(before->id)) {
                 pushSceneEditCommand(scene::kNullSceneEntity, gizmoEditingSceneLifetime_, gizmoStartValue_,
                     DecalTransformEditValue{decal->id, decal->worldFromDecal});
             }
-        } else if (const auto* before = std::get_if<WorldItemMoveEditValue>(&gizmoStartValue_)) {
-            if (const auto after = worldItemPosition(before->item)) {
+        } else if (const auto* before = std::get_if<WorldItemTransformEditValue>(&gizmoStartValue_)) {
+            if (const auto after = worldItemTransform(before->item)) {
                 pushSceneEditCommand(scene::kNullSceneEntity, gizmoEditingSceneLifetime_, gizmoStartValue_,
-                    WorldItemMoveEditValue{before->item, *after});
+                    WorldItemTransformEditValue{before->item, *after, before->operation});
             }
         } else if (const auto* transform = editedObject.tryGetComponent<scene::TransformComponent>()) {
             pushSceneEditCommand(gizmoEditingObject_, gizmoEditingSceneLifetime_, gizmoStartValue_, transform->localMatrix);
@@ -6346,6 +6375,7 @@ void EditorApplication::finishViewportGizmoTransaction()
         ImGuizmo::Enable(true);
     }
     gizmoWasUsing_ = false;
+    gizmoStartValue_ = float4x4::Identity();
     gizmoEditingObject_ = scene::kNullSceneEntity;
     gizmoEditingSceneLifetime_ = 0;
     viewportGizmoCapturingMouse_ = false;
@@ -7180,9 +7210,9 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
     const auto* instance = selectedRenderNode();
     const auto* decal = selectedDecal();
     const auto worldItem = selectedWorldItem();
-    const auto* editingPrimitive = std::get_if<PrimitiveMoveEditValue>(&gizmoStartValue_);
+    const auto* editingPrimitive = std::get_if<PrimitiveTransformEditValue>(&gizmoStartValue_);
     const auto* editingDecal = std::get_if<DecalTransformEditValue>(&gizmoStartValue_);
-    const auto* editingWorldItem = std::get_if<WorldItemMoveEditValue>(&gizmoStartValue_);
+    const auto* editingWorldItem = std::get_if<WorldItemTransformEditValue>(&gizmoStartValue_);
     const int32_t editingRenderNodeIndex = editingPrimitive ? editingPrimitive->renderNodeIndex : scene::kInvalidSceneIndex;
 
     if (gizmoWasUsing_ &&
@@ -7207,12 +7237,13 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
         finishViewportGizmoTransaction();
         return;
     }
-    float4x4 itemTransform;
-    if (worldItem) { itemTransform.SetupByTranslation(*worldItemPosition(*worldItem)); }
-    const auto& local = worldItem ? itemTransform : decal ? decal->worldFromDecal : transform->localMatrix;
-    const auto& world = worldItem ? itemTransform :
+    const auto item = worldItem ? worldItemTransform(*worldItem) : std::nullopt;
+    const auto itemMatrix = item ? editor::worldItemGizmoMatrix(*item) : float4x4::Identity();
+    const auto& local = worldItem ? itemMatrix : decal ? decal->worldFromDecal :
+        instance ? instance->localTransform : transform->localMatrix;
+    const auto& world = worldItem ? itemMatrix :
         decal ? decal->worldFromDecal : instance ? instance->worldMatrix : transform->worldMatrix;
-    const float minimumDeterminant = decal ? 0.0f : 0.0000001f;
+    const float minimumDeterminant = decal || instance || worldItem ? 0.0f : 0.0000001f;
     const float localDeterminant = affineDeterminant(local);
     const bool singular = !matrixIsFinite(local) ||
         !std::isfinite(localDeterminant) || std::abs(localDeterminant) <= minimumDeterminant;
@@ -7223,9 +7254,11 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
         !std::isfinite(worldDeterminant) || std::abs(worldDeterminant) <= minimumDeterminant;
     const bool worldShear = !worldInvalid && matrixHasShear(world);
     const bool worldReflection = !worldInvalid && worldDeterminant < 0.0f;
+    const float4x4* parentMatrix = nullptr;
     bool parentSingular = false;
-    bool parentDistortsLinearTransform = false;
-    if (object && !object.hasComponent<scene::RootComponent>()) {
+    if (instance) {
+        parentMatrix = &transform->worldMatrix;
+    } else if (object && !object.hasComponent<scene::RootComponent>()) {
         if (const scene::RelationshipComponent* relationship =
             object.tryGetComponent<scene::RelationshipComponent>();
             relationship != nullptr && relationship->parent != scene::kNullSceneEntity) {
@@ -7236,21 +7269,23 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
             if (parentTransform == nullptr) {
                 parentSingular = true;
             } else {
-                const float parentDeterminant = affineDeterminant(parentTransform->worldMatrix);
-                parentSingular = !std::isfinite(parentDeterminant) ||
-                    std::abs(parentDeterminant) <= 0.0000001f;
-                parentDistortsLinearTransform = !parentSingular &&
-                    (parentDeterminant < 0.0f ||
-                        matrixHasShear(parentTransform->worldMatrix) ||
-                        matrixHasNonUniformScale(parentTransform->worldMatrix));
+                parentMatrix = &parentTransform->worldMatrix;
             }
         }
     }
-    const auto gizmoOperation = instance || worldItem ? GizmoOperation::Translate : gizmoOperation_;
+    bool parentDistortsLinearTransform = false;
+    if (parentMatrix) {
+        const float parentDeterminant = affineDeterminant(*parentMatrix);
+        parentSingular = !std::isfinite(parentDeterminant) ||
+            std::abs(parentDeterminant) <= (instance ? 0.0f : 0.0000001f);
+        parentDistortsLinearTransform = !parentSingular &&
+            (parentDeterminant < 0.0f || matrixHasShear(*parentMatrix) || matrixHasNonUniformScale(*parentMatrix));
+    }
+    const auto gizmoOperation = gizmoOperation_;
     const bool editsLinearTransform = gizmoOperation != GizmoOperation::Translate;
+    // An instance override stores a full affine matrix, including shear from conversion through its owner.
     const bool unsafeLinearEdit = editsLinearTransform &&
-        (shear || reflection || worldShear || worldReflection ||
-            parentDistortsLinearTransform);
+        (worldShear || worldReflection || (!instance && (shear || reflection || parentDistortsLinearTransform)));
     const bool operationBlocked = singular || worldInvalid || parentSingular || unsafeLinearEdit;
     if (operationBlocked) {
         const char* reason = singular
@@ -7259,7 +7294,9 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
                     ? "Gizmo disabled: invalid world transform"
                     : (parentSingular
                             ? "Gizmo disabled: singular parent transform"
-                            : "Rotate/scale disabled: hierarchy contains reflection, shear, or non-uniform parent scale"));
+                            : instance
+                                ? "Rotate/scale disabled: the primitive's world transform contains reflection or shear"
+                                : "Rotate/scale disabled: hierarchy contains reflection, shear, or non-uniform parent scale"));
         ImGui::GetWindowDrawList()->AddText(
             ImVec2(min.x + 10.0f, max.y - 28.0f * mainScale_),
             IM_COL32(255, 190, 90, 255),
@@ -7276,9 +7313,11 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
         static_cast<float>(viewportView_.renderHeight(viewportTextureHeight_)));
     const float3 origin(world.a03, world.a13, world.a23);
     float3 pivot = origin;
+    float3 localCenter(0.0f);
     if (instance) {
         const auto& primitive = scene_.renderPrimitives()[instance->renderPrimitiveIndex];
-        const auto center = world * float4(primitive.localBounds.center(), 1.0f);
+        localCenter = primitive.localBounds.center();
+        const auto center = world * float4(localCenter, 1.0f);
         pivot = float3(center.x, center.y, center.z);
     }
     // ImGuizmo's clip-Z check does not reject pivots behind a reversed-Z view.
@@ -7290,6 +7329,7 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
         ImVec2 center;
         if (projectWorldToViewport(pivot, matrices, min, max, center)) {
             gizmoSmokeInput_->center = std::array{center.x, center.y};
+            gizmoSmokeInput_->gizmoExtent = std::max(max.x - min.x, max.y - min.y);
         }
     }
     ImDrawList* drawList = ImGui::GetWindowDrawList();
@@ -7297,13 +7337,16 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
     ImGuizmo::SetRect(min.x, min.y, max.x - min.x, max.y - min.y);
     ImGuizmo::SetOrthographic(matrices.orthographic);
 
+    const auto capabilities = item ? editor::worldItemGizmoCapabilities(*item) : editor::WorldItemGizmoCapabilities{};
     ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
     if (gizmoOperation == GizmoOperation::Rotate) {
-        operation = ImGuizmo::ROTATE;
+        operation = item && gizmoLocal_ && !capabilities.rotateRoll
+            ? ImGuizmo::ROTATE_X | ImGuizmo::ROTATE_Y | ImGuizmo::ROTATE_SCREEN
+            : ImGuizmo::ROTATE;
     } else if (gizmoOperation == GizmoOperation::Scale) {
         operation = ImGuizmo::SCALE;
     }
-    const ImGuizmo::MODE mode = gizmoOperation == GizmoOperation::Scale || (!worldItem && gizmoLocal_)
+    const ImGuizmo::MODE mode = gizmoOperation == GizmoOperation::Scale || gizmoLocal_
         ? ImGuizmo::LOCAL
         : ImGuizmo::WORLD;
     const bool useSnap = snapEnabled_ || ImGui::GetIO().KeyCtrl;
@@ -7317,6 +7360,9 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
     editedWorld.a23 = pivot.z;
     const bool cameraDragging = viewportCameraDragButton_ != kNoViewportCameraDragButton;
     if (cameraDragging) { ImGuizmo::Enable(false); }
+    const bool maskScaleDepth = item && gizmoOperation == GizmoOperation::Scale &&
+        !capabilities.scaleDepth;
+    if (maskScaleDepth) { ImGuizmo::SetAxisMask(false, false, true); }
     const int firstVertex = drawList->VtxBuffer.Size;
     if (worldItem) {
         ImGuizmo::PushID(worldItemTypeLabel(worldItem->type));
@@ -7336,6 +7382,7 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
         useSnap ? snap : nullptr);
     const bool usingNow = ImGuizmo::IsUsing();
     const bool overNow = !cameraDragging && ImGuizmo::IsOver();
+    if (maskScaleDepth) { ImGuizmo::SetAxisMask(false, false, false); }
     if (instance) { ImGuizmo::PopID(); }
     ImGuizmo::PopID();
     if (decal || worldItem) { ImGuizmo::PopID(); }
@@ -7343,11 +7390,11 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
     if (gizmoSmokeInput_) { gizmoSmokeInput_->drewGizmo = drawList->VtxBuffer.Size != firstVertex; }
     if (usingNow && !gizmoWasUsing_) {
         if (worldItem) {
-            gizmoStartValue_ = WorldItemMoveEditValue{*worldItem, origin};
+            gizmoStartValue_ = WorldItemTransformEditValue{*worldItem, *item, gizmoOperation};
         } else if (decal) {
             gizmoStartValue_ = DecalTransformEditValue{decal->id, decal->worldFromDecal};
         } else if (instance) {
-            gizmoStartValue_ = PrimitiveMoveEditValue{sceneSelection_.renderNodeIndex, instance->localOffset};
+            gizmoStartValue_ = PrimitiveTransformEditValue{sceneSelection_.renderNodeIndex, instance->localTransform};
         } else {
             gizmoStartValue_ = transform->localMatrix;
         }
@@ -7356,9 +7403,10 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
     }
     if (manipulated) {
         if (instance) {
-            editedWorld.a03 = origin.x + (editedWorld.a03 - pivot.x);
-            editedWorld.a13 = origin.y + (editedWorld.a13 - pivot.y);
-            editedWorld.a23 = origin.z + (editedWorld.a23 - pivot.z);
+            const auto pivotOffset = editedWorld * float4(localCenter, 0.0f);
+            editedWorld.a03 -= pivotOffset.x;
+            editedWorld.a13 -= pivotOffset.y;
+            editedWorld.a23 -= pivotOffset.z;
         }
         std::string reason;
         if (!setSelectedObjectWorldMatrix(editedWorld, reason) && !reason.empty()) {
@@ -7748,8 +7796,15 @@ void EditorApplication::drawViewportPanel()
     }
     ImGui::Begin("Viewport");
 
-    const bool worldItemSelected = selectedWorldItem().has_value();
-    const bool translationOnly = selectedRenderNode() != nullptr || worldItemSelected;
+    const auto selectedItem = selectedWorldItem();
+    const auto item = selectedItem ? worldItemTransform(*selectedItem) : std::nullopt;
+    const auto capabilities = item ? editor::worldItemGizmoCapabilities(*item) : editor::WorldItemGizmoCapabilities{};
+    const bool canRotate = !item || capabilities.rotate;
+    const bool canScale = !item || capabilities.scale;
+    if ((!canRotate && gizmoOperation_ == GizmoOperation::Rotate) ||
+        (!canScale && gizmoOperation_ == GizmoOperation::Scale)) {
+        gizmoOperation_ = GizmoOperation::Translate;
+    }
     const bool gizmoTransactionActive = inspectorTransformEditing_ ||
         inspectorPropertyEditing_ || gizmoWasUsing_ ||
         ImGuizmo::IsUsingAny();
@@ -7768,14 +7823,23 @@ void EditorApplication::drawViewportPanel()
     };
     drawToolButton("W Move", GizmoOperation::Translate);
     ImGui::SameLine();
-    ImGui::BeginDisabled(translationOnly);
+    ImGui::BeginDisabled(!canRotate);
     drawToolButton("E Rotate", GizmoOperation::Rotate);
-    ImGui::SameLine();
-    drawToolButton("R Scale", GizmoOperation::Scale);
+    if (!canRotate && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("An omnidirectional point light without an IES profile has no editable orientation.");
+    }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::BeginDisabled(worldItemSelected);
-    if (ImGui::Button(!worldItemSelected && gizmoLocal_ ? "Local" : "World")) {
+    ImGui::BeginDisabled(!canScale);
+    drawToolButton("R Scale", GizmoOperation::Scale);
+    if (!canScale && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Set a finite light range in the Inspector to scale its influence.");
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    const bool scaling = gizmoOperation_ == GizmoOperation::Scale;
+    ImGui::BeginDisabled(scaling);
+    if (ImGui::Button(scaling || gizmoLocal_ ? "Local" : "World")) {
         gizmoLocal_ = !gizmoLocal_;
     }
     ImGui::EndDisabled();
@@ -8010,17 +8074,16 @@ void EditorApplication::drawViewportPanel()
         ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
         (io.KeyAlt && ImGui::IsMouseDown(ImGuiMouseButton_Left));
     const bool transformEditing = gizmoWasUsing_ || inspectorTransformEditing_ ||
-        inspectorPropertyEditing_ ||
-        viewportGizmoCapturingMouse_ || ImGuizmo::IsUsingAny();
+        inspectorPropertyEditing_ || ImGuizmo::IsUsingAny();
     if (viewportHovered_ && !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt &&
         !cameraGestureActive && !transformEditing) {
         if (ImGui::IsKeyPressed(ImGuiKey_W, false)) {
             gizmoOperation_ = GizmoOperation::Translate;
-        } else if (!translationOnly && ImGui::IsKeyPressed(ImGuiKey_E, false)) {
+        } else if (canRotate && ImGui::IsKeyPressed(ImGuiKey_E, false)) {
             gizmoOperation_ = GizmoOperation::Rotate;
-        } else if (!translationOnly && ImGui::IsKeyPressed(ImGuiKey_R, false)) {
+        } else if (canScale && ImGui::IsKeyPressed(ImGuiKey_R, false)) {
             gizmoOperation_ = GizmoOperation::Scale;
-        } else if (!worldItemSelected && ImGui::IsKeyPressed(ImGuiKey_X, false)) {
+        } else if (!scaling && ImGui::IsKeyPressed(ImGuiKey_X, false)) {
             gizmoLocal_ = !gizmoLocal_;
         }
     }
