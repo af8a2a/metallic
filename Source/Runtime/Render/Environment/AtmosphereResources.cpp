@@ -62,7 +62,8 @@ GPUAtmosphereParameters buildGPUAtmosphereParameters(const environment::Environm
     };
     source(environment.celestial[0], p.sunDirectionRadius, p.sunIrradianceEnabled);
     source(environment.celestial[1], p.moonDirectionRadius, p.moonIrradianceEnabled);
-    p.settings = {a.maxAerialDistanceKm, environment.source == environment::EnvironmentSource::PhysicalAtmosphere ? 1.0f : 0.0f, 0.0f, 0.0f};
+    p.settings = {a.maxAerialDistanceKm, environment.source == environment::EnvironmentSource::PhysicalAtmosphere ? 1.0f : 0.0f,
+        a.aerialPerspectiveStartDepthKm, 0.0f};
     const auto& weather = environment.weather;
     p.cloudLayer = {weather.cloudBaseAltitudeKm, weather.cloudTopAltitudeKm,
         weather.cloudCoverage, weather.cloudDensity * (1.0f + 0.5f * weather.precipitation)};

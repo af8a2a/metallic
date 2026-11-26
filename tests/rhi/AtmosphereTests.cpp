@@ -354,6 +354,68 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(AtmosphereAerialLUTTest);
 
+class AtmosphereAerialStartDepthTest final : public RHITest {
+public:
+    AtmosphereAerialStartDepthTest() { name = "atmosphere_aerial_start_depth"; type = RHITestType::Rendering; }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"environment.atmosphere.aerial.startDepth"}, bench::Layer::Core, "binding", "binding",
+            {"aerial-start.tsv", "aerial-start-beyond-lut.tsv"});
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        std::unique_ptr<render::Device> device;
+        render::ComputeKernel kernel;
+        std::string log;
+        if (!createAtmosphereTestDevice(context, device, kernel, log, "atmosphereAerialStartDepthProbeMain", "AtmosphereRayOriginProbe")) {
+            return RHITestResult::fail(log);
+        }
+        auto world = physicalNoon();
+        world.atmosphere.aerialPerspectiveStartDepthKm = 0.1f;
+        for (const float maxDistanceKm : {1.5f, 0.05f}) {
+            world.atmosphere.maxAerialDistanceKm = maxDistanceKm;
+            ProbeReadback values;
+            const std::string label = maxDistanceKm > 0.1f ? "aerial-start" : "aerial-start-beyond-lut";
+            if (!atmosphereProbe(*device, kernel, world, values, log) || !saveProbe(context, label, values)) {
+                return RHITestResult::fail(log);
+            }
+            for (uint32_t ray = 0; ray < 2; ++ray) {
+                const uint32_t offset = ray * 2;
+                for (uint32_t index : {0u, 4u}) {
+                    for (uint32_t channel = 0; channel < 3; ++channel) {
+                        if (values[index + offset][channel] != 0.0f || values[index + offset + 1][channel] != 1.0f) {
+                            return RHITestResult::fail("Expected identity at 20 m and 100 m; see " + label);
+                        }
+                    }
+                }
+                const double oneMetre = photometricY(values[8 + offset]);
+                const double twoMetres = photometricY(values[12 + offset]);
+                if (!(oneMetre > 0.0 && twoMetres > oneMetre && twoMetres < 0.01 * photometricY(values[16 + offset]))) {
+                    return RHITestResult::fail("Aerial radiance did not rise smoothly just beyond 100 m; see " + label);
+                }
+                for (uint32_t index : {16u + offset, 20u + offset}) {
+                    // The 1 km perspective sample in the larger LUT interpolates between cells.
+                    const bool usesLUT = maxDistanceKm > 1.0f && index == 16u;
+                    for (uint32_t channel = 0; channel < 3; ++channel) {
+                        const float expected = values[index + 8][channel];
+                        const float actual = values[index][channel];
+                        const float transmission = values[index + 1][channel];
+                        const float expectedTransmission = values[index + 9][channel];
+                        if (std::abs(actual - expected) > (usesLUT ? 0.01f : 5e-5f) * std::max(expected, 1e-3f) ||
+                            std::abs(transmission - expectedTransmission) > (usesLUT ? 0.001f : 1e-6f)) {
+                            return RHITestResult::fail(label + " row " + std::to_string(index) + ", channel " +
+                                std::to_string(channel) + ": radiance " + std::to_string(actual) + " vs " + std::to_string(expected) +
+                                ", transmission " + std::to_string(transmission) + " vs " + std::to_string(expectedTransmission));
+                        }
+                    }
+                }
+            }
+        }
+        return RHITestResult::pass("100 m aerial start verified at and around the boundary, for LUT and direct perspective/orthographic rays");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(AtmosphereAerialStartDepthTest);
+
 class AtmospherePrimaryRayOriginTest final : public RHITest {
 public:
     AtmospherePrimaryRayOriginTest() { name = "atmosphere_actual_primary_ray_origin"; type = RHITestType::Rendering; }

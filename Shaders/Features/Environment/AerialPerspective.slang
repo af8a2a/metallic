@@ -13,10 +13,10 @@ void aerialPerspectiveMain(uint3 id : SV_DispatchThreadID)
     GPUAtmosphereParameters p = loadParameters(gParams.parameters);
     float3 direction = skyDirectionFromUV(p, (float2(id.xy) + 0.5) / float2(gParams.dimensions.xy));
     float fraction = float(id.z) / float(gParams.dimensions.z - 1u);
-    float distance = aerialDistanceFromSlice(p, fraction);
-    AtmosphereSegment segment = segmentIntegration(p, resolveUniform(gParams.transmittance),
-        resolveUniform(gParams.multiScattering), p.observerPlanetBottom.xyz, direction, distance);
+    float depth = aerialDepthFromSlice(max(p.settings.x - p.settings.z, 0.0), fraction);
+    AtmosphereSegment segment = integrateAerialPerspective(p, resolveUniform(gParams.transmittance),
+        resolveUniform(gParams.multiScattering), p.observerPlanetBottom.xyz, direction, depth);
     uint index = ((id.z * gParams.dimensions.y + id.y) * gParams.dimensions.x + id.x) * 2u;
-    gParams.aerial.store(index, float4(segment.radiance, distance));
+    gParams.aerial.store(index, float4(segment.radiance, p.settings.z + depth));
     gParams.aerial.store(index + 1u, float4(segment.transmittance, 1.0));
 }

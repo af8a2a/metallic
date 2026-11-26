@@ -107,7 +107,7 @@ public Metallic.Atmosphere::AtmosphereSegment physicalAerialSegment(EnvironmentR
     if (!loadPhysicalAtmosphere(resources, atmosphere)) { return result; }
     float3 deltaKm = (worldEndpoint - primaryWorldOrigin) * 0.001;
     float distanceKm = length(deltaKm);
-    if (distanceKm < 1e-7) { return result; }
+    if (distanceKm < 1e-7 || distanceKm <= atmosphere.settings.z) { return result; }
     bool differentOrigin = any(primaryWorldOrigin != atmosphere.observerWorldTop.xyz);
     if ((differentOrigin || distanceKm > atmosphere.settings.x) && resources.transmittance.index != 0xffffffffu &&
         resources.multiScattering.index != 0xffffffffu) {
@@ -116,9 +116,9 @@ public Metallic.Atmosphere::AtmosphereSegment physicalAerialSegment(EnvironmentR
         // A far observer can traverse vacuum before entering the atmosphere.
         // The integral clips the actual camera segment to the shell; clamping
         // the LUT distance would miss the entire medium in that case.
-        return Metallic.Atmosphere::segmentIntegration(atmosphere, resolveUniform(resources.transmittance),
+        return Metallic.Atmosphere::integrateAerialPerspective(atmosphere, resolveUniform(resources.transmittance),
             resolveUniform(resources.multiScattering), Metallic.Atmosphere::worldToAtmosphereKm(atmosphere, primaryWorldOrigin),
-            deltaKm / distanceKm, distanceKm);
+            deltaKm / distanceKm, distanceKm - atmosphere.settings.z);
     }
     if (resources.aerialPerspective.index == 0xffffffffu) { return result; }
     let buffer = resolveBuffer<StructuredBuffer<float4>>(resources.aerialPerspective);

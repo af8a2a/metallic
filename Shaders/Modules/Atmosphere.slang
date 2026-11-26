@@ -10,11 +10,11 @@ namespace Metallic.Atmosphere
 {
 public static const float kPi = 3.14159265358979323846;
 public static const uint kAerialSize = 32u;
-public float aerialDistanceFromSlice(GPUAtmosphereParameters p, float fraction)
+public float aerialDepthFromSlice(float depthRangeKm, float fraction)
 {
     // Logarithmic depth provides metre-scale nearby samples while covering
     // hundreds of kilometres without allocating a view-dependent frustum.
-    return 0.01 * (exp(log(1.0 + p.settings.x / 0.01) * fraction) - 1.0);
+    return 0.01 * (exp(log(1.0 + depthRangeKm / 0.01) * fraction) - 1.0);
 }
 
 // Original implementation of the transport integral and isotropic geometric
@@ -287,6 +287,12 @@ public AtmosphereSegment segmentIntegration(GPUAtmosphereParameters p, Texture2D
     result.transmittance = spectralTransmittanceToWorking(integrated.transmittance);
     return result;
 }
+public AtmosphereSegment integrateAerialPerspective(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
+    Texture2D<float4> multiScattering, float3 rayOriginKm, float3 direction, float depthAfterStartKm)
+{
+    float3 rayStartKm = rayOriginKm + p.settings.z * direction;
+    return segmentIntegration(p, transmittance, multiScattering, rayStartKm, direction, depthAfterStartKm);
+}
 public float3 solarIrradiance(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
     float3 positionKm, uint slot, float cloudTransmittance)
 {
@@ -467,18 +473,21 @@ public AtmosphereSegment aerialPerspective(GPUAtmosphereParameters p, BufferSpan
     float distance = length(delta);
     AtmosphereSegment result;
     result.radiance = float3(0.0); result.transmittance = float3(1.0);
-    if (distance < 1e-7) { return result; }
+    float depth = distance - p.settings.z;
+    float depthRangeKm = p.settings.x - p.settings.z;
+    if (distance < 1e-7 || depth <= 0.0 || depthRangeKm <= 0.0) { return result; }
     float2 uv = skyDirectionUV(p, delta / distance);
     float3 coordinates = float3((frac(uv.x) + 1.0) * 32.0 - 0.5, uv.y * 32.0 - 0.5,
-        saturate(log(1.0 + distance / 0.01) / log(1.0 + p.settings.x / 0.01)) * 31.0);
+        saturate(log(1.0 + depth / 0.01) / log(1.0 + depthRangeKm / 0.01)) * 31.0);
     int3 base = int3(floor(coordinates)); float3 f = frac(coordinates);
     // Interpolate in travelled distance rather than the logarithmic index.
-    // In particular, nearby haze must approach zero linearly.
+    // Slice zero stores the identity at the start depth, so the first interval
+    // fades in along the ray without extrapolating from a nonzero slice centre.
     float lowerFraction = float(clamp(base.z, 0, 31)) / 31.0;
     float upperFraction = float(clamp(base.z + 1, 0, 31)) / 31.0;
-    float lowerDistance = aerialDistanceFromSlice(p, lowerFraction);
-    float upperDistance = aerialDistanceFromSlice(p, upperFraction);
-    f.z = upperDistance > lowerDistance ? saturate((distance - lowerDistance) / (upperDistance - lowerDistance)) : 0.0;
+    float lowerDepth = aerialDepthFromSlice(depthRangeKm, lowerFraction);
+    float upperDepth = aerialDepthFromSlice(depthRangeKm, upperFraction);
+    f.z = upperDepth > lowerDepth ? saturate((depth - lowerDepth) / (upperDepth - lowerDepth)) : 0.0;
     result.transmittance = float3(0.0);
     for (int z = 0; z < 2; ++z) {
         for (int y = 0; y < 2; ++y) {
@@ -491,6 +500,12 @@ public AtmosphereSegment aerialPerspective(GPUAtmosphereParameters p, BufferSpan
                 result.transmittance += aerial[index + 1u].xyz * weight;
             }
         }
+    }
+    // UE SkyAtmosphereCommon.ush fades both luminance and opacity over one centimetre.
+    if (p.settings.z > 0.0 && depth < 0.00001) {
+        float weight = saturate(depth * (1.0 / 0.00001));
+        result.radiance *= weight;
+        result.transmittance = 1.0 - weight * (1.0 - result.transmittance);
     }
     return result;
 }

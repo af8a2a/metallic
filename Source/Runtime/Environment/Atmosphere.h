@@ -30,6 +30,7 @@ struct AtmosphereState {
     float ozoneWidthKm = 15.0f; // Triangular profile half width.
     float3 groundAlbedo{0.3f, 0.3f, 0.3f};
     float maxAerialDistanceKm = 1000.0f;
+    float aerialPerspectiveStartDepthKm = 0.0f;
 
     bool operator==(const AtmosphereState& other) const
     {
@@ -43,7 +44,8 @@ struct AtmosphereState {
             mieScaleHeightKm == other.mieScaleHeightKm && mieAnisotropy == other.mieAnisotropy &&
             equal(ozoneAbsorption, other.ozoneAbsorption) &&
             ozoneCenterAltitudeKm == other.ozoneCenterAltitudeKm && ozoneWidthKm == other.ozoneWidthKm &&
-            equal(groundAlbedo, other.groundAlbedo) && maxAerialDistanceKm == other.maxAerialDistanceKm;
+            equal(groundAlbedo, other.groundAlbedo) && maxAerialDistanceKm == other.maxAerialDistanceKm &&
+            aerialPerspectiveStartDepthKm == other.aerialPerspectiveStartDepthKm;
     }
 };
 
@@ -75,7 +77,8 @@ inline bool validAtmosphereState(const AtmosphereState& atmosphere)
         finiteRange(atmosphere.ozoneCenterAltitudeKm, 0.0f, 1e5f) &&
         finiteRange(atmosphere.ozoneWidthKm, 0.001f, 1e5f) &&
         spectrumRange(atmosphere.groundAlbedo, 1.0f) &&
-        finiteRange(atmosphere.maxAerialDistanceKm, 0.001f, 1e6f);
+        finiteRange(atmosphere.maxAerialDistanceKm, 0.001f, 1e6f) &&
+        finiteRange(atmosphere.aerialPerspectiveStartDepthKm, 0.0f, 1e6f);
 }
 
 } // namespace metallic::environment

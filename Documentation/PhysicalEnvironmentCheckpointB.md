@@ -71,13 +71,22 @@ zenith detail and the ground/orbital horizon. The inverse mapping is shared by
 LUT generation and lookup. The lighting capture converts this sky-view mapping
 to the existing lat-long environment interface.
 
-Aerial distance slices use `d(s) = 0.01 * ((1 + maxDistanceKm / 0.01)^s - 1)`
-with `s = slice / 31`. The first slice is zero distance; subsequent slices
-cover nearby haze and long segments logarithmically. Lookup interpolates
-between adjacent slices in travelled distance, so in-scattering approaches
-zero linearly near the camera. Segments beyond the LUT's authored range use
-the clipped ray integral, including an orbital ray crossing vacuum before
-entering the atmosphere.
+Camera aerial perspective starts at `aerialPerspectiveStartDepthKm` along each
+primary ray. Through that distance the in-scattering is zero and transmittance
+is one. With `range = max(0, maxAerialDistanceKm - aerialPerspectiveStartDepthKm)`,
+the 32 slices store transport over distances
+`0.01 * ((1 + range / 0.01)^(slice / 31) - 1)` km from the offset ray origin.
+Lookup interpolates the adjacent slices in travelled distance. Beyond the LUT's
+maximum camera distance the renderer integrates directly from the offset
+origin, clipping the ray against the atmosphere and ground. A start depth at
+or beyond the LUT maximum routes all longer segments through direct integration.
+
+The start offset follows Unreal's `SkyAtmosphere.usf` camera aerial perspective
+integration. Metallic keeps its spherical log-depth LUT with an explicit
+identity slice and RGB transmittance. For a positive start depth, lookup also
+fades radiance and opacity over the first centimetre as in
+`SkyAtmosphereCommon.ush`. Zero starts at the actual ray origin, including
+when the raster near plane is farther away.
 
 Primary transport carries the actual world-space ray origin through the named
 environment consumer. Perspective rays originating at the published observer

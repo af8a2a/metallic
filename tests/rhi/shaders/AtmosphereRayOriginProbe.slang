@@ -87,6 +87,36 @@ void atmosphereRayOriginProbeMain(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(1, 1, 1)]
+void atmosphereAerialStartDepthProbeMain(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id != 0u)) { return; }
+    GPUAtmosphereParameters p = loadParameters(gProbe.resources.parameters);
+    EnvironmentResourceParameters environment = atmosphereProbeEnvironment();
+    float distancesMeters[6] = {20.0, 100.0, 101.0, 102.0, 1000.0, 2000.0};
+    float3 direction = float3(0.0, 1.0, 0.0);
+    for (uint ray = 0; ray < 2; ++ray) {
+        // The eye takes the LUT path while an offset orthographic origin needs direct integration.
+        float3 origin = p.observerWorldTop.xyz + direction * (2000.0 * float(ray));
+        for (uint sampleIndex = 0; sampleIndex < 6; ++sampleIndex) {
+            float distanceMeters = distancesMeters[sampleIndex];
+            float3 endpoint = origin + direction * distanceMeters;
+            AtmosphereSegment actual = physicalAerialSegment(environment, endpoint, origin);
+            uint index = sampleIndex * 4u + ray * 2u;
+            gProbe.resources.aerial.store(index, float4(actual.radiance, 1.0));
+            gProbe.resources.aerial.store(index + 1u, float4(actual.transmittance, 1.0));
+            if (sampleIndex >= 4u) {
+                // Independent reference for the authored 100 m start, measured along this ray.
+                float3 start = worldToAtmosphereKm(p, origin) + direction * 0.1;
+                AtmosphereSegment reference = segmentIntegration(p, resolveUniform(environment.transmittance),
+                    resolveUniform(environment.multiScattering), start, direction, distanceMeters * 0.001 - 0.1);
+                gProbe.resources.aerial.store(index + 8u, float4(reference.radiance, 1.0));
+                gProbe.resources.aerial.store(index + 9u, float4(reference.transmittance, 1.0));
+            }
+        }
+    }
+}
+
+[numthreads(1, 1, 1)]
 void atmosphereOffsetLimbProbeMain(uint3 id : SV_DispatchThreadID)
 {
     if (any(id != 0u)) { return; }

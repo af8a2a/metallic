@@ -24,6 +24,9 @@
             },
             "moon": {
                 "enabled": false
+            },
+            "atmosphere": {
+                "aerialPerspectiveStartDepthKm": 0.1
             }
         },
         "lighting": {

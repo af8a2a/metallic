@@ -43,7 +43,7 @@ public struct GPUAtmosphereParameters {
     ATMOSPHERE_PUBLIC AtmosphereFloat4 sunIrradianceEnabled; // TOA W/m^2/nm; enabled.
     ATMOSPHERE_PUBLIC AtmosphereFloat4 moonDirectionRadius;
     ATMOSPHERE_PUBLIC AtmosphereFloat4 moonIrradianceEnabled;
-    ATMOSPHERE_PUBLIC AtmosphereFloat4 settings;             // Maximum aerial distance km; physical enabled.
+    ATMOSPHERE_PUBLIC AtmosphereFloat4 settings;             // Aerial LUT range (km), physical enabled, aerial start depth (km).
     ATMOSPHERE_PUBLIC AtmosphereFloat4 cloudLayer;           // Base/top km; coverage; density multiplier.
     ATMOSPHERE_PUBLIC AtmosphereFloat4 cloudOptics;          // Grey extinction/km; albedo; HG g; enabled.
     ATMOSPHERE_PUBLIC AtmosphereFloat4 cloudAdvection;       // Offset km; noise seed bit pattern.

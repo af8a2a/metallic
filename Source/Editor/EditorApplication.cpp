@@ -4915,7 +4915,9 @@ void EditorApplication::drawEnvironmentControls()
             0.01f, 0.001f, 1e5f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
         celestialChanged |= ImGui::SliderFloat("Mie anisotropy", &atmosphere.mieAnisotropy, -0.99f, 0.99f, "%.3f");
         editSpectrum("Ground albedo", atmosphere.groundAlbedo, 1.0f);
-        celestialChanged |= ImGui::DragFloat("Aerial distance (km)", &atmosphere.maxAerialDistanceKm,
+        celestialChanged |= ImGui::DragFloat("Aerial perspective start depth (km)", &atmosphere.aerialPerspectiveStartDepthKm,
+            0.001f, 0.0f, 1e6f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        celestialChanged |= ImGui::DragFloat("Aerial LUT range (km)", &atmosphere.maxAerialDistanceKm,
             1.0f, 0.001f, 1e6f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
         if (ImGui::TreeNode("Spectral coefficients")) {
             ImGui::TextUnformatted("680, 550, 440 nm; coefficients in km^-1");

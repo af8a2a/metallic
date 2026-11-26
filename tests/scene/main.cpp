@@ -5903,10 +5903,17 @@ TEST(WorldEnvironment, PhysicalAtmosphereSnapshotRevisionDomainsAndValidation)
     EXPECT_GT(selected.atmosphereRevision, initial.atmosphereRevision);
     EXPECT_EQ(selected.celestialRevision, initial.celestialRevision);
     EXPECT_GT(selected.lightingRevision, initial.lightingRevision);
+    world.atmosphere.aerialPerspectiveStartDepthKm = 0.1f;
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    const auto startChanged = document.environmentSnapshot();
+    EXPECT_GT(startChanged.atmosphereRevision, selected.atmosphereRevision);
+    EXPECT_EQ(startChanged.celestialRevision, selected.celestialRevision);
+    EXPECT_FLOAT_EQ(selected.atmosphere.aerialPerspectiveStartDepthKm, 0.0f);
+    EXPECT_FLOAT_EQ(startChanged.atmosphere.aerialPerspectiveStartDepthKm, 0.1f);
     world.atmosphere.mieScaleHeightKm = 2.0f;
     ASSERT_TRUE(document.setWorldEnvironment(world));
     const auto atmosphereChanged = document.environmentSnapshot();
-    EXPECT_GT(atmosphereChanged.atmosphereRevision, selected.atmosphereRevision);
+    EXPECT_GT(atmosphereChanged.atmosphereRevision, startChanged.atmosphereRevision);
     EXPECT_EQ(atmosphereChanged.celestialRevision, selected.celestialRevision);
     EXPECT_FLOAT_EQ(selected.atmosphere.mieScaleHeightKm, 1.2f);
     world.sun.enabled = true;
@@ -5923,7 +5930,7 @@ TEST(WorldEnvironment, PhysicalAtmosphereSnapshotRevisionDomainsAndValidation)
     EXPECT_EQ(hdriChanged.atmosphereRevision, celestialChanged.atmosphereRevision);
     EXPECT_GT(hdriChanged.lightingRevision, celestialChanged.lightingRevision);
     EXPECT_FALSE(document.setWorldEnvironment(world));
-    for (int invalidCase = 0; invalidCase < 14; ++invalidCase) {
+    for (int invalidCase = 0; invalidCase < 16; ++invalidCase) {
         auto invalid = world;
         auto& atmosphere = invalid.atmosphere;
         if (invalidCase == 0) { invalid.source = static_cast<EnvironmentSource>(99); }
@@ -5940,6 +5947,8 @@ TEST(WorldEnvironment, PhysicalAtmosphereSnapshotRevisionDomainsAndValidation)
         if (invalidCase == 11) { atmosphere.maxAerialDistanceKm = -1.0f; }
         if (invalidCase == 12) { invalid.sun.topOfAtmosphereIrradiance.z = 100.1f; }
         if (invalidCase == 13) { invalid.moon.topOfAtmosphereIrradiance.x = -0.001f; }
+        if (invalidCase == 14) { atmosphere.aerialPerspectiveStartDepthKm = -0.1f; }
+        if (invalidCase == 15) { atmosphere.aerialPerspectiveStartDepthKm = std::numeric_limits<float>::infinity(); }
         EXPECT_FALSE(document.setWorldEnvironment(invalid)) << invalidCase;
         EXPECT_EQ(document.worldEnvironment(), world) << invalidCase;
         EXPECT_EQ(document.environmentSnapshot().atmosphereRevision, hdriChanged.atmosphereRevision);
@@ -5973,6 +5982,7 @@ TEST(WorldEnvironment, PhysicalAtmosphereDocumentRoundTripAndTransactionalReject
     world.atmosphere.ozoneWidthKm = 12.0f;
     world.atmosphere.groundAlbedo = float3(0.1f, 0.2f, 0.4f);
     world.atmosphere.maxAerialDistanceKm = 2000.0f;
+    world.atmosphere.aerialPerspectiveStartDepthKm = 0.25f;
     auto& fog = world.volumetricFog;
     fog.enabled = true;
     fog.density = 0.47f;
@@ -6004,6 +6014,7 @@ TEST(WorldEnvironment, PhysicalAtmosphereDocumentRoundTripAndTransactionalReject
     nlohmann::json saved;
     { std::ifstream stream(sidecar); stream >> saved; }
     EXPECT_EQ(saved["world"]["environment"]["source"], "physicalAtmosphere");
+    EXPECT_FLOAT_EQ(saved["world"]["environment"]["atmosphere"]["aerialPerspectiveStartDepthKm"].get<float>(), 0.25f);
     EXPECT_DOUBLE_EQ(saved["world"]["environment"]["atmosphere"]["planetCenter"][0].get<double>(),
         world.atmosphere.planetCenter[0]);
     SceneDocument restored;
@@ -6011,7 +6022,7 @@ TEST(WorldEnvironment, PhysicalAtmosphereDocumentRoundTripAndTransactionalReject
     EXPECT_EQ(restored.worldEnvironment(), world);
     const auto identity = restored.resourceIdentity();
     EXPECT_EQ(restored.environmentSnapshot().volumetricFog, fog);
-    const std::array<nlohmann::json, 15> invalidSettings{
+    const std::array<nlohmann::json, 16> invalidSettings{
         nlohmann::json{{"volumetricFog", {{"localVolumes", "sphere"}}}},
         nlohmann::json{{"volumetricFog", {{"localVolumes", {{{"sortPriority", 1.5}}}}}}},
         nlohmann::json{{"volumetricFog", {{"localVolumes", {{{"radiusMeters", 0.0}}}}}}},
@@ -6022,6 +6033,7 @@ TEST(WorldEnvironment, PhysicalAtmosphereDocumentRoundTripAndTransactionalReject
         nlohmann::json{{"atmosphere", {{"planetCenter", {0.0, 1.0}}}}},
         nlohmann::json{{"atmosphere", {{"topRadiusKm", 10.0}}}},
         nlohmann::json{{"atmosphere", {{"mieAnisotropy", 1.0}}}},
+        nlohmann::json{{"atmosphere", {{"aerialPerspectiveStartDepthKm", -0.01}}}},
         nlohmann::json{{"atmosphere", {{"rayleighScattering", {-0.1, 0.1, 0.2}}}}},
         nlohmann::json{{"atmosphere", {{"groundAlbedo", {0.5, 1.1, 0.5}}}}},
         nlohmann::json{{"sun", {{"topOfAtmosphereIrradiance", {1.0, 101.0, 1.0}}}}},
@@ -6036,6 +6048,11 @@ TEST(WorldEnvironment, PhysicalAtmosphereDocumentRoundTripAndTransactionalReject
         EXPECT_EQ(restored.resourceIdentity(), identity);
     }
     auto legacy = saved;
+    legacy["world"]["environment"]["atmosphere"].erase("aerialPerspectiveStartDepthKm");
+    writeTextFile(sidecar, legacy.dump(2));
+    ASSERT_TRUE(restored.load(sidecar)) << restored.documentWarning();
+    EXPECT_EQ(restored.worldEnvironment().source, EnvironmentSource::PhysicalAtmosphere);
+    EXPECT_FLOAT_EQ(restored.worldEnvironment().atmosphere.aerialPerspectiveStartDepthKm, 0.0f);
     legacy["world"]["environment"].erase("source");
     legacy["world"]["environment"].erase("atmosphere");
     legacy["world"]["environment"].erase("volumetricFog");

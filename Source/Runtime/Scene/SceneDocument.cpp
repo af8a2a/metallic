@@ -469,7 +469,8 @@ nlohmann::json serializeAtmosphere(const environment::AtmosphereState& atmospher
         {"mieScaleHeightKm", atmosphere.mieScaleHeightKm}, {"mieAnisotropy", atmosphere.mieAnisotropy},
         {"ozoneAbsorption", spectrum(atmosphere.ozoneAbsorption)},
         {"ozoneCenterAltitudeKm", atmosphere.ozoneCenterAltitudeKm}, {"ozoneWidthKm", atmosphere.ozoneWidthKm},
-        {"groundAlbedo", spectrum(atmosphere.groundAlbedo)}, {"maxAerialDistanceKm", atmosphere.maxAerialDistanceKm}};
+        {"groundAlbedo", spectrum(atmosphere.groundAlbedo)}, {"maxAerialDistanceKm", atmosphere.maxAerialDistanceKm},
+        {"aerialPerspectiveStartDepthKm", atmosphere.aerialPerspectiveStartDepthKm}};
 }
 
 bool parseAtmosphere(const nlohmann::json& value, environment::AtmosphereState& atmosphere, std::string& reason)
@@ -495,6 +496,7 @@ bool parseAtmosphere(const nlohmann::json& value, environment::AtmosphereState& 
         {"mieScaleHeightKm", &atmosphere.mieScaleHeightKm}, {"mieAnisotropy", &atmosphere.mieAnisotropy},
         {"ozoneCenterAltitudeKm", &atmosphere.ozoneCenterAltitudeKm}, {"ozoneWidthKm", &atmosphere.ozoneWidthKm},
         {"maxAerialDistanceKm", &atmosphere.maxAerialDistanceKm},
+        {"aerialPerspectiveStartDepthKm", &atmosphere.aerialPerspectiveStartDepthKm},
     };
     for (const auto& [key, destination] : scalarFields) {
         double number = *destination;
@@ -510,7 +512,7 @@ bool parseAtmosphere(const nlohmann::json& value, environment::AtmosphereState& 
         if (!readOptionalSpectrum(value, key, *destination, reason)) { return false; }
     }
     if (!environment::validAtmosphereState(atmosphere)) {
-        reason = "invalid atmosphere radius, center, coefficient, density, anisotropy or albedo";
+        reason = "invalid atmosphere radius, center, coefficient, density, anisotropy, albedo or aerial perspective distance";
         return false;
     }
     return true;
