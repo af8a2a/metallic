@@ -60,6 +60,8 @@ std::vector<ScreenSpaceShadowLightRecord> buildScreenSpaceShadowLightRecords(
         lights[i].celestial.shadowImportance *= std::max(-celestial[i].direction[1], 0.0f);
     }
     for (size_t i = 0; i < sources.size(); ++i) {
+        // Trace beam/range visibility independently of photometry. The receiving
+        // lighting pass applies the IES distribution after reading visibility.
         lights[celestial.size() + i] = {.local = sources[i].gpu,
             .sourceIndex = static_cast<uint32_t>(i), .enabled = sources[i].enabled};
     }

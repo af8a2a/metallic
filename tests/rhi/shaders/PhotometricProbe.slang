@@ -9,6 +9,14 @@ using Metallic.Lighting;
 #define gOutput resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<PhotometricProbeResources>().output)
 #define gSH resolveBuffer<StructuredBuffer<float4>>(getResourceParameters<PhotometricProbeResources>().irradiance)
 
+float3 iesProbePosition(float verticalDegrees, float horizontalDegrees)
+{
+    const float radians = 0.0174532925199433f;
+    float vertical = verticalDegrees * radians;
+    float horizontal = horizontalDegrees * radians;
+    return float3(-sin(vertical) * cos(horizontal), sin(vertical) * sin(horizontal), cos(vertical));
+}
+
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void photometricProbeMain()
@@ -25,4 +33,12 @@ void photometricProbeMain()
     for (uint n = 0; n < 6; ++n) {
         gOutput[6 + n] = float4(environment.evaluate(normals[n]), 0);
     }
+    let lights = resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<PhotometricProbeResources>().lights);
+    gOutput[12] = float4(samplePunctualLight(lights, 2u, iesProbePosition(30.0f, 0.0f)).illuminance, 0);
+    gOutput[13] = float4(samplePunctualLight(lights, 2u, iesProbePosition(30.0f, 90.0f)).illuminance, 0);
+    gOutput[14] = float4(samplePunctualLight(lights, 2u, iesProbePosition(50.0f, 45.0f)).illuminance, 0);
+    gOutput[15] = float4(samplePunctualLight(lights, 2u, iesProbePosition(110.0f, 0.0f)).illuminance, 0);
+    gOutput[16] = float4(samplePunctualLight(lights, 2u, iesProbePosition(30.0f, 315.0f)).illuminance, 0);
+    gOutput[17] = float4(samplePunctualLight(lights, 3u, iesProbePosition(30.0f, 0.0f)).illuminance, 0);
+    gOutput[18] = float4(samplePunctualLight(lights, 3u, iesProbePosition(50.0f, 0.0f)).illuminance, 0);
 }

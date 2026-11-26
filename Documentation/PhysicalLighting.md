@@ -51,6 +51,34 @@ Manual exposure follows Unreal's `EV100ToLuminance(1, EV)` saturation-luminance 
 
 An HDR file is not inherently calibrated. To compare it against physical lamps, its linear pixels must represent cd/m² after multiplying by Environment Intensity. This multiplier is therefore also the HDR calibration scale. Arbitrary HDRIs and the procedural preview sky are not guaranteed to have an absolute physical calibration.
 
+## Spotlights and IES profiles
+
+In **Scene List → Physical Lighting**, use **Add spot** to create a spotlight.
+Set its emission direction, range and inner and outer half-angles. In the
+Scene Graph, authored spotlights appear under **Fog & Lights** unless the scene
+document assigns them to a source node. **Bounds** shows their outer cone and
+finite range.
+
+Use **Load .ies** on a point or spot light in Physical Lighting or Inspector.
+Metallic reads Type C LM-63 files with `TILT=NONE` and interpolates the measured
+angles, including the file's horizontal symmetry. Profile roll turns the
+distribution about the emission axis. The scene stores the `iesProfile` path
+relative to the scene document when possible, together with `iesRollDegrees`
+and `useIESIntensity`. Keep the `.ies` file with the scene when moving assets.
+
+By default, the profile scales the authored light intensity by a normalized
+angular distribution. **Use measured peak** takes the peak candela from the
+file, including its photometric multipliers. A spotlight's cone and range
+continue to limit the result in either mode. Set intensity in candela or use
+the measured peak when calibrating a light to an IES file. The Lumens control
+uses the underlying point or spot conversion before profile modulation.
+
+The profile modulates direct punctual illumination in realtime shading, path
+tracing, RTXDI, Lumen Surface Cache and volumetric fog. Spatial culling and
+shadow coverage continue to use the light's geometric cone and range.
+[ANSI LM-63 overview](https://blog.ansi.org/ansi/standard-file-photometric-data-ies-lm-63-19/)
+· [Autodesk Type C file guide](https://help.autodesk.com/cloudhelp/2024/ENU/AutoCAD-Core/files/GUID-45CAAF1C-7C9D-49A7-B18D-00CA5E2ED380.htm)
+
 ## Rectangular area lights
 
 In **Physical Lighting**, select **Add rect light**. Position and emission direction are in world space. Width, height and optional attenuation range are in metres. Roll rotates the rectangle about its emission direction. Zero range is unbounded. The scene saves the settings in `world.lighting.rectLights`. At constant luminance, increasing the emitting surface also increases its total light output.

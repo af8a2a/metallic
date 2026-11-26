@@ -304,6 +304,7 @@ struct CaptureLighting {
     bool hardwarePunctualShadows;
     bool hardwareRectShadows;
     std::vector<GPUPunctualLight> punctual;
+    std::shared_ptr<IESProfilePublication> iesProfiles;
     std::vector<GPURectLight> rectLights;
     std::array<float, 3> clipmapEye{};
     uint32_t rectLightSamples = 0;
@@ -1186,7 +1187,11 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
             spdlog::error("Surface Cache shadowed lighting requires matching quantized GDF clipmap resources");
             return makeError(Error::InvalidArgument);
         }
-        lighting.punctual = buildPunctualLightRecords(&scene, resolvedLighting);
+        std::vector<IESProfileAssignment> assignments;
+        lighting.punctual = buildPunctualLightRecords(&scene, resolvedLighting, &assignments);
+        auto profiles = publishIESProfiles(*device_, context.commandBuffer(), lighting.punctual, assignments);
+        if (!profiles) { return makeError(profiles.error()); }
+        lighting.iesProfiles = std::move(*profiles);
         if (clipmapCount > 1 && context.viewConstants()) {
             const auto& eye = context.viewConstants()->current.eye;
             lighting.clipmapEye = {eye[0], eye[1], eye[2]};
@@ -1487,6 +1492,7 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         localLights = std::move(*records);
         ParameterWriter writer(*device_, **registry, frame);
         ShadowedLightingParams params{};
+        writer.retain(lighting.iesProfiles);
         bindLighting(writer, params);
         params.depth = writer.sampledImageHandle(context.outputTexture("depth").view());
         params.sunCastsShadow = lighting.sunCastsShadow;

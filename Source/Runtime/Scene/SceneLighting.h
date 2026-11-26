@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Scene/SceneComponents.h"
+#include "Runtime/Scene/IESProfile.h"
 
 #include <optional>
 #include <atomic>
@@ -40,6 +41,9 @@ struct PunctualLight {
     // Imported lights remain native editable lights, with poses relative to their
     // source node. position/direction are resolved world-space editor snapshots.
     std::optional<ImportedLightBinding> imported;
+    std::shared_ptr<const IESProfile> iesProfile;
+    float iesRollDegrees = 0.0f;
+    bool useIESIntensity = false;
 };
 
 struct RectLight {
@@ -120,7 +124,8 @@ inline bool validLightingSettings(const LightingSettings& settings)
             !validLightProperties(light.properties) ||
             !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
             !std::isfinite(d.x) || !std::isfinite(d.y) || !std::isfinite(d.z) ||
-            (light.properties.type != "point" &&
+            !std::isfinite(light.iesRollDegrees) || (light.useIESIntensity && !light.iesProfile) ||
+            ((light.properties.type != "point" || light.iesProfile) &&
                 (double(d.x) * d.x + double(d.y) * d.y + double(d.z) * d.z) < 1e-12)) {
             return false;
         }
@@ -131,7 +136,7 @@ inline bool validLightingSettings(const LightingSettings& settings)
             if (source.sourceId.empty() || source.sourceNodeIndex < 0 ||
                 !std::isfinite(localP.x) || !std::isfinite(localP.y) || !std::isfinite(localP.z) ||
                 !std::isfinite(localD.x) || !std::isfinite(localD.y) || !std::isfinite(localD.z) ||
-                (light.properties.type != "point" &&
+                ((light.properties.type != "point" || light.iesProfile) &&
                     double(localD.x) * localD.x + double(localD.y) * localD.y + double(localD.z) * localD.z < 1e-12)) {
                 return false;
             }

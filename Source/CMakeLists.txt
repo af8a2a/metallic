@@ -325,6 +325,7 @@ add_library(MetallicRuntimeScene STATIC
     Runtime/Material/MaterialClosureClassification.cpp
     Runtime/Scene/glTFGPUInstancing.cpp
     Runtime/Scene/GeometryAttributes.cpp
+    Runtime/Scene/IESProfile.cpp
     Runtime/Scene/MeshDistanceField.cpp
     Runtime/Scene/MeshletStreamAsset.cpp
     Runtime/Scene/MeshletStreamGPUCodec.cpp

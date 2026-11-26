@@ -35,7 +35,7 @@ struct ScreenSpaceShadowParameters {
     uint32_t control[4]{}; // enabled, celestial domain, tagged source identity, debug
     float shape[4]{}; // local light radius, denoise enabled, reserved, reserved
 };
-static_assert(sizeof(ScreenSpaceShadowParameters) == 320);
+static_assert(sizeof(ScreenSpaceShadowParameters) == 336);
 
 struct ScreenSpaceShadowResult {
     Texture* texture = nullptr;

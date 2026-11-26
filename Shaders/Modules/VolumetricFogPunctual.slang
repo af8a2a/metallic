@@ -74,6 +74,7 @@ public float3 fogPunctualScattering(ClusterLightGridParams grid, StructuredBuffe
                 float cone = saturate((dot(L, -light.directionType.xyz) - angles.x) * angles.y);
                 lightMask *= cone * cone;
             }
+            lightMask = applyPunctualIESProfile(light, -L, lightMask);
             float lighting = rcp(distanceSqr + distanceBiasSqr);
             float combinedAttenuation = lighting * lightMask;
             // Metallic stores candela. UE applies its cd-to-cm² conversion at light upload.

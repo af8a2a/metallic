@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/Environment/CelestialLighting.h"
 #include "Runtime/Render/Environment/AtmosphereResources.h"
@@ -7,9 +8,12 @@
 #include "Runtime/Render/ImportanceSampling.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <mutex>
+#include <numbers>
 #include <unordered_map>
 
 namespace metallic::render {
@@ -193,10 +197,13 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
     std::unordered_multimap<scene::SceneEntity, const scene::RenderLight*> importedSources;
     importedSources.reserve(renderLights.size());
     auto populate = [](SceneLightRecord& record, const scene::LightProperties& properties,
-                        const float3& position, const float3& direction) {
+                        const float3& position, const float3& direction, const scene::PunctualLight* authored = nullptr,
+                        const float4x4* sourceWorld = nullptr) {
         if (!scene::validLightProperties(properties)) { return; }
-        const double intensity = scene::lightIntensitySI(properties.type, properties.intensityUnit,
-            properties.intensity, properties.innerConeAngle, properties.outerConeAngle);
+        const auto profile = authored ? authored->iesProfile : nullptr;
+        const double intensity = profile && authored->useIESIntensity ? profile->peakCandela :
+            scene::lightIntensitySI(properties.type, properties.intensityUnit,
+                properties.intensity, properties.innerConeAngle, properties.outerConeAngle);
         if (intensity <= 0.0 || static_cast<float>(intensity) == 0.0f ||
             (properties.color.x == 0.0f && properties.color.y == 0.0f && properties.color.z == 0.0f) ||
             !std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z) ||
@@ -230,6 +237,28 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
         light.spot[1] = static_cast<float>(std::cos(properties.outerConeAngle));
         light.spot[2] = static_cast<float>(properties.sourceRadius);
         light.spot[3] = static_cast<float>(properties.volumetricScatteringIntensity);
+        if (profile) {
+            double roll = double(authored->iesRollDegrees) * (std::numbers::pi / 180.0);
+            if (sourceWorld) {
+                const auto right = [](const float3& forward) {
+                    const auto referenceUp = std::abs(forward.y) < 0.999f
+                        ? float3(0.0f, 1.0f, 0.0f) : float3(0.0f, 0.0f, -1.0f);
+                    return normalize(cross(forward, referenceUp));
+                };
+                // Follow imported node rotations about the forward axis too.
+                // The shader constructs the same world frame and applies roll.
+                const float3 tangent = right(normalize(authored->imported->localDirection));
+                const float4 transformed = *sourceWorld * float4(tangent, 0.0f);
+                const float3 worldTangent(transformed.x, transformed.y, transformed.z);
+                const float3 worldRight = right(normalized);
+                const float x = dot(worldTangent, worldRight);
+                const float y = -dot(worldTangent, cross(worldRight, normalized));
+                if (x != 0.0f || y != 0.0f) { roll += std::atan2(double(y), double(x)); }
+            }
+            light.iesRollCos = static_cast<float>(std::cos(roll));
+            light.iesRollSin = static_cast<float>(std::sin(roll));
+            record.iesProfile = profile;
+        }
         record.gpu = light;
         record.enabled = true;
         record.castVolumetricShadow = properties.castVolumetricShadow;
@@ -285,20 +314,20 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
                 float3(m.a00 * p.x + m.a01 * p.y + m.a02 * p.z + m.a03,
                     m.a10 * p.x + m.a11 * p.y + m.a12 * p.z + m.a13,
                     m.a20 * p.x + m.a21 * p.y + m.a22 * p.z + m.a23),
-                light.properties.type == "point" ? float3(0.0f, -1.0f, 0.0f)
+                light.properties.type == "point" && !light.iesProfile ? float3(0.0f, -1.0f, 0.0f)
                     : float3(m.a00 * d.x + m.a01 * d.y + m.a02 * d.z,
                     m.a10 * d.x + m.a11 * d.y + m.a12 * d.z,
-                    m.a20 * d.x + m.a21 * d.y + m.a22 * d.z));
+                    m.a20 * d.x + m.a21 * d.y + m.a22 * d.z), &light, &m);
         } else if (light.enabled) {
-            populate(record, light.properties, light.position, light.properties.type == "point"
-                ? float3(0.0f, -1.0f, 0.0f) : light.direction);
+            populate(record, light.properties, light.position, light.properties.type == "point" && !light.iesProfile
+                ? float3(0.0f, -1.0f, 0.0f) : light.direction, &light);
         }
     }
     return records;
 }
 
 std::vector<GPUPunctualLight> buildPunctualLightRecords(
-    const scene::Scene* scene, const scene::LightingSettings& settings)
+    const scene::Scene* scene, const scene::LightingSettings& settings, std::vector<IESProfileAssignment>* assignments)
 {
     const auto sceneRecords = buildSceneLightRecords(scene != nullptr
         ? std::span<const scene::RenderLight>(scene->lights())
@@ -306,8 +335,11 @@ std::vector<GPUPunctualLight> buildPunctualLightRecords(
     std::vector<GPUPunctualLight> records(1);
     records.reserve(sceneRecords.size() + 1);
     records[0].positionRange[1] = std::exp2(-settings.exposureEV100);
+    if (assignments) { assignments->clear(); }
     for (const SceneLightRecord& record : sceneRecords) {
-        if (record.enabled) { records.push_back(record.gpu); }
+        if (!record.enabled) { continue; }
+        if (assignments && record.iesProfile) { assignments->push_back({records.size(), record.iesProfile}); }
+        records.push_back(record.gpu);
     }
     records[0].positionRange[0] = static_cast<float>(records.size() - 1);
     return records;
@@ -331,7 +363,77 @@ Result<std::unique_ptr<Buffer>> createLightBuffer(Device& device, std::span<cons
     return buffer;
 }
 
+struct IESProfileAllocation {
+    std::shared_ptr<const scene::IESProfile> profile;
+    ResourceLease lease;
+};
+
+struct IESProfileCache {
+    std::mutex mutex;
+    std::unordered_map<const scene::IESProfile*, std::weak_ptr<IESProfileAllocation>> allocations;
+};
+
+Result<ResourceLease> uploadIESProfile(Device& device, ResourceRegistry& registry, const scene::IESProfile& profile)
+{
+    const std::array<uint32_t, 2> dimensions{
+        static_cast<uint32_t>(profile.verticalAngles.size()), static_cast<uint32_t>(profile.horizontalAngles.size())};
+    // Shared with PhotometricLighting.slang: counts followed by degree tables
+    // and normalized candela values in horizontal-plane order.
+    std::vector<std::byte> bytes(sizeof(dimensions) + sizeof(float) * (profile.verticalAngles.size() +
+        profile.horizontalAngles.size() + profile.candela.size()));
+    std::memcpy(bytes.data(), dimensions.data(), sizeof(dimensions));
+    auto* cursor = bytes.data() + sizeof(dimensions);
+    for (const auto* values : {&profile.verticalAngles, &profile.horizontalAngles, &profile.candela}) {
+        const size_t size = values->size() * sizeof(float);
+        std::memcpy(cursor, values->data(), size);
+        cursor += size;
+    }
+    auto buffer = createLightBuffer(device, bytes);
+    if (!buffer) { return makeError(buffer.error()); }
+    return registry.storageBuffer(**buffer);
+}
+
 } // namespace
+
+class IESProfilePublication {
+public:
+    std::vector<std::shared_ptr<IESProfileAllocation>> allocations;
+};
+
+Result<std::shared_ptr<IESProfilePublication>> publishIESProfiles(Device& device,
+    CommandBuffer& commands, std::span<GPUPunctualLight> lights, std::span<const IESProfileAssignment> assignments)
+{
+    if (assignments.empty()) { return std::shared_ptr<IESProfilePublication>{}; }
+    auto registry = ResourceRegistry::forDevice(device);
+    if (!registry) { return makeError(registry.error()); }
+    static const char cacheKey = 0;
+    auto state = device.sharedState(&cacheKey, []() -> Result<std::shared_ptr<void>> {
+        return std::make_shared<IESProfileCache>();
+    });
+    if (!state) { return makeError(state.error()); }
+    auto& cache = *static_cast<IESProfileCache*>(state->get());
+    auto publication = std::make_shared<IESProfilePublication>();
+    publication->allocations.reserve(assignments.size());
+    {
+        std::lock_guard lock(cache.mutex);
+        std::erase_if(cache.allocations, [](const auto& entry) { return entry.second.expired(); });
+        for (const auto& assignment : assignments) {
+            auto& cached = cache.allocations[assignment.profile.get()];
+            auto allocation = cached.lock();
+            if (!allocation) {
+                auto lease = uploadIESProfile(device, **registry, *assignment.profile);
+                if (!lease) { return makeError(lease.error()); }
+                allocation = std::make_shared<IESProfileAllocation>(IESProfileAllocation{
+                    assignment.profile, std::move(*lease)});
+                cached = allocation;
+            }
+            lights[assignment.lightIndex].iesProfile = allocation->lease.shaderIndex();
+            publication->allocations.push_back(std::move(allocation));
+        }
+    }
+    if (auto retained = commands.retainResource(publication); !retained) { return makeError(retained.error()); }
+    return publication;
+}
 
 Result<std::vector<GPURectLight>> buildRectLightRecords(std::span<const scene::RectLight> lights)
 {
@@ -370,7 +472,10 @@ Result<> SceneLightResources::update(Device& device, CommandBuffer& commands,
     RenderSubsystemHost& host, const scene::Scene* scene, const scene::LightingSettings& settings)
 {
     if (!scene::validLightingSettings(settings)) { return makeError(Error::InvalidArgument); }
-    auto records = buildPunctualLightRecords(scene, settings);
+    std::vector<IESProfileAssignment> assignments;
+    auto records = buildPunctualLightRecords(scene, settings, &assignments);
+    auto profiles = publishIESProfiles(device, commands, records, assignments);
+    if (!profiles) { return makeError(profiles.error()); }
     const uint64_t bytes = records.size() * sizeof(GPUPunctualLight);
     if (records.size() != records_.size() ||
         std::memcmp(records.data(), records_.data(), static_cast<size_t>(bytes)) != 0) {
@@ -381,6 +486,7 @@ Result<> SceneLightResources::update(Device& device, CommandBuffer& commands,
         records_ = std::move(records);
         ++revision_;
     }
+    iesProfiles_ = std::move(*profiles);
     if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(buffer_); }
     commands.hostWriteBarrier();
     return {};

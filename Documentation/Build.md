@@ -426,9 +426,15 @@ its gizmo moves that projector independently. Set
 viewport after the decal drag and redo.
 
 The showcase test also opens `Fog & Rect Lights` and checks the bounds and
-independent gizmo movement of its fog volume and three lights. Set
+independent gizmo movement of the fog volume, point light, both spotlights
+(including the IES spotlight), and two rect lights. Set
 `METALLIC_FOG_LIGHT_GIZMO_SMOKE_CAPTURE` to a `.ppm` path to capture the
 rectangular light after its drag and redo.
+
+To capture the final editor frame from `--smoke-test`, set
+`METALLIC_SMOKE_TEST_CAPTURE` to a `.ppm` path. Use `--scene` to load the
+scene under test and `METALLIC_SMOKE_TEST_FRAMES` to wait through its initial
+streaming and temporal updates.
 
 ## Release and optimized debugging
 

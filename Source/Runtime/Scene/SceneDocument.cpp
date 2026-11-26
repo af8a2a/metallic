@@ -768,6 +768,57 @@ std::filesystem::path normalizedPath(const std::filesystem::path& path)
     return error ? path : normalized;
 }
 
+using IESProfileCache = std::map<std::filesystem::path, std::shared_ptr<const IESProfile>>;
+
+bool parseIESLightSettings(const nlohmann::json& value, const std::filesystem::path& directory,
+    IESProfileCache& profiles, PunctualLight& light, std::string& reason)
+{
+    const auto profile = value.find("iesProfile");
+    if (profile == value.end()) {
+        if (value.contains("iesRollDegrees") || value.contains("useIESIntensity")) {
+            reason = "IES roll and intensity require iesProfile.";
+            return false;
+        }
+        return true;
+    }
+    if (light.properties.type != "point" && light.properties.type != "spot") {
+        reason = "IES profiles require a point or spot light.";
+        return false;
+    }
+    if (!profile->is_string()) {
+        reason = "iesProfile must be a file path string.";
+        return false;
+    }
+    const auto& uri = profile->get_ref<const std::string&>();
+    if (uri.empty() || uri.find('\0') != std::string::npos) {
+        reason = "iesProfile must be a non-empty file path.";
+        return false;
+    }
+    double roll = 0.0;
+    if (!readOptionalFiniteNumber(value, "iesRollDegrees", roll, reason)) { return false; }
+    if (std::abs(roll) > std::numeric_limits<float>::max()) {
+        reason = "iesRollDegrees is outside the supported range.";
+        return false;
+    }
+    if (value.contains("useIESIntensity") && !value["useIESIntensity"].is_boolean()) {
+        reason = "useIESIntensity must be a boolean.";
+        return false;
+    }
+    const auto path = normalizedPath(directory / std::filesystem::path(std::u8string(uri.begin(), uri.end())));
+    auto& loaded = profiles[path];
+    if (!loaded) {
+        loaded = loadIESProfile(path, reason);
+        if (!loaded) {
+            reason = "iesProfile '" + uri + "': " + reason;
+            return false;
+        }
+    }
+    light.iesProfile = loaded;
+    light.iesRollDegrees = static_cast<float>(roll);
+    light.useIESIntensity = value.value("useIESIntensity", false);
+    return true;
+}
+
 std::optional<RealtimeGISettings> parseRealtimeGI(const nlohmann::json& value,
     const std::filesystem::path& documentDirectory, std::string& error)
 {
@@ -1984,6 +2035,7 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                     }
                 }
                 if (lighting.contains("lights")) {
+                    IESProfileCache iesProfiles;
                     for (const auto& value : lighting["lights"]) {
                         PunctualLight light;
                         std::string reason;
@@ -1996,6 +2048,10 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                         }
                         light.properties.type = value["type"].get<std::string>();
                         if (!parseLightProperties(value, light.properties, light.properties, reason)) {
+                            documentWarning_ = "Invalid world.lighting light: " + reason;
+                            return false;
+                        }
+                        if (!parseIESLightSettings(value, path.parent_path(), iesProfiles, light, reason)) {
                             documentWarning_ = "Invalid world.lighting light: " + reason;
                             return false;
                         }
@@ -2708,6 +2764,15 @@ bool SceneDocument::save(std::string& message)
         value["enabled"] = light.enabled;
         value["position"] = {light.position.x, light.position.y, light.position.z};
         value["direction"] = {light.direction.x, light.direction.y, light.direction.z};
+        if (light.iesProfile) {
+            const auto& path = light.iesProfile->sourcePath;
+            std::error_code error;
+            const auto relative = std::filesystem::relative(path, documentPath_.parent_path(), error);
+            const auto uri = (error || relative.empty() ? path : relative).generic_u8string();
+            value["iesProfile"] = std::string(reinterpret_cast<const char*>(uri.data()), uri.size());
+            if (light.iesRollDegrees != 0.0f) { value["iesRollDegrees"] = light.iesRollDegrees; }
+            if (light.useIESIntensity) { value["useIESIntensity"] = true; }
+        }
         if (light.imported) { value["source"] = serializeImportedSource(*light.imported, true); }
         else { writePresentation(value, {WorldItemType::PunctualLight, light.stableId}); }
         serializedLights.push_back(std::move(value));

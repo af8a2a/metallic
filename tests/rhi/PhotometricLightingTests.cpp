@@ -8,6 +8,7 @@
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
+#include "Runtime/Scene/IESProfile.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "stb/stb_image_write.h"
 
@@ -21,6 +22,8 @@
 namespace metallic::tests {
 namespace {
 
+constexpr size_t kPhotometricProbeRecords = 19;
+
 class PhotometricProbePass final : public render::UnsafePass {
 public:
     std::span<const render::RenderSubsystemId> requiredSubsystems() const override
@@ -31,7 +34,7 @@ public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
     {
         render::RenderPassReflection reflection;
-        reflection.addBufferOutput("data").buffer(12 * 16, 16).storageReadWrite();
+        reflection.addBufferOutput("data").buffer(kPhotometricProbeRecords * 16, 16).storageReadWrite();
         return reflection;
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
@@ -103,6 +106,32 @@ public:
             light.direction = float3(0.0f, 0.0f, 1.0f);
             lighting.lights.push_back(light);
         }
+        const auto iesPath = context.outputDirectory / "asymmetric-profile.ies";
+        {
+            std::ofstream ies(iesPath);
+            ies << "IESNA:LM-63-2002\n[TEST] Metallic asymmetric profile\n[TESTLAB] Metallic\n"
+                "[ISSUEDATE] 2026-01-01\n[MANUFAC] Metallic\nTILT=NONE\n"
+                "1 -1 2 4 5 1 2 0 0 0\n1 1 10\n"
+                "0 30 70 90\n0 90 180 270 360\n"
+                "100 80 40 0\n100 20 0 0\n100 60 20 0\n100 10 5 0\n100 80 40 0\n";
+            if (!ies) { return RHITestResult::fail("cannot write IES fixture"); }
+        }
+        std::string iesError;
+        const auto profile = scene::loadIESProfile(iesPath, iesError);
+        if (!profile) { return RHITestResult::fail(iesError); }
+        constexpr double pi = 3.14159265358979323846;
+        for (const char* type : {"point", "spot"}) {
+            scene::PunctualLight light;
+            light.properties.type = type;
+            light.properties.intensity = 100.0;
+            light.properties.innerConeAngle = 35.0 * pi / 180.0;
+            light.properties.outerConeAngle = 45.0 * pi / 180.0;
+            light.position = float3(0.0f);
+            light.direction = float3(0.0f, 0.0f, 1.0f);
+            light.iesProfile = profile;
+            light.useIESIntensity = light.properties.type == "spot";
+            lighting.lights.push_back(std::move(light));
+        }
         environment::WorldEnvironment celestial;
         celestial.sun.enabled = true;
         celestial.sun.illuminance = 100.0f;
@@ -119,8 +148,8 @@ public:
         std::string log;
         auto result = executor.compile(*device, graph, 1, 1, log);
         if (!result) { return RHITestResult::fail(log); }
-        std::array<float, 48> reference{};
-        for (int iteration = 0; iteration < 3; ++iteration) {
+        std::array<float, kPhotometricProbeRecords * 4> reference{};
+        for (int iteration = 0; iteration < 4; ++iteration) {
             if (iteration == 1) {
                 lighting.lights[0].properties.intensityUnit = scene::LightUnit::Lumens;
                 lighting.lights[0].properties.intensity = 400.0 * 3.14159265358979323846;
@@ -129,6 +158,10 @@ public:
                 world.setLighting(lighting);
             } else if (iteration == 2) {
                 lighting.lights[0].properties.intensity *= 2.0;
+                lighting.lights[2].iesRollDegrees = 90.0f;
+                world.setLighting(lighting);
+            } else if (iteration == 3) {
+                lighting.lights[2].iesProfile.reset();
                 world.setLighting(lighting);
             }
             bool ready = false;
@@ -150,7 +183,7 @@ public:
             buffer->invalidate();
             void* mapped = buffer->map();
             if (mapped == nullptr) { return RHITestResult::fail("probe readback failed"); }
-            std::array<float, 48> values;
+            std::array<float, kPhotometricProbeRecords * 4> values;
             std::memcpy(values.data(), mapped, sizeof(values));
             buffer->unmap();
             if (iteration == 0) {
@@ -178,11 +211,20 @@ public:
             } else if (std::abs(values[0] - 200.0f) > 0.001f) {
                 return RHITestResult::fail("light edit did not update GPU snapshot");
             }
+            const std::array expectedIES = iteration < 2 ? std::array{80.0f, 20.0f, 35.0f, 0.0f, 45.0f, 160.0f, 0.0f}
+                : iteration == 2 ? std::array{20.0f, 60.0f, 25.0f, 0.0f, 50.0f, 160.0f, 0.0f}
+                : std::array{100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 160.0f, 0.0f};
+            for (size_t i = 0; i < expectedIES.size(); ++i) {
+                const float actual = values[(12 + i) * 4];
+                if (!std::isfinite(actual) || std::abs(actual - expectedIES[i]) > 0.002f) {
+                    return RHITestResult::fail("GPU IES mismatch at iteration " + std::to_string(iteration) +
+                        ", probe " + std::to_string(i) + ", actual=" + std::to_string(actual));
+                }
+            }
         }
         // A constant environment cannot detect coefficient order/sign mistakes.
         // Project a positive analytic l<=2 field and compare its irradiance in
         // all six axis directions after the actual lat-long GPU precompute.
-        constexpr double pi = 3.14159265358979323846;
         for (uint32_t y = 0; y < 32; ++y) {
             for (uint32_t x = 0; x < 64; ++x) {
                 const double theta = (y + 0.5) * pi / 32.0;
@@ -218,7 +260,7 @@ public:
         directionalBuffer->invalidate();
         void* directionalMapped = directionalBuffer->map();
         if (directionalMapped == nullptr) { return RHITestResult::fail("directional SH readback failed"); }
-        std::array<float, 48> directionalValues;
+        std::array<float, kPhotometricProbeRecords * 4> directionalValues;
         std::memcpy(directionalValues.data(), directionalMapped, sizeof(directionalValues));
         directionalBuffer->unmap();
         const std::array<std::array<double, 3>, 6> normals{{{1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1}}};
@@ -238,7 +280,7 @@ public:
                 }
             }
         }
-        return RHITestResult::pass("GPU: SI/EV/lumen equivalence, inverse square, spot cutoff, exposure, constant/directional SH and live edits");
+        return RHITestResult::pass("GPU: light units, spot cutoff, asymmetric IES interpolation, file intensity, live profile rotation and removal, exposure and irradiance SH");
     }
 };
 

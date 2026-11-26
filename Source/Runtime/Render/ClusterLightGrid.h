@@ -70,6 +70,7 @@ struct ClusterLightGridSnapshot {
     Buffer* candidates = nullptr;
     Buffer* cells = nullptr;
     Buffer* lightIndices = nullptr;
+    std::shared_ptr<IESProfilePublication> iesProfiles;
     ClusterLightGridParams params;
     GPUSceneViewId sourceView;
     uint32_t frameSlot = 0;

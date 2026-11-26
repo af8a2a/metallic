@@ -1999,6 +1999,9 @@ public:
             bindings.push_back(ComputeDispatchBinding{
                 .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentIrradianceSH), .buffer = environment.sphericalHarmonicsBuffer,
             });
+            if (lightGrid->iesProfiles) {
+                if (auto retained = context.commandBuffer().retainResource(lightGrid->iesProfiles); !retained) { return retained; }
+            }
             const std::array gridBuffers{lightGrid->parameters, lightGrid->lights, lightGrid->candidates,
                 lightGrid->cells, lightGrid->lightIndices};
             for (uint32_t i = 0; i < gridBuffers.size(); ++i) {

@@ -19,6 +19,7 @@
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Scene/IESProfile.h"
 #include "Runtime/Task/TaskSystem.h"
 #include "imnodes.h"
 #include "imgui.h"
@@ -504,12 +505,12 @@ std::filesystem::path openSceneFileDialog(
 #endif
 }
 
-enum class ImageFilePurpose { Environment, Decal };
+enum class AssetFilePurpose { Environment, Decal, IESProfile };
 
-std::filesystem::path openImageFileDialog(
+std::filesystem::path openAssetFileDialog(
     SDL_Window* window,
     const std::filesystem::path& initialPath,
-    ImageFilePurpose purpose,
+    AssetFilePurpose purpose,
     std::string& error)
 {
 #if defined(_WIN32)
@@ -538,14 +539,24 @@ std::filesystem::path openImageFileDialog(
     OPENFILENAMEW openFilename{};
     openFilename.lStructSize = sizeof(openFilename);
     openFilename.hwndOwner = owner;
-    openFilename.lpstrFilter = purpose == ImageFilePurpose::Environment
-        ? L"HDR Environment (*.hdr)\0*.hdr\0All Files (*.*)\0*.*\0"
-        : L"Decal textures (*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.ktx2)\0*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.ktx2\0";
+    switch (purpose) {
+    case AssetFilePurpose::Environment:
+        openFilename.lpstrFilter = L"HDR Environment (*.hdr)\0*.hdr\0All Files (*.*)\0*.*\0";
+        openFilename.lpstrTitle = L"Load Environment";
+        break;
+    case AssetFilePurpose::Decal:
+        openFilename.lpstrFilter = L"Decal textures (*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.ktx2)\0*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.ktx2\0";
+        openFilename.lpstrTitle = L"Load Decal Texture";
+        break;
+    case AssetFilePurpose::IESProfile:
+        openFilename.lpstrFilter = L"IES Profiles (*.ies)\0*.ies\0";
+        openFilename.lpstrTitle = L"Load IES Profile";
+        break;
+    }
     openFilename.nFilterIndex = 1;
     openFilename.lpstrFile = filename.data();
     openFilename.nMaxFile = static_cast<DWORD>(filename.size());
     openFilename.lpstrInitialDir = initialDirectory[0] != L'\0' ? initialDirectory.data() : nullptr;
-    openFilename.lpstrTitle = purpose == ImageFilePurpose::Environment ? L"Load Environment" : L"Load Decal Texture";
     openFilename.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 
     if (GetOpenFileNameW(&openFilename) != FALSE) {
@@ -555,7 +566,7 @@ std::filesystem::path openImageFileDialog(
 
     const DWORD dialogError = CommDlgExtendedError();
     if (dialogError != 0) {
-        error = "Open image dialog failed: " + std::string(commonDialogErrorName(dialogError)) +
+        error = "Open asset dialog failed: " + std::string(commonDialogErrorName(dialogError)) +
             " (" + std::to_string(dialogError) + ")";
     }
     return {};
@@ -563,7 +574,7 @@ std::filesystem::path openImageFileDialog(
     (void)window;
     (void)initialPath;
     (void)purpose;
-    error = "Native image file selection is available on Windows.";
+    error = "Native asset file selection is available on Windows.";
     return {};
 #endif
 }
@@ -1177,6 +1188,7 @@ bool drawPunctualLightProperties(scene::PunctualLight& light)
         changed = true;
     }
     const bool spot = p.type == "spot";
+    ImGui::BeginDisabled(light.iesProfile && light.useIESIntensity);
     scene::LightUnit unit = p.intensityUnit;
     if (ImGui::BeginCombo("Unit", scene::lightUnitName(unit))) {
         for (scene::LightUnit candidate : {scene::LightUnit::Lux, scene::LightUnit::Candela,
@@ -1198,6 +1210,7 @@ bool drawPunctualLightProperties(scene::PunctualLight& light)
     const double maxIntensity = p.intensityUnit == scene::LightUnit::EV100 ? 38.0 : 1e12;
     changed |= ImGui::DragScalar("Intensity", ImGuiDataType_Double, &p.intensity,
         0.1f, &minIntensity, &maxIntensity, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::EndDisabled();
     {
         float position[] = {light.position.x, light.position.y, light.position.z};
         if (ImGui::DragFloat3("Position (m)", position, 0.01f)) {
@@ -1215,7 +1228,7 @@ bool drawPunctualLightProperties(scene::PunctualLight& light)
             &p.volumetricScatteringIntensity, 0.02f, &minRange, &maxScattering, "%.3f", ImGuiSliderFlags_AlwaysClamp);
         changed |= ImGui::Checkbox("Cast volumetric shadow", &p.castVolumetricShadow);
     }
-    if (spot) {
+    if (spot || light.iesProfile) {
         float direction[] = {light.direction.x, light.direction.y, light.direction.z};
         if (ImGui::DragFloat3("Emission direction", direction, 0.01f)) {
             light.direction = float3(direction[0], direction[1], direction[2]);
@@ -2476,6 +2489,13 @@ int EditorApplication::run(
                     shutdown();
                     return 1;
                 }
+            }
+        }
+        if (const char* capture = std::getenv("METALLIC_SMOKE_TEST_CAPTURE"); capture && *capture) {
+            if (!viewportPreviewValid_ || !exportSmokeMainViewport(capture)) {
+                spdlog::error("Smoke test could not capture the viewport to {}", capture);
+                shutdown();
+                return 1;
             }
         }
         if (environmentFlagEnabled("METALLIC_SMOKE_TEST_STREAMLINE_DEBUG")) {
@@ -5268,6 +5288,50 @@ void EditorApplication::drawEnvironmentControls()
     renderGraphStatus_ = "Updated scene environment";
 }
 
+bool EditorApplication::drawIESProfileControls(scene::PunctualLight& light)
+{
+    ImGui::PushID("IESProfile");
+    ImGui::TextUnformatted("IES Profile");
+    bool changed = false;
+    if (ImGui::Button("Load .ies...")) {
+        std::string error;
+        const auto initialPath = light.iesProfile ? light.iesProfile->sourcePath : scene_.documentPath().parent_path();
+        const auto path = openAssetFileDialog(window_, initialPath, AssetFilePurpose::IESProfile, error);
+        if (!path.empty()) {
+            if (auto profile = scene::loadIESProfile(path, error)) {
+                light.iesProfile = std::move(profile);
+                if (light.properties.type == "point" && length(light.direction) < 0.000001f) {
+                    light.direction = float3(0.0f, -1.0f, 0.0f);
+                }
+                changed = true;
+            }
+        }
+        if (!error.empty()) { sceneStatus_ = std::move(error); }
+    }
+    if (light.iesProfile) {
+        ImGui::SameLine();
+        if (ImGui::Button("Clear profile")) {
+            light.iesProfile.reset();
+            light.useIESIntensity = false;
+            light.iesRollDegrees = 0.0f;
+            changed = true;
+        }
+    }
+    if (light.iesProfile) {
+        const auto& path = light.iesProfile->sourcePath;
+        const auto filename = path.filename().u8string();
+        const auto sourcePath = path.u8string();
+        ImGui::TextWrapped("%s", reinterpret_cast<const char*>(filename.c_str()));
+        ImGui::SetItemTooltip("%s", reinterpret_cast<const char*>(sourcePath.c_str()));
+        ImGui::Text("Measured peak: %.3g cd", light.iesProfile->peakCandela);
+        changed |= ImGui::Checkbox("Use measured peak", &light.useIESIntensity);
+        ImGui::SetItemTooltip("Use the peak candela from the IES file. The spot cone still limits the beam.");
+        changed |= ImGui::DragFloat("Profile roll (deg)", &light.iesRollDegrees, 0.5f);
+    }
+    ImGui::PopID();
+    return changed;
+}
+
 void EditorApplication::drawLightingControls()
 {
     ImGui::TextUnformatted("Physical Lighting (metres)");
@@ -5327,6 +5391,7 @@ void EditorApplication::drawLightingControls()
         ImGui::PushID(static_cast<int>(i));
         if (ImGui::TreeNode("Light", "%s #%zu", light.name.c_str(), i + 1)) {
             changed |= drawPunctualLightProperties(light);
+            changed |= drawIESProfileControls(light);
             const bool remove = ImGui::Button("Remove light");
             ImGui::TreePop();
             if (remove) {
@@ -5395,9 +5460,14 @@ void EditorApplication::drawWorldItemInspector(scene::WorldItemId item)
         }
     } else {
         auto lighting = scene_.lighting();
-        const bool edited = item.type == scene::WorldItemType::PunctualLight
-            ? drawPunctualLightProperties(lighting.lights[index])
-            : drawRectLightProperties(lighting.rectLights[index]);
+        bool edited;
+        if (item.type == scene::WorldItemType::PunctualLight) {
+            auto& light = lighting.lights[index];
+            edited = drawPunctualLightProperties(light);
+            edited |= drawIESProfileControls(light);
+        } else {
+            edited = drawRectLightProperties(lighting.rectLights[index]);
+        }
         if (!edited) { return; }
         if (!scene_.setLighting(std::move(lighting))) {
             sceneStatus_ = "Light edit rejected.";
@@ -5458,7 +5528,7 @@ bool EditorApplication::drawDecalInspector(scene::RenderDecal decal)
         if (ImGui::BeginCombo(label, textureName(index).c_str())) {
             if (ImGui::Selectable("Load texture file...")) {
                 std::string error;
-                file = openImageFileDialog(window_, scene_.documentPath().parent_path(), ImageFilePurpose::Decal, error);
+                file = openAssetFileDialog(window_, scene_.documentPath().parent_path(), AssetFilePurpose::Decal, error);
                 if (!error.empty()) { sceneStatus_ = std::move(error); }
                 selected = !file.empty();
             }
@@ -6893,10 +6963,12 @@ void EditorApplication::drawSelectedLightComponentInspector()
     const bool spot = properties.type == "spot";
     const bool supportedType = point || spot;
     const auto& nativeLights = scene_.lighting().lights;
-    const bool hasNativeLight = std::any_of(nativeLights.begin(), nativeLights.end(),
+    const auto nativeLight = std::find_if(nativeLights.begin(), nativeLights.end(),
         [&object](const scene::PunctualLight& candidate) {
             return candidate.imported.has_value() && candidate.imported->object == object.entity();
         });
+    const bool hasNativeLight = nativeLight != nativeLights.end();
+    const auto nativeLightIndex = static_cast<size_t>(nativeLight - nativeLights.begin());
     const char* readOnlyReason = nullptr;
     if (object.hasComponent<scene::GeneratedComponent>()) {
         readOnlyReason = "Generated lights are runtime-owned and cannot be saved.";
@@ -6957,6 +7029,7 @@ void EditorApplication::drawSelectedLightComponentInspector()
         changed = true;
     }
     trackEditItem();
+    ImGui::BeginDisabled(hasNativeLight && nativeLight->iesProfile && nativeLight->useIESIntensity);
     if (ImGui::BeginCombo("Intensity unit", scene::lightUnitName(edited.intensityUnit))) {
         for (scene::LightUnit unit : {scene::LightUnit::Lux, scene::LightUnit::Candela,
                  scene::LightUnit::Lumens, scene::LightUnit::EV100}) {
@@ -6989,6 +7062,7 @@ void EditorApplication::drawSelectedLightComponentInspector()
         ImGuiSliderFlags_AlwaysClamp);
     trackEditItem();
     changed = intensityChanged || changed;
+    ImGui::EndDisabled();
 
     if (point || spot) {
         const double maxSourceRadius = 10000.0;
@@ -7076,6 +7150,25 @@ void EditorApplication::drawSelectedLightComponentInspector()
     }
     if (editDeactivated) {
         finishActiveInspectorPropertyTransaction();
+    }
+    if (hasNativeLight) {
+        auto profileLight = scene_.lighting().lights[nativeLightIndex];
+        ImGui::Separator();
+        ImGui::BeginDisabled(readOnlyReason != nullptr || inspectorPropertyEditing_);
+        const bool profileChanged = drawIESProfileControls(profileLight);
+        ImGui::EndDisabled();
+        if (profileChanged) {
+            auto lighting = scene_.lighting();
+            lighting.lights[nativeLightIndex] = std::move(profileLight);
+            if (scene_.setLighting(std::move(lighting))) {
+                renderWorld_.setLighting(scene_.lighting());
+                sceneNonTransformDirty_ = true;
+                updateSceneDirtyState();
+                notifyScenePropertiesChanged();
+            } else {
+                sceneStatus_ = "IES Profile edit rejected.";
+            }
+        }
     }
     ImGui::PopID();
 }
@@ -8855,7 +8948,7 @@ void EditorApplication::chooseEnvironmentFile()
         ? std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset"
         : currentEnvironmentPath;
     std::string dialogError;
-    const std::filesystem::path selectedPath = openImageFileDialog(window_, initialPath, ImageFilePurpose::Environment, dialogError);
+    const std::filesystem::path selectedPath = openAssetFileDialog(window_, initialPath, AssetFilePurpose::Environment, dialogError);
     if (selectedPath.empty()) {
         if (!dialogError.empty()) {
             renderGraphStatus_ = dialogError;

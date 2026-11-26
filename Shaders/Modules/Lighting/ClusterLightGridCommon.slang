@@ -17,15 +17,9 @@ public struct ClusterLightGridParams
     public uint4 counts; // clustered local, punctual source slots, unbounded punctual, total source slots
 };
 
-// The common 64-byte record retains punctual GPUScene slots at the start.
+// The common record retains punctual GPUScene slots at the start.
 // Rectangular lights append culling records in their payload order.
-public struct ClusterLightData
-{
-    public float4 positionRange;
-    public float4 directionType;
-    public float4 colorIntensity;
-    public float4 spot;
-};
+public typealias ClusterLightData = GPUPunctualLight;
 
 public struct ClusterLightGridCell
 {

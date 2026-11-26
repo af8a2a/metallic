@@ -173,6 +173,7 @@ bool ClusterLightGridSnapshot::valid() const
 
 struct ClusterLightGrid::Resources {
     std::array<std::shared_ptr<Buffer>, 6> buffers;
+    std::shared_ptr<IESProfilePublication> iesProfiles;
     GPUCompletionPoint completion;
     bool cancelled = false;
 };
@@ -252,7 +253,13 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
         static_cast<uint32_t>(gridSlotCount)};
     std::vector<GPUPunctualLight> lightData;
     lightData.reserve(std::max(gridSlotCount, size_t(1)));
-    for (const auto& record : scene.lights()) { lightData.push_back(record.source.gpu); }
+    std::vector<IESProfileAssignment> assignments;
+    for (const auto& record : scene.lights()) {
+        if (record.source.iesProfile) { assignments.push_back({lightData.size(), record.source.iesProfile}); }
+        lightData.push_back(record.source.gpu);
+    }
+    auto profiles = publishIESProfiles(device, commands, lightData, assignments);
+    if (!profiles) { log = "ClusterLightGrid IES profile publication failed"; return makeError(profiles.error()); }
     std::vector<uint32_t> candidates;
     candidates.reserve(std::max(size_t(params.counts[0]) + params.counts[2], size_t(1)));
     const auto append = [&](std::span<const GPUSceneLightId> ids) {
@@ -323,6 +330,7 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
             next->buffers[index]->unmap();
         }
     }
+    next->iesProfiles = std::move(*profiles);
     if (frame != nullptr) {
         next->completion = frame->completion();
         frame->retain(next);
@@ -387,7 +395,8 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
     snapshot_ = {.parameters = resources_->buffers[0].get(), .lights = resources_->buffers[1].get(),
         .rectLights = rectLights.empty() ? nullptr : resources_->buffers[5].get(),
         .candidates = resources_->buffers[2].get(), .cells = resources_->buffers[3].get(),
-        .lightIndices = resources_->buffers[4].get(), .params = params, .sourceView = view, .frameSlot = frameSlot,
+        .lightIndices = resources_->buffers[4].get(), .iesProfiles = resources_->iesProfiles,
+        .params = params, .sourceView = view, .frameSlot = frameSlot,
         .sourceLightGeneration = scene.drawSet().lightGeneration,
         .sourceLightRevision = scene.drawSet().lightRevision,
         .sourcePrepareCount = visible->stats.prepareCount, .buildRevision = nextBuildRevision_++};

@@ -92,6 +92,7 @@ private:
     void drawCameraControls();
     void drawEnvironmentControls();
     void drawLightingControls();
+    bool drawIESProfileControls(scene::PunctualLight& light);
     void drawDecalControls();
     bool drawDecalInspector(scene::RenderDecal decal);
     void drawWorldItemInspector(scene::WorldItemId item);

@@ -329,6 +329,7 @@ Result<> VolumetricFogPass::execute(RenderGraphExecutionContext& context)
         return makeError(Error::InvalidArgument);
     }
     if (grid->params.counts[1] > 0) {
+        writer.retain(grid->iesProfiles);
         p.lightGrid = writer.buffer(grid->parameters);
         p.lights = writer.buffer(grid->lights);
         p.lightCells = writer.buffer(grid->cells);

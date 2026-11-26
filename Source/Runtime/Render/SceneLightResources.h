@@ -5,6 +5,7 @@
 #include "Runtime/Scene/Scene.h"
 #include "Runtime/Scene/SceneLighting.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -23,8 +24,12 @@ struct GPUPunctualLight {
     float directionType[4] = {};
     float colorIntensity[4] = {};
     float spot[4] = {}; // Inner/outer cone cosine, VSM source radius (m), volumetric scattering intensity.
+    uint32_t iesProfile = UINT32_MAX; // Raw buffer descriptor index.
+    float iesRollCos = 1.0f;
+    float iesRollSin = 0.0f;
+    float iesPadding = 0.0f;
 };
-static_assert(sizeof(GPUPunctualLight) == 64);
+static_assert(sizeof(GPUPunctualLight) == 80 && offsetof(GPUPunctualLight, iesProfile) == 64);
 
 // Stable local source slots: imported point/spot lights first, then virtual
 // point/spot lights. Unsupported source types never enter this list. Inactive
@@ -33,6 +38,7 @@ static_assert(sizeof(GPUPunctualLight) == 64);
 // and visibility are resolved against the matching current RenderLight source.
 struct SceneLightRecord {
     GPUPunctualLight gpu;
+    std::shared_ptr<const scene::IESProfile> iesProfile;
     uint64_t stableId = 0;
     int32_t sourceRenderLightIndex = scene::kInvalidSceneIndex;
     int32_t sourceVirtualLightIndex = scene::kInvalidSceneIndex;
@@ -45,8 +51,20 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
     std::span<const scene::RenderLight> renderLights,
     std::span<const scene::PunctualLight> virtualLights);
 
-std::vector<GPUPunctualLight> buildPunctualLightRecords(
-    const scene::Scene* scene, const scene::LightingSettings& settings);
+struct IESProfileAssignment {
+    size_t lightIndex;
+    std::shared_ptr<const scene::IESProfile> profile;
+};
+
+class IESProfilePublication;
+
+// The light buffer owner and its recording both retain this publication. The
+// light records only store indices in the device registry, not resource leases.
+[[nodiscard]] Result<std::shared_ptr<IESProfilePublication>> publishIESProfiles(Device& device,
+    CommandBuffer& commands, std::span<GPUPunctualLight> lights, std::span<const IESProfileAssignment> assignments);
+
+std::vector<GPUPunctualLight> buildPunctualLightRecords(const scene::Scene* scene,
+    const scene::LightingSettings& settings, std::vector<IESProfileAssignment>* assignments = nullptr);
 
 struct GPURectLight {
     float positionRange[4];
@@ -77,6 +95,7 @@ public:
 private:
     struct SamplingState;
     std::shared_ptr<SamplingState> sampling_;
+    std::shared_ptr<IESProfilePublication> iesProfiles_;
     std::vector<GPUPunctualLight> records_;
     std::shared_ptr<Buffer> buffer_;
     uint64_t revision_ = 0;

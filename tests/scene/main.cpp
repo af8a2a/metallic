@@ -2,6 +2,7 @@
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Scene/SceneLoader.h"
 #include "Runtime/Scene/ScenePicker.h"
+#include "Runtime/Scene/IESProfile.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/USDSceneImporter.h"
 #include "Runtime/Task/TaskSystem.h"
@@ -5825,6 +5826,140 @@ TEST(Photometry, UnitsAndValidation)
     settings.lights.emplace_back().properties.type = "directional";
     settings.lights[0].direction = float3(0.0f);
     EXPECT_FALSE(validLightingSettings(settings));
+}
+
+TEST(IESProfiles, ParsesTypeCAnglesAndPhotometricMultipliers)
+{
+    using namespace metallic::scene;
+    const auto directory = prepareOutputDirectory() / "ies_type_c";
+    std::filesystem::create_directories(directory);
+    const auto path = directory / "directional.ies";
+    writeTextFile(path, "\xef\xbb\xbf" "IES:LM-63-2019\r\n[TEST] Asymmetric fixture\r\nTILT=NONE\r\n"
+        "1, -1, +2, 3, 3, 1, 2, 0, 0, 0\r\n0.5 1.1 10\r\n0 15.25 90\r\n0 140 360\r\n"
+        "100 50 0\r\n100 80 30\r\n100 50 0\r\n");
+    std::string reason;
+    const auto profile = loadIESProfile(path, reason);
+    ASSERT_NE(profile, nullptr) << reason;
+    EXPECT_TRUE(reason.empty());
+    EXPECT_EQ(profile->sourcePath, std::filesystem::absolute(path).lexically_normal());
+    EXPECT_EQ(profile->verticalAngles, (std::vector{0.0f, 15.25f, 90.0f}));
+    EXPECT_EQ(profile->horizontalAngles, (std::vector{0.0f, 140.0f, 360.0f}));
+    EXPECT_EQ(profile->candela, (std::vector{1.0f, 0.5f, 0.0f, 1.0f, 0.8f, 0.3f, 1.0f, 0.5f, 0.0f}));
+    EXPECT_FLOAT_EQ(profile->peakCandela, 100.0f);
+
+    const auto legacyPath = directory / "bilateral.ies";
+    writeTextFile(legacyPath, "IESNA91\nTILT=NONE\n1 1000 2 2 2 1 1 0 0 0\n0.5 0.8 10\n90 180\n90 270\n10 0\n20 0\n");
+    const auto legacy = loadIESProfile(legacyPath, reason);
+    ASSERT_NE(legacy, nullptr) << reason;
+    EXPECT_EQ(legacy->verticalAngles, (std::vector{90.0f, 180.0f}));
+    EXPECT_EQ(legacy->horizontalAngles, (std::vector{90.0f, 270.0f}));
+    EXPECT_FLOAT_EQ(legacy->peakCandela, 16.0f);
+
+    const auto nullPath = directory / "null.ies";
+    writeTextFile(nullPath, "IESNA:LM-63-2002\nTILT=NONE\n1 -1 1 2 1 1 2 0 0 0\n1 1 0\n0 180\n0\n0 0\n");
+    const auto nullProfile = loadIESProfile(nullPath, reason);
+    ASSERT_NE(nullProfile, nullptr) << reason;
+    EXPECT_FLOAT_EQ(nullProfile->peakCandela, 0.0f);
+    EXPECT_EQ(nullProfile->candela, (std::vector{0.0f, 0.0f}));
+}
+
+TEST(IESProfiles, RejectsInvalidOrUnsupportedFiles)
+{
+    using namespace metallic::scene;
+    const auto directory = prepareOutputDirectory() / "ies_invalid";
+    std::filesystem::create_directories(directory);
+    const auto path = directory / "invalid.ies";
+    const std::string_view rejected[] = {
+        "[TEST] Missing TILT\n",
+        "TILT=INCLUDE\n",
+        "TILT=NONE\n1 -1 1 2 1 2 2 0 0 0\n1 1 0\n0 180\n0\n100 0\n",
+        "TILT=NONE\n1 -1 1 4294967295 4294967295 1 2 0 0 0\n1 1 0\n",
+        "TILT=NONE\n1 -1 1 3 1 1 2 0 0 0\n1 1 0\n0 5 5\n0\n100 50 0\n",
+        "TILT=NONE\n1 -1 1 2 2 1 2 0 0 0\n1 1 0\n0 90\n0 80\n100 0 100 0\n",
+        "TILT=NONE\n1 -1 1 2 1 1 2 0 0 0\n1 1 0\n0 90\n0\n100\n",
+        "TILT=NONE\n1 -1 1 2 1 1 2 0 0 0\n1 1 0\n0 90\n0\n100 -1\n",
+        "TILT=NONE\n1 -1 1 2 1 1 2 0 0 0\n1 1 0\n0 90\n0\n100 nan\n",
+        "TILT=NONE\n1 -1 1 2 1 1 2 0 0 0\n1 1 0\n0 90\n0\n100 0 30\n",
+    };
+    for (size_t index = 0; index < std::size(rejected); ++index) {
+        SCOPED_TRACE(index);
+        writeTextFile(path, std::string(rejected[index]));
+        std::string reason;
+        EXPECT_EQ(loadIESProfile(path, reason), nullptr);
+        EXPECT_FALSE(reason.empty());
+    }
+}
+
+TEST(SceneEditing, IESProfileRoundTrip)
+{
+    using namespace metallic::scene;
+    const auto directory = prepareOutputDirectory() / "ies_lighting_roundtrip";
+    const auto source = writeNativePunctualScene(directory);
+    const auto sidecar = SceneDocument::sidecarPathForSource(source);
+    std::filesystem::remove(sidecar);
+    const auto profilePath = directory / "profiles" / std::filesystem::path(u8"\u706f\u5149.ies");
+    std::filesystem::create_directories(profilePath.parent_path());
+    writeTextFile(profilePath, "IESNA:LM-63-2002\nTILT=NONE\n1 -1 5 2 2 1 2 0 0 0\n1 1 0\n0 90\n0 90\n100 0\n100 10\n");
+
+    std::string reason;
+    const auto profile = loadIESProfile(profilePath, reason);
+    ASSERT_NE(profile, nullptr) << reason;
+    SceneDocument document;
+    ASSERT_TRUE(document.load(source)) << document.documentWarning();
+    auto lighting = document.lighting();
+    auto importedSpot = std::ranges::find_if(lighting.lights, [](const auto& light) {
+        return light.imported && light.properties.type == "spot";
+    });
+    ASSERT_NE(importedSpot, lighting.lights.end());
+    importedSpot->iesProfile = profile;
+    importedSpot->iesRollDegrees = 45.0f;
+    importedSpot->useIESIntensity = true;
+    auto& manualPoint = lighting.lights.emplace_back();
+    manualPoint.name = "Profiled point light";
+    manualPoint.iesProfile = profile;
+    ASSERT_TRUE(document.setLighting(lighting));
+    auto invalid = lighting;
+    invalid.lights.back().direction = float3(0.0f);
+    EXPECT_FALSE(document.setLighting(invalid));
+    invalid = lighting;
+    invalid.lights.back().iesRollDegrees = std::numeric_limits<float>::infinity();
+    EXPECT_FALSE(document.setLighting(invalid));
+    invalid = lighting;
+    invalid.lights.back().iesProfile.reset();
+    invalid.lights.back().useIESIntensity = true;
+    EXPECT_FALSE(document.setLighting(invalid));
+    ASSERT_TRUE(document.save(reason)) << reason;
+    ASSERT_TRUE(document.load(source)) << document.documentWarning();
+    const auto& reloaded = document.lighting();
+    const auto readSpot = std::ranges::find_if(reloaded.lights, [](const auto& light) {
+        return light.imported && light.properties.type == "spot";
+    });
+    const auto readPoint = std::ranges::find(reloaded.lights, "Profiled point light", &PunctualLight::name);
+    ASSERT_NE(readSpot, reloaded.lights.end());
+    ASSERT_NE(readPoint, reloaded.lights.end());
+    ASSERT_NE(readSpot->iesProfile, nullptr);
+    EXPECT_EQ(readSpot->iesProfile, readPoint->iesProfile);
+    EXPECT_EQ(readSpot->iesProfile->sourcePath.filename(), profilePath.filename());
+    EXPECT_FLOAT_EQ(readSpot->iesProfile->peakCandela, 500.0f);
+    EXPECT_FLOAT_EQ(readSpot->iesRollDegrees, 45.0f);
+    EXPECT_TRUE(readSpot->useIESIntensity);
+    EXPECT_FLOAT_EQ(readPoint->iesRollDegrees, 0.0f);
+    EXPECT_FALSE(readPoint->useIESIntensity);
+
+    auto saved = nlohmann::json::parse(std::ifstream(sidecar));
+    auto& savedLights = saved["world"]["lighting"]["lights"];
+    const auto savedPoint = std::ranges::find_if(savedLights, [](const auto& light) {
+        return light.value("name", "") == "Profiled point light";
+    });
+    ASSERT_NE(savedPoint, savedLights.end());
+    const auto uri = std::filesystem::path(u8"profiles/\u706f\u5149.ies").generic_u8string();
+    EXPECT_EQ((*savedPoint)["iesProfile"], std::string(reinterpret_cast<const char*>(uri.data()), uri.size()));
+    (*savedPoint)["iesProfile"] = "profiles/missing.ies";
+    writeTextFile(sidecar, saved.dump(2));
+    EXPECT_FALSE(document.load(source));
+    EXPECT_NE(document.documentWarning().find("profiles/missing.ies"), std::string::npos);
+    EXPECT_EQ(document.lighting().lights.back().name, "Profiled point light");
+    EXPECT_NE(document.lighting().lights.back().iesProfile, nullptr);
 }
 
 TEST(SceneEditing, PhysicalLightingRoundTrip)

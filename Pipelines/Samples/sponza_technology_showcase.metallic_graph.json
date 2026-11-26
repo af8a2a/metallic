@@ -14,7 +14,7 @@
                 "enabled": true, "benchmarkGPUProfile": false, "benchmarkBuildSubstages": false,
                 "pageSize": 128, "virtualPagesPerAxis": 128, "clipmapCount": 6,
                 "maxWorkItems": 1048576, "firstClipmapExtent": 1.0, "shadowBias": 0.002,
-                "cacheEnabled": true, "cacheLayering": false, "lightCapacity": 4,
+                "cacheEnabled": true, "cacheLayering": false, "lightCapacity": 5,
                 "physicalPageBudget": 2048, "nearPlane": 0.001, "filter": "smrt",
                 "pcfRadius": 1.0, "smrtRayCount": 2, "smrtSamplesPerRay": 16,
                 "smrtMaxRayLength": 10.0, "smrtRayLengthScale": 0.0, "smrtMaxRayAngle": 0.03,

@@ -12,6 +12,10 @@ public struct GPUPunctualLight
     public float4 directionType;
     public float4 colorIntensity;
     public float4 spot;
+    public uint iesProfile;
+    public float iesRollCos;
+    public float iesRollSin;
+    public float iesPadding;
 };
 
 
@@ -71,6 +75,84 @@ public bool celestialLightCastsShadow(StructuredBuffer<GPUCelestialLight> lights
         (kCelestialLightEnabled | kCelestialLightCastsShadow);
 }
 
+internal float iesAngle(ByteAddressBuffer profile, uint anglesOffset, uint index)
+{
+    return asfloat(profile.Load(anglesOffset + index * 4u));
+}
+
+internal uint bracketIESAngle(ByteAddressBuffer profile, uint anglesOffset, uint angleCount,
+    float angle, out float blend)
+{
+    uint lower = 0u;
+    uint upper = angleCount - 1u;
+    while (upper - lower > 1u) {
+        uint middle = (lower + upper) / 2u;
+        if (iesAngle(profile, anglesOffset, middle) <= angle) { lower = middle; }
+        else { upper = middle; }
+    }
+    float a = iesAngle(profile, anglesOffset, lower);
+    float b = iesAngle(profile, anglesOffset, upper);
+    blend = (angle - a) / (b - a);
+    return lower;
+}
+
+internal float sampleIESPlane(ByteAddressBuffer profile, uint rowOffset, uint verticalIndex, float verticalBlend)
+{
+    float2 intensities = asfloat(profile.Load2(rowOffset + verticalIndex * 4u));
+    return lerp(intensities.x, intensities.y, verticalBlend);
+}
+
+public float applyPunctualIESProfile(GPUPunctualLight light, float3 lightToReceiver, float attenuation)
+{
+    if (light.iesProfile == 0xffffffffu || attenuation <= 0.0f) { return attenuation; }
+    let profile = resolveNonUniform(ResourceHandle<ByteAddressBuffer>(light.iesProfile));
+    uint2 counts = profile.Load2(0u);
+    // The upload packs angle counts, vertical/horizontal angles in degrees,
+    // then normalized candela rows with vertical angle varying fastest.
+    const uint verticalOffset = 8u;
+    uint horizontalOffset = verticalOffset + counts.x * 4u;
+    uint candelaOffset = horizontalOffset + counts.y * 4u;
+    float3 forward = light.directionType.xyz;
+    const float radiansToDegrees = 57.29577951308232f;
+    float transverse = length(cross(forward, lightToReceiver));
+    float axial = dot(forward, lightToReceiver);
+    float vertical = transverse > 0.0f ? atan2(transverse, axial) * radiansToDegrees
+        : (axial < 0.0f ? 180.0f : 0.0f);
+    if (vertical < iesAngle(profile, verticalOffset, 0u) ||
+        vertical > iesAngle(profile, verticalOffset, counts.x - 1u)) { return 0.0f; }
+    float verticalBlend;
+    uint verticalIndex = bracketIESAngle(profile, verticalOffset, counts.x, vertical, verticalBlend);
+    if (counts.y == 1u) {
+        return attenuation * sampleIESPlane(profile, candelaOffset, verticalIndex, verticalBlend);
+    }
+
+    float3 referenceUp = abs(forward.y) < 0.999f ? float3(0.0f, 1.0f, 0.0f) : float3(0.0f, 0.0f, -1.0f);
+    float3 right = normalize(cross(forward, referenceUp));
+    float3 up = cross(right, forward);
+    float x = dot(right, lightToReceiver);
+    float y = dot(up, lightToReceiver);
+    float horizontal = x == 0.0f && y == 0.0f ? 0.0f : atan2(
+        y * light.iesRollCos + x * light.iesRollSin,
+        x * light.iesRollCos - y * light.iesRollSin) * radiansToDegrees;
+    if (horizontal < 0.0f) { horizontal += 360.0f; }
+    float firstHorizontal = iesAngle(profile, horizontalOffset, 0u);
+    float lastHorizontal = iesAngle(profile, horizontalOffset, counts.y - 1u);
+    if (firstHorizontal == 90.0f) {
+        if (horizontal < 90.0f) { horizontal = 180.0f - horizontal; }
+        else if (horizontal > 270.0f) { horizontal = 540.0f - horizontal; }
+    } else if (lastHorizontal <= 180.0f) {
+        horizontal = min(horizontal, 360.0f - horizontal);
+        if (lastHorizontal == 90.0f) { horizontal = min(horizontal, 180.0f - horizontal); }
+    }
+    float horizontalBlend;
+    uint horizontalIndex = bracketIESAngle(profile, horizontalOffset, counts.y, horizontal, horizontalBlend);
+    uint rowStride = counts.x * 4u;
+    uint rowOffset = candelaOffset + horizontalIndex * rowStride;
+    float a = sampleIESPlane(profile, rowOffset, verticalIndex, verticalBlend);
+    float b = sampleIESPlane(profile, rowOffset + rowStride, verticalIndex, verticalBlend);
+    return attenuation * lerp(a, b, horizontalBlend);
+}
+
 // Delta lights supply incident illuminance before the surface cosine/BSDF.
 // Point/spot intensity is cd, distance is m: E = I / r^2 (lux).
 public PunctualLightSample samplePunctualLightData(GPUPunctualLight light, float3 position)
@@ -97,6 +179,7 @@ public PunctualLightSample samplePunctualLightData(GPUPunctualLight light, float
             float cone = saturate((cosine - light.spot.y) / max(light.spot.x - light.spot.y, 1e-7));
             attenuation *= cone * cone;
         }
+        attenuation = applyPunctualIESProfile(light, -sample.direction, attenuation);
     }
     sample.illuminance = light.colorIntensity.rgb * (light.colorIntensity.w * attenuation);
     return sample;

@@ -872,11 +872,19 @@ bool EditorApplication::runGizmoSmokeTest()
         appendChildren(WorldItemType::LocalFogVolume, scene_.worldEnvironment().volumetricFog.localVolumes);
         appendChildren(WorldItemType::PunctualLight, scene_.lighting().lights);
         appendChildren(WorldItemType::RectLight, scene_.lighting().rectLights);
-        if (!expect(children.size() == 4 &&
+        const auto hasGroupedLight = [&](std::string_view type, bool hasProfile) {
+            return std::ranges::any_of(scene_.lighting().lights, [&](const scene::PunctualLight& light) {
+                const WorldItemId item{WorldItemType::PunctualLight, light.stableId};
+                return light.properties.type == type && static_cast<bool>(light.iesProfile) == hasProfile &&
+                    scene_.worldItemSceneGraphParent(item) == group.entity();
+            });
+        };
+        if (!expect(children.size() == 6 &&
                 std::ranges::count(children, WorldItemType::LocalFogVolume, &WorldItemId::type) == 1 &&
-                std::ranges::count(children, WorldItemType::PunctualLight, &WorldItemId::type) == 1 &&
-                std::ranges::count(children, WorldItemType::RectLight, &WorldItemId::type) == 2,
-                "The showcase camera groups a fog volume, a punctual light and two rect lights")) { return false; }
+                std::ranges::count(children, WorldItemType::PunctualLight, &WorldItemId::type) == 3 &&
+                std::ranges::count(children, WorldItemType::RectLight, &WorldItemId::type) == 2 &&
+                hasGroupedLight("point", false) && hasGroupedLight("spot", false) && hasGroupedLight("spot", true),
+                "The showcase groups fog, a point light, two spotlights including one with IES, and two rect lights")) { return false; }
         const auto captureItem = *std::ranges::find(children, WorldItemType::RectLight, &WorldItemId::type);
         const int childDepth = nodeDepth(group) + 1;
         input.sceneTreeProbe = group.entity();

@@ -943,6 +943,7 @@ bool GPUScene::syncLights(std::span<const scene::RenderLight> renderLights,
                 previous.sourceObject != current.sourceObject;
             changed |= topologyChanged || previous.enabled != current.enabled ||
                 previous.castVolumetricShadow != current.castVolumetricShadow ||
+                previous.iesProfile != current.iesProfile ||
                 std::memcmp(&previous.gpu, &current.gpu, sizeof(GPUPunctualLight)) != 0;
         }
     }
