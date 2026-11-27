@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture and verify the fixed and first-crossing 4x4 terrain regressions."""
+"""Capture and verify the 4x4 and 8x8 terrain streaming regressions."""
 
 import argparse
 import importlib.util
@@ -20,6 +20,7 @@ def capture(executable, case):
     environment = {**os.environ, "METALLIC_VSM_ACCEPTANCE_CASES": str(case / "Cases.json")}
     command = [str(executable), "--filter", "virtual_shadow_map_acceptance", "--rhi-bindless",
                "--rhi-validation", "--output-dir", str(output), "--gtest_color=no"]
+    print(f"Capturing {case.name}", flush=True)
     with log.open("wb") as stream:
         result = subprocess.run(command, cwd=ROOT, env=environment, stdout=stream, stderr=subprocess.STDOUT)
     if result.returncode or not (output / "VirtualShadowMapAcceptance.json").is_file():
@@ -45,6 +46,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--tiles-per-axis", type=int, choices=(4, 8), default=4)
     args = parser.parse_args()
     if not args.executable.is_file():
         parser.error(f"Build MetallicRHITests first: {args.executable}")
@@ -55,20 +57,25 @@ def main():
     run = Path(tempfile.mkdtemp(prefix="run-", dir=args.output.resolve()))
     print(f"Terrain regression artifacts: {run}", flush=True)
     scripts = Path(__file__).resolve().parent
+    executable = args.executable.resolve()
+    four_by_four = args.tiles_per_axis == 4
+    verifier = "VerifyTerrainStreamingRegression.py" if four_by_four else "VerifyTerrain8x8StreamingRegression.py"
+    command = [sys.executable, "-B", str(scripts / verifier), "--report", str(run / "TerrainStreamingRegression.json")]
     try:
         subprocess.run([sys.executable, "-B", str(scripts / "PrepareTerrainStreamingAcceptance.py"),
-                        "--tiles-per-axis", "4", "--output", str(run)],
+                        "--tiles-per-axis", str(args.tiles_per_axis), "--output", str(run)],
                        cwd=ROOT, check=True)
-        directed = run / "motion-directed-tight"
-        keep_first_crossing(directed)
-        directed_capture = capture(args.executable.resolve(), directed)
-        fixed_capture = capture(args.executable.resolve(), run / "fixed-tight")
+        if four_by_four:
+            directed = run / "motion-directed-tight"
+            keep_first_crossing(directed)
+        else:
+            directed = run / "motion-directed-8x8-tight"
+            command += ["--motion", str(capture(executable, run / "motion-tight"))]
+        command += ["--directed", str(capture(executable, directed))]
+        command += ["--fixed", str(capture(executable, run / "fixed-tight"))]
     except (OSError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
         print(f"Terrain regression could not capture the scene: {error}", file=sys.stderr)
         return 1
-    command = [sys.executable, "-B", str(scripts / "VerifyTerrainStreamingRegression.py"),
-               "--directed", str(directed_capture), "--fixed", str(fixed_capture),
-               "--report", str(run / "TerrainStreamingRegression.json")]
     return subprocess.run(command, cwd=ROOT).returncode
 
 

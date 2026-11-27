@@ -10,10 +10,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SCENE = ROOT / "Asset/MeshletCache/TerrainBlocks4x4/terrain_blocks_4x4.gltf"
 SCENE_8X8 = ROOT / "Asset/MeshletCache/TerrainBlocks8x8/terrain_blocks_8x8.gltf"
+SCENE_16X16 = ROOT / "Asset/MeshletCache/TerrainBlocks16x16/terrain_blocks_16x16.gltf"
 GRAPH = ROOT / "Pipelines/Samples/gpu_driven_terrain_vsm.metallic_graph.json"
 MOVING_STEPS = 84
+EXPANDED_MOVING_STEPS = 112
 SETTLING_FRAMES = 20
-TOTAL_FRAMES = MOVING_STEPS + 1 + SETTLING_FRAMES
 
 # Aim at the authored seam surface from both sides while preserving the streaming state.
 DIRECTED_TARGETS = (
@@ -53,6 +54,16 @@ def flight_camera(template, frame):
            70.0 + 3.0 * math.sin(2.0 * math.pi * t),
            101.0 - 206.0 * t - 15.0 * math.sin(math.pi * t)]
     offset = [36.0 - 20.0 * t, -49.0, -28.0 + 36.0 * t]
+    return {**template, "eye": eye, "center": [a + b for a, b in zip(eye, offset)], "fovDegrees": 60.0}
+
+
+def expanded_flight_camera(template, frame):
+    t = min(frame, EXPANDED_MOVING_STEPS) / EXPANDED_MOVING_STEPS
+    eye = [-123.0 + 246.0 * t,
+           70.0 + 3.0 * math.sin(2.0 * math.pi * t),
+           121.0 - 240.0 * t - 8.0 * math.sin(math.pi * t)]
+    # Keep the seam beneath the eye in view around every grid crossing.
+    offset = [6.0, -64.0, -3.0]
     return {**template, "eye": eye, "center": [a + b for a, b in zip(eye, offset)], "fovDegrees": 60.0}
 
 
@@ -214,11 +225,12 @@ def write_directed_8x8_case(output, cap, flight, crossing):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tiles-per-axis", type=int, choices=(4, 8), default=4)
+    parser.add_argument("--tiles-per-axis", type=int, choices=(4, 8, 16), default=4)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     tiles = args.tiles_per_axis
-    scene, folder = (SCENE, "scale") if tiles == 4 else (SCENE_8X8, "scale-8x8")
+    scene, folder = {4: (SCENE, "scale"), 8: (SCENE_8X8, "scale-8x8"),
+                     16: (SCENE_16X16, "scale-16x16")}[tiles]
     output = args.output or ROOT / "build/terrain-vsm" / folder
     stream = Path(str(scene) + ".meshstream.bin")
     if not scene.is_file() or not stream.is_file():
@@ -227,40 +239,46 @@ def main():
     graph = read_json(GRAPH)
     overview = graph["view"]["camera"]
     views = fixed_views(overview)
-    cameras = [flight_camera(overview, frame) for frame in range(TOTAL_FRAMES)]
+    expanded = tiles == 16
+    moving_steps = EXPANDED_MOVING_STEPS if expanded else MOVING_STEPS
+    total_frames = moving_steps + 1 + SETTLING_FRAMES
+    sample_camera = expanded_flight_camera if expanded else flight_camera
+    cameras = [sample_camera(overview, frame) for frame in range(total_frames)]
     terrain = read_json(scene)["extras"]["metallicTerrainTiles"]
     if terrain["tilesPerAxis"] != tiles:
         parser.error(f"Expected {tiles}x{tiles} terrain tiles")
-    crossings = flight_crossings(cameras[:MOVING_STEPS + 1], terrain)
+    crossings = flight_crossings(cameras[:moving_steps + 1], terrain)
     expected_crossings = 2 * (tiles - 1)
     if len({crossing["frame"] for crossing in crossings}) != expected_crossings or len(crossings) != expected_crossings:
         parser.error(f"The {tiles}x{tiles} flight should cross all {expected_crossings} tile planes at distinct frames")
     if min(camera["eye"][1] for camera in cameras) <= terrain["worldHeightMax"]:
         parser.error("The flight should remain above the terrain's maximum height")
 
-    flight_frames = set(range(0, MOVING_STEPS + 1, 4)) | {MOVING_STEPS + 10, TOTAL_FRAMES - 1}
+    flight_frames = {0, moving_steps, moving_steps + 10, total_frames - 1}
+    if not expanded:
+        flight_frames.update(range(0, moving_steps + 1, 4))
     flight_frames.update(crossing["frame"] + offset for crossing in crossings for offset in (-1, 0, 1))
-    flight_events = [dict(frame=frame, camera=cameras[frame]) for frame in range(1, MOVING_STEPS + 1)]
+    flight_events = [dict(frame=frame, camera=cameras[frame]) for frame in range(1, moving_steps + 1)]
     fixed_frames = sorted(view[key] for view in views for key in ("frame", "earlyFrame"))
     fixed_events = [dict(frame=view["earlyFrame"], camera=view["camera"], cameraCut=True) for view in views[1:]]
     default_cap = next(node for node in graph["nodes"] if node["name"] == "VBuffer")["properties"]["maxResidentPages"]
-    # Both tight fixtures have room for 15 detail pages above their terminal cut.
-    tight_cap, ample_cap = (32, default_cap) if tiles == 4 else (80, 512)
+    # Tight cases leave 15 detail slots above their terminal cuts.
+    tight_cap, ample_cap = {4: (32, default_cap), 8: (80, 512), 16: (272, 2048)}[tiles]
     for suffix, cap in (("tight", tight_cap), ("ample", ample_cap)):
         write_case(output, f"fixed-{suffix}", cap, overview, fixed_events, 960, 540, 60, fixed_frames,
                    warmup=16, pressure=suffix == "tight", scene=scene)
-        write_case(output, f"motion-{suffix}", cap, cameras[0], flight_events, 640, 360, TOTAL_FRAMES,
+        write_case(output, f"motion-{suffix}", cap, cameras[0], flight_events, 640, 360, total_frames,
                    sorted(flight_frames), pressure=suffix == "tight", trace_streaming=True, scene=scene)
     for view in views:
         write_case(output, f"cold-{view['name']}", tight_cap, view["camera"], [], 960, 540, 1, [0], scene=scene)
     if tiles == 4:
         write_directed_case(output, tight_cap, cameras, crossings[0])
-    else:
+    elif tiles == 8:
         write_directed_8x8_case(output, tight_cap, cameras, next(crossing for crossing in crossings if crossing["frame"] == 19))
     write_json(output / "Route.json", dict(scene=scene.as_posix(), stream=stream.as_posix(),
                                                 fixedViews=views, cameras=cameras, crossings=crossings,
-                                                captureFrames=sorted(flight_frames), movingFrames=MOVING_STEPS + 1,
-                                                totalFrames=TOTAL_FRAMES, tightBudget=tight_cap, ampleBudget=ample_cap))
+                                                captureFrames=sorted(flight_frames), movingFrames=moving_steps + 1,
+                                                totalFrames=total_frames, tightBudget=tight_cap, ampleBudget=ample_cap))
     print(f"Wrote terrain acceptance cases to {output.resolve()}")
 
 

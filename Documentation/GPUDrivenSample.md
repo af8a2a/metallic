@@ -120,7 +120,7 @@ python -B Tools/Perf/PrepareTerrainStreamingAcceptance.py --tiles-per-axis 8
 
 在通用编辑器选择 **GPUDrivenSample / Terrain Blocks 8x8 + VSM**。样例在原高度场和 256×256 世界范围内细分到 64 块，烘焙为 342 页，含 65 个保底页。保底页使用 612,096 字节，与一个最大细节页合计 731,392 字节。112 条共享边的 448 种 LOD 配对和 277 次 DAG 细化替换均通过解码检查。
 
-编辑器样例使用共享图的 256 页上限。8×8 验收清单写入 `build/terrain-vsm/scale-8x8/`，沿用三个固定机位和连续飞行路径，分别用 80 页和 512 页验收。80 页给保底 cut 留出完整覆盖，同时保留 15 个细节页槽。飞行在 14 个不同帧跨过 14 条网格分割线，每档预算采集 54 帧。自动回归显式选择 4×4 清单。
+编辑器样例使用共享图的 256 页上限。8×8 验收清单写入 `build/terrain-vsm/scale-8x8/`，沿用三个固定机位和连续飞行路径，分别用 80 页和 512 页验收。80 页给保底 cut 留出完整覆盖，同时保留 15 个细节页槽。飞行在 14 个不同帧跨过 14 条网格分割线，每档预算采集 54 帧。
 
 两档飞行均通过 105 帧验收，65 个保底页全程就绪，加载失败、请求溢出和 Vulkan 验证错误均为 0。80 页下有 59 次上传和 44 次淘汰，14 个过界帧都能看到保底页绘出的地表。512 页下第 6 帧全部 342 页可绘制，全程没有淘汰。80 页的原三机位 60 帧验收也通过。
 
@@ -130,6 +130,29 @@ python -B Tools/Perf/PrepareTerrainStreamingAcceptance.py --tiles-per-axis 8
 
 8×8 清单生成器还会生成 `motion-directed-8x8-tight`。开场沿用原飞行眼位，先以窄视角取景东侧，再在第 18 帧恢复 60° 视场角并瞄准 `(1,5) / (2,5)` 共享边。第 18、19、20 帧分别采集过界前、中、后的画面。后续观察站先取景一个地形块，再展宽视野捕获它与相邻块的边界，部分边另有斜视观察。`Targets.json` 记录过界帧、待补边及采样帧。
 
-完整路线 1,116 帧、71 次采集通过 Vulkan 验收，65 个保底页全程就绪。33 条待补边均在 80 个页槽满额时测到混合 LOD，合并原 80 页用例后共有 112 / 112 条共享边得到满额时的混合证据。第 18、19、20 帧分别测到 152、121、147 对跨边像素，均为西侧 LOD2、东侧 LOD3。第 19 帧沿原眼位实际跨过该边。
+首轮完整路线 1,116 帧、71 次采集通过 Vulkan 验收，65 个保底页全程就绪。33 条待补边均在 80 个页槽满额时测到混合 LOD，合并原 80 页用例后共有 112 / 112 条共享边得到满额时的混合证据。第 18、19、20 帧分别测到 152、121、147 对跨边像素，均为西侧 LOD2、东侧 LOD3。第 19 帧沿原眼位实际跨过该边。
 
 共同内域核验无漏像素。第 762 帧的 12 个外轮廓候选经当帧可见页解码重光栅化后确认，整帧 230,400 个覆盖样本与 GPU 一致。
+
+#### 8×8 自动回归
+
+```powershell
+cmake --build build-ci --target MetallicTerrain8x8StreamingRegression
+ctest --test-dir build-ci -R '^MetallicTerrain8x8StreamingRegression$' --output-on-failure
+```
+
+CMake 目标会准备样例资产、构建 RHI 测试并运行回归。资产和测试程序就绪后也可直接用 CTest 执行。每次运行重新采集原飞行、定向路线和原三个固定机位。三组采集都检查 80 页上限和 65 个保底页的就绪状态。112 条共享边各自需要一组页槽满额时的混合 LOD 相邻像素。第 18、19、20 帧都需要看到 `(1,5) / (2,5)` 共享边，第 19 帧还要确认实际过界且两侧 LOD 不同。定向路线为 `(1,3) / (1,4)` 增加两个斜视机位，利用稳定驻留的 LOD2 和 LOD3 页取证。固定机位分别检查原相机参数、地表覆盖和 VSM 的受光与阴影样本。报告写入 `tests/terrain-streaming-regression-8x8/run-*/TerrainStreamingRegression.json`，4×4 仍由 `MetallicTerrainStreamingRegression` 独立验收。
+
+### 16×16 地形块
+
+```powershell
+cmake --build build-relwithdebinfo --target MetallicTerrainBlocks16x16VSMSample
+cmake --build build-relwithdebinfo --target MetallicTerrainBlocks16x16VSMSmoke
+python -B Tools/Perf/PrepareTerrainStreamingAcceptance.py --tiles-per-axis 16
+```
+
+在通用编辑器选择 **GPUDrivenSample / Terrain Blocks 16x16 + VSM**。原高度场和 256×256 世界范围细分为 256 块，烘焙资产有 1,025 页，含 257 个保底页。16×16 样例将几何页上限设为 512。
+
+验收清单写入 `build/terrain-vsm/scale-16x16/`。272 页紧预算给保底 cut 留出完整覆盖并保留 15 个细节页槽，2,048 页用于充足预算对照。两档都沿 133 帧的飞行路线验收，在 30 个不同帧跨过全部网格分割线，采集每次过界的前、中、后帧。固定机位沿用原 overview、southwest 和 northeast 相机。
+
+两档飞行的 30 个过界窗口均观察到跨边相邻像素。272 页下，257 个保底页全程就绪，30 个实际过界帧均绘出了保底地表，并记录到 108 次细节页上传和 93 次淘汰。2,048 页下，第 13 帧全部 1,025 页可绘制，全程无淘汰。两档飞行和 272 页的三个固定机位合计观察到 451 条共享边，其中 219 条出现混合 LOD，接缝共同内域无漏画。加载失败、请求溢出、VSM 工作溢出和 Vulkan 验证错误均为 0。本轮报告位于 `build/terrain-vsm/scale-16x16/Terrain16x16RuntimeAcceptance.json`。

@@ -856,22 +856,29 @@ else()
     find_package(Python3 QUIET COMPONENTS Interpreter)
 endif()
 if(Python3_Interpreter_FOUND)
-    if(TARGET MetallicTerrainBlocks4x4VSMSample)
-        set(_terrain_streaming_regression
+    function(add_metallic_terrain_streaming_regression name tiles sample output timeout)
+        if(NOT TARGET ${sample})
+            return()
+        endif()
+        set(command
             "${Python3_EXECUTABLE}" -B "${CMAKE_SOURCE_DIR}/Tools/Perf/RunTerrainStreamingRegression.py"
             --executable "$<TARGET_FILE:MetallicRHITests>"
-            --output "${CMAKE_CURRENT_BINARY_DIR}/terrain-streaming-regression")
-        add_custom_target(MetallicTerrainStreamingRegression
-            COMMAND ${_terrain_streaming_regression}
-            DEPENDS MetallicRHITests MetallicTerrainBlocks4x4VSMSample
+            --tiles-per-axis ${tiles}
+            --output "${CMAKE_CURRENT_BINARY_DIR}/${output}")
+        add_custom_target(${name}
+            COMMAND ${command}
+            DEPENDS MetallicRHITests ${sample}
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
             USES_TERMINAL
             VERBATIM)
-        add_test(NAME MetallicTerrainStreamingRegression COMMAND ${_terrain_streaming_regression})
-        set_tests_properties(MetallicTerrainStreamingRegression PROPERTIES
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "rhi;terrain" RESOURCE_LOCK MetallicGPU TIMEOUT 600)
-        unset(_terrain_streaming_regression)
-    endif()
+        add_test(NAME ${name} COMMAND ${command})
+        set_tests_properties(${name} PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "rhi;terrain" RESOURCE_LOCK MetallicGPU TIMEOUT ${timeout})
+    endfunction()
+    add_metallic_terrain_streaming_regression(MetallicTerrainStreamingRegression 4
+        MetallicTerrainBlocks4x4VSMSample terrain-streaming-regression 600)
+    add_metallic_terrain_streaming_regression(MetallicTerrain8x8StreamingRegression 8
+        MetallicTerrainBlocks8x8VSMSample terrain-streaming-regression-8x8 1200)
     add_test(NAME MetallicCIPresetTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestCIPreset.py"
             --build-dir "${CMAKE_BINARY_DIR}")

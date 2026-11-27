@@ -80,6 +80,7 @@ public:
     }
     virtual std::string previewOutput() const { return {}; }
     virtual bool requiresStreamline() const { return false; }
+    virtual bool configureGraph(RenderGraph&, std::string&) const { return true; }
 
     RenderSampleDesc desc() const;
 };

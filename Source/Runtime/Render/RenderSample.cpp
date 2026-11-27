@@ -1057,6 +1057,33 @@ public:
     std::string scenePath() const override { return "Asset/MeshletCache/TerrainBlocks8x8/terrain_blocks_8x8.gltf"; }
 };
 
+class GPUDrivenTerrainBlocks16x16VSMSample final : public GPUDrivenTerrainVSMSample {
+public:
+    std::string_view id() const override { return "gpu-driven-terrain-blocks-16x16-vsm"; }
+    std::string_view name() const override { return "GPUDrivenSample / Terrain Blocks 16x16 + VSM"; }
+    std::string_view description() const override
+    {
+        return "256 independently simplified heightfield blocks sharing boundary samples, with OpenPBR and VSM.";
+    }
+    std::string scenePath() const override
+    {
+        return "Asset/MeshletCache/TerrainBlocks16x16/terrain_blocks_16x16.gltf";
+    }
+    bool configureGraph(RenderGraph& graph, std::string& outMessage) const override
+    {
+        const auto* visibility = graph.findNode("VBuffer");
+        if (visibility == nullptr || visibility->type != "VisibilityBufferPass") {
+            outMessage = "Terrain Blocks 16x16 requires the VBuffer visibility pass";
+            return false;
+        }
+        RenderGraphProperties properties = visibility->properties;
+        // The complete terminal cut takes 257 pages and streaming needs detail page slots.
+        properties["maxResidentPages"] = 512;
+        graph.setNodeProperties(visibility->id, std::move(properties));
+        return true;
+    }
+};
+
 const RenderSample& pathTracingMeetMatSample()
 {
     static const PathTracingMeetMatSample sample;
@@ -1162,6 +1189,12 @@ const RenderSample& gpuDrivenTerrainBlocks4x4VSMSample()
 const RenderSample& gpuDrivenTerrainBlocks8x8VSMSample()
 {
     static const GPUDrivenTerrainBlocks8x8VSMSample sample;
+    return sample;
+}
+
+const RenderSample& gpuDrivenTerrainBlocks16x16VSMSample()
+{
+    static const GPUDrivenTerrainBlocks16x16VSMSample sample;
     return sample;
 }
 
@@ -1350,6 +1383,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &gpuDrivenTerrainBlocksVSMSample(),
         &gpuDrivenTerrainBlocks4x4VSMSample(),
         &gpuDrivenTerrainBlocks8x8VSMSample(),
+        &gpuDrivenTerrainBlocks16x16VSMSample(),
         &gpuDrivenRtasVisualizationSample(),
     };
     const bool hasBoxDistanceField = std::filesystem::is_regular_file(projectPath(".cache/mesh-distance-field/BoxInstances.meshdf"));
@@ -1437,7 +1471,7 @@ bool loadRenderSample(
         return false;
     }
 
-    if (!applySampleScenePath(graph, desc, outMessage)) {
+    if (!applySampleScenePath(graph, desc, outMessage) || !sample.configureGraph(graph, outMessage)) {
         return false;
     }
     if (desc.previewOutput.empty()) {
