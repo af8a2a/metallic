@@ -255,9 +255,7 @@ float3 fogIndirectScattering(float3 translatedWorldPositionCm, float3 cameraVect
     return max(float3(dot(red, rotatedHG), dot(green, rotatedHG), dot(blue, rotatedHG)), 0.0f);
 }
 
-[shader("compute")]
-[numthreads(4, 4, 4)]
-void lightScattering(uint3 id : SV_DispatchThreadID)
+void scatterFogLight(uint3 id, bool physicalSun)
 {
     let p = getParameters<VolumetricFogParams>();
     if (any(id >= p.grid.xyz)) { return; }
@@ -292,7 +290,7 @@ void lightScattering(uint3 id : SV_DispatchThreadID)
         float cosTheta = dot(p.lightDirectionPhase.xyz, -cameraVector);
         float phase = fogPhaseFunction(p.lightDirectionPhase.w, cosTheta);
         float3 irradiance = p.lightColorIntensity.rgb;
-        if (p.atmosphereParameters.index != 0xffffffffu) {
+        if (physicalSun) {
             irradiance = physicalCelestialIrradiance(resolveUniform(p.atmosphereParameters)[0], resolveUniform(p.transmittance),
                 p.cloudShadow, 0u, p.current.eye.xyz + cell * 0.01f);
         }
@@ -328,6 +326,20 @@ void lightScattering(uint3 id : SV_DispatchThreadID)
         result = lerp(result, previous, historyAlpha);
     }
     writeScattering(id, select(asuint(result) >= 0x7f800000u, 0.0f, result), p);
+}
+
+[shader("compute")]
+[numthreads(4, 4, 4)]
+void lightScattering(uint3 id : SV_DispatchThreadID)
+{
+    scatterFogLight(id, false);
+}
+
+[shader("compute")]
+[numthreads(4, 4, 4)]
+void lightScatteringPhysicalSun(uint3 id : SV_DispatchThreadID)
+{
+    scatterFogLight(id, true);
 }
 
 [shader("compute")]

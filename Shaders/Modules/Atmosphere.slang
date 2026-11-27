@@ -5,6 +5,7 @@ __exported import AtmosphereTypes;
 import ShaderCore;
 import WorkingColor;
 import Clouds;
+import CloudShadowMap;
 import CloudLightEnvironment;
 import VolumetricCloudLighting;
 
@@ -54,6 +55,7 @@ public GPUAtmosphereParameters loadParameters(RWBufferSpan<float4> data)
     p.cloudShadowCentre = data[15]; p.cloudShadowBudget = data[16]; p.weatherComposition = data[17];
     p.moonToSun = data[18]; p.moonPhase = data[19];
     p.cloudShapeResources = asuint(data[20]);
+    p.cloudShadowMoonAnchor = data[21];
     return p;
 }
 public float3 worldToAtmosphereKm(GPUAtmosphereParameters p, float3 worldPosition)
@@ -257,14 +259,20 @@ public SpectralSegment integrateSpectral<TShadow : IAtmosphereLightShadow>(GPUAt
             float3 totalExtinction = medium.extinction + cloudExtinctionPerKm;
             float3 integral = scatteringIntegral(totalExtinction, t1 - t0);
             float3 scattered = medium.rayleigh + medium.mie;
-            float cloudLightT = cloud && any(sourceIrradiance > 0.0) ?
-                Metallic.Clouds::transmittance(p, point, sourceDirection, 1e9, 8u) : 1.0;
+            float cloudLightT = 1.0f;
+            if (cloud && any(sourceIrradiance > 0.0)) {
+                let atlas = resolveUniform(ResourceHandle<Texture2D<float4>>(asuint(p.cloudShadowMoonAnchor.w)));
+                if (!tryCloudShadowMap(p, atlas, point, sourceSlot, cloudLightT)) {
+                    cloudLightT = Metallic.Clouds::transmittance(p, point, sourceDirection, 1e9, 8u);
+                }
+            }
             float3 source = transmittanceToSource(p, transmittance, point, sourceDirection) *
                 cloudLightT * (medium.rayleigh * rayPhase + medium.mie * aerosolPhase);
             // SkyAtmosphere.usf applies opaque geometry visibility to the light's single scattering.
             float visibility = shadow.visibility(rayDistanceKm);
             source *= visibility;
-            if (useMultiple) { source += sampleMulti(p, multiScattering, point, sourceDirection) * scattered * cloudLightT; }
+            // SkyAtmosphere.usf applies the cloud shadow to direct atmospheric scattering.
+            if (useMultiple) { source += sampleMulti(p, multiScattering, point, sourceDirection) * scattered; }
             result.scatteringResponse += result.transmittance * integral * (scattered + cloudScattering);
             if (cloudExtinctionPerMeter > 0.0) {
                 float3 cloudDirect = cloudIlluminance * visibility;
@@ -297,7 +305,10 @@ public SpectralSegment integrateSpectral<TShadow : IAtmosphereLightShadow>(GPUAt
         float3 normal = normalize(point);
         float3 incident = transmittanceToSource(p, transmittance, point + normal * 0.002, sourceDirection) *
             max(dot(normal, sourceDirection), 0.0);
-        if (cloud) { incident *= Metallic.Clouds::transmittance(p, point + normal * 0.002, sourceDirection); }
+        if (cloud) {
+            let atlas = resolveUniform(ResourceHandle<Texture2D<float4>>(asuint(p.cloudShadowMoonAnchor.w)));
+            incident *= cloudShadowTransmittance(p, atlas, point + normal * 0.002, sourceSlot);
+        }
         result.radiance += result.transmittance * incident * p.groundOzoneWidth.xyz * sourceIrradiance / kPi;
         result.scatteringResponse += result.transmittance * p.groundOzoneWidth.xyz;
     }
@@ -370,29 +381,17 @@ public float3 solarIrradiance(GPUAtmosphereParameters p, Texture2D<float4> trans
 public bool tryCloudShadowMap(GPUAtmosphereParameters p, Texture2D<float4> shadow,
     float3 positionKm, uint slot, out float transmittance)
 {
-    if (!Metallic.Clouds::enabled(p)) { transmittance = 1.0; return true; }
-    float3 up, east, north; radialBasis(p, up, east, north);
-    float3 sourceDirection = slot == 0u ? p.sunDirectionRadius.xyz : p.moonDirectionRadius.xyz;
-    float radius = length(positionKm), altitude = radius - p.observerPlanetBottom.w;
-    // Continue the receiver's source ray backwards onto the spherical ground.
-    // Reusing its cloud column preserves shadow parallax on elevated terrain.
-    float2 groundRoots = sphereRoots(positionKm, -sourceDirection, p.observerPlanetBottom.w + 0.002);
-    float3 footprint = positionKm - sourceDirection * max(groundRoots.x, 0.0);
-    float projectedHeight = dot(footprint, up);
-    float2 tangentOffset = float2(dot(footprint, east), dot(footprint, north)) *
-        (p.observerPlanetBottom.w + 0.002) / max(projectedHeight, 1e-6);
-    float2 uv = tangentOffset / (2.0 * p.cloudShadowCentre.w) + 0.5;
-    // The projected ground map is invalid for cloud-interior/aerial receivers.
-    if (all(uv >= 0.0) && all(uv <= 1.0) && projectedHeight > 0.0 && groundRoots.y >= 0.0 &&
-        altitude >= 0.0 && altitude < min(p.cloudLayer.x, 0.5)) {
-        float4 sampled = sampleLinear(shadow, uv);
-        if ((slot == 0u ? sampled.z : sampled.w) > 0.99) {
-            transmittance = saturate(slot == 0u ? sampled.x : sampled.y);
-            return true;
-        }
-    }
-    transmittance = 1.0;
-    return false;
+    transmittance = 1.0f;
+    if (!Metallic.Clouds::enabled(p)) { return true; }
+    if ((uint(p.cloudShadowBudget.z) & (1u << slot)) == 0u) { return false; }
+    let projection = Metallic.Clouds::CloudShadowProjection::forLight(p, slot);
+    float3 receiver = projection.project(positionKm);
+    float farKm = 2.0f * projection.halfWidthKm;
+    if (any(receiver.xy < 0.0f) || any(receiver.xy > 1.0f) || receiver.z < 0.0f || receiver.z > farKm) { return false; }
+    float4 column = Metallic.Clouds::sampleShadowColumn(p, shadow, receiver.xy, slot);
+    if (column.w > 0.0f) { return false; }
+    transmittance = Metallic.Clouds::receiverTransmittance(column.xyz, receiver.z);
+    return true;
 }
 public float cloudShadowTransmittance(GPUAtmosphereParameters p, Texture2D<float4> shadow,
     float3 positionKm, uint slot)

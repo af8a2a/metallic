@@ -16,6 +16,7 @@ using Metallic.Clouds;
 using Metallic.Lumen;
 
 #include "../../../Source/Runtime/Render/Environment/VolumetricCloudViewParameters.h"
+__include "VolumetricCloudViewTemporal.slang";
 
 // Reference: UE 5.7.4 NvRTX VolumetricCloud.usf, DistanceFromCloudLayerEntryPoint.
 static const float kStopTracingTransmittance = 0.005f;
@@ -30,9 +31,12 @@ float3 cloudDirectTransmittance(GPUAtmosphereParameters a, float3 positionKm, fl
 }
 
 CloudViewIntegral traceViewCloud(GPUAtmosphereParameters a, float3 originKm,
-    float3 direction, float maximumDistanceKm, float stepNoise, DirectionalAtmosphereShadow shadow)
+    float3 direction, float maximumDistanceKm, float stepNoise, DirectionalAtmosphereShadow shadow,
+    float closestDepthMeters, out CloudViewIntegral closest, out float noCloudDepthKm)
 {
     CloudViewIntegral result = CloudViewIntegral::empty();
+    closest = result;
+    noCloudDepthKm = maximumDistanceKm;
     float groundKm = groundDistance(a, originKm, direction);
     if (groundKm >= 0.0f) { maximumDistanceKm = min(maximumDistanceKm, groundKm); }
     // UE's default tracing-distance mode marches the first contiguous spherical layer intersection.
@@ -41,6 +45,7 @@ CloudViewIntegral traceViewCloud(GPUAtmosphereParameters a, float3 originKm,
 
     float tMin = range.x * 1000.0f;
     float tMax = tMin + min(50000.0f, (range.y - range.x) * 1000.0f);
+    noCloudDepthKm = tMax * 0.001f;
     uint stepCount = uint(max(2.0f, 96.0f * saturate((tMax - tMin) * (1.0f / 15000.0f))));
     float stepMeters = (tMax - tMin) / float(stepCount);
     float t = tMin + stepNoise * stepMeters;
@@ -69,6 +74,12 @@ CloudViewIntegral traceViewCloud(GPUAtmosphereParameters a, float3 originKm,
                 incident += moonT[ms] * moonIlluminance * moonPhase[ms];
                 if (ms == 0) { incident += distantSky; }
                 result.integrateOrder(t, stepMeters, extinctionOrders[ms], incident * scatteringOrders[ms], uint(ms));
+            }
+            // The near integral is the prefix of the same march, including its sample jitter.
+            if (t <= closestDepthMeters) {
+                float previousT = closest.transmittance;
+                closest = result;
+                if (t == closestDepthMeters) { closest.transmittance = previousT; }
             }
             if (result.transmittance < kStopTracingTransmittance) { break; }
         }
@@ -135,7 +146,10 @@ void volumetricCloudViewMain(uint3 id : SV_DispatchThreadID)
         let shadow = DirectionalAtmosphereShadow::forRay(p.worldShadowFaces.index, p.shadowMask, originMeters);
         // Freeze UE's blue-noise phase in this full-resolution view without history.
         float stepNoise = lumenProbeBlueNoiseScalar(resolveUniform(p.blueNoise), pixel, 0u);
-        CloudViewIntegral cloud = traceViewCloud(a, originKm, direction, distanceKm, stepNoise, shadow);
+        CloudViewIntegral closest;
+        float noCloudDepthKm;
+        CloudViewIntegral cloud = traceViewCloud(a, originKm, direction, distanceKm, stepNoise, shadow,
+            -1.0f, closest, noCloudDepthKm);
         if (cloud.depthWeightsSum > 0.0f) {
             cloudDepthMeters = cloud.representativeDepthMeters();
             AtmosphereSegment aerial = cloudAerialPerspective(p, a, originMeters, originKm, direction, cloudDepthMeters, shadow);

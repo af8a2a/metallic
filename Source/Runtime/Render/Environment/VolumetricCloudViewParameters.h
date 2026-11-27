@@ -8,10 +8,13 @@
 
 namespace metallic::render {
 using CloudViewFloat2 = std::array<float, 2>;
+using CloudViewUInt2 = std::array<uint32_t, 2>;
 using CloudViewUInt = uint32_t;
 using CloudViewColorIn = ShaderSampledImage;
 using CloudViewScalarIn = ShaderSampledImage;
 using CloudViewColorOut = ShaderStorageImage;
+using CloudViewDepthPairIn = ShaderSampledImage;
+using CloudViewDepthPairOut = ShaderStorageImage;
 using CloudViewScalarOut = ShaderStorageImage;
 using CloudViewAtmosphere = ShaderBuffer;
 using CloudViewBuffer = ShaderBuffer;
@@ -21,10 +24,13 @@ import AtmosphereTypes;
 using Metallic;
 namespace Metallic {
 typealias CloudViewFloat2 = float2;
+typealias CloudViewUInt2 = uint2;
 typealias CloudViewUInt = uint;
 typealias CloudViewColorIn = ResourceHandle<Texture2D<float4>>;
 typealias CloudViewScalarIn = ResourceHandle<Texture2D<float>>;
 typealias CloudViewColorOut = ResourceHandle<RWTexture2D<float4>>;
+typealias CloudViewDepthPairIn = ResourceHandle<Texture2D<float2>>;
+typealias CloudViewDepthPairOut = ResourceHandle<RWTexture2D<float2>>;
 typealias CloudViewScalarOut = ResourceHandle<RWTexture2D<float>>;
 typealias CloudViewAtmosphere = ResourceHandle<StructuredBuffer<GPUAtmosphereParameters>>;
 typealias CloudViewBuffer = ResourceHandle<ByteAddressBuffer>;
@@ -43,12 +49,23 @@ struct VolumetricCloudViewParams {
     CloudViewColorOut color, scattering;
     CloudViewScalarOut transmittance, cloudDepth;
     CloudViewUInt skyVisible;
+    ViewCameraConstants previousCamera;
+    CloudViewUInt2 tracingPixelOffset;
+    CloudViewUInt noiseFrameIndex, historyValid;
+    CloudViewColorIn currentFar, currentNear, currentDepth;
+    CloudViewColorIn previousFar, previousNear, previousDepth;
+    CloudViewColorOut writeFar, writeNear, writeDepth;
+    CloudViewDepthPairIn currentRepresentativeDepth, previousRepresentativeDepth;
+    CloudViewDepthPairOut writeRepresentativeDepth;
 };
 
 #ifdef __cplusplus
-inline constexpr uint64_t kVolumetricCloudViewABI = 0x56434c4400000001ull;
+inline constexpr uint64_t kVolumetricCloudViewABI = 0x56434c4400000002ull;
 static_assert(offsetof(VolumetricCloudViewParams, sceneColor) == 88);
 static_assert(offsetof(VolumetricCloudViewParams, cloudDepth) == 136);
-static_assert(sizeof(VolumetricCloudViewParams) == 144);
+static_assert(offsetof(VolumetricCloudViewParams, previousCamera) == 144);
+static_assert(offsetof(VolumetricCloudViewParams, writeFar) == 264);
+static_assert(offsetof(VolumetricCloudViewParams, writeRepresentativeDepth) == 284);
+static_assert(sizeof(VolumetricCloudViewParams) == 288);
 #endif
 } // namespace metallic::render (C++) / Metallic (Slang)

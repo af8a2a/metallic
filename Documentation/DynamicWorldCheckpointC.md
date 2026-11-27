@@ -209,8 +209,8 @@ loads, and the editor constrains layer controls to the shell. Dormant cloud
 settings may remain authored while clouds or physical atmosphere are inactive.
 
 Physical sky view and lighting capture use RGBA32F to retain bright forward
-cloud scattering above 65504. Transmittance, multi-scattering and cloud shadow
-maps retain RGBA16F; aerial data remains FP32.
+cloud scattering above 65504. Transmittance and multi-scattering use RGBA16F.
+The cloud shadow columns and aerial data use FP32.
 
 ### Deferred primary-view clouds
 
@@ -251,13 +251,34 @@ The UE reference applies its opaque shadow query to the first slot.
 Metallic uses its three atmospheric wavelengths, gas LUTs and existing
 spectral-to-working-color conversion. The sky directions and ground
 illuminance are evaluated on the GPU. The adapters use Y-up world metres, kilometres for the
-spherical atmosphere, reversed Z and a zero empty-depth marker. The buffer
-formats are full precision. Blue-noise sampling uses a fixed phase because
-this path traces at full resolution without temporal reconstruction.
+spherical atmosphere, reversed Z and a zero empty-depth marker.
+
+For perspective views, `temporalReconstruction` defaults to true.
+The [UE Mode 0 reconstruction](../Shaders/Features/Environment/VolumetricCloudViewTemporal.slang)
+traces one ray per 4×4 block of render pixels, recording both the near- and
+far-depth cloud integrals. Each frame refreshes one of four interleaved
+positions in the half-resolution image. The other positions reproject
+history with the cloud-front depth and the previous camera. Near/far scene
+depth changes can reject that history. A bilateral resolve uses the full
+opaque depth to select the cloud contribution before compositing.
+The first frame, a camera cut, a resize or a change to authored weather
+starts with a spatial reconstruction. Ordinary camera motion and advancing
+wind or time of day can reuse history.
+
+Metallic fuses the 4×4 depth reduction into the trace. It uses scene-linear
+FP32 cloud color and transmittance throughout. An additional RG32F image
+carries opacity-weighted near/far representative distances through the same
+sample choices as the cloud colors. The resolve recovers `cloudDepth` in metres.
+The trace uses frame-indexed blue noise and the unjittered projection.
+Orthographic views and graphs with `temporalReconstruction` disabled use the
+full-resolution trace with fixed blue noise. The temporal path covers opaque
+surfaces and sky; UE's water, MSAA and holdout permutations are outside this path.
 
 The GPU regression `volumetric_cloud_view_depth_and_composite` checks the
 outputs against an opaque ceiling before and within the cloud layer, an open
-orthographic view, an in-cloud perspective view and disabled clouds.
+orthographic view, an in-cloud perspective view and disabled clouds. It checks
+four consecutive reconstruction phases, camera translation, camera cuts,
+re-enabling clouds and resizing the render targets.
 `cloud_transport_weather_shadow_domains` checks forward, side and back
 scattering, per-order self-shadow and radiance, the Beer–Lambert solution for
 a homogeneous slab, and the lighting inputs under the Sun and Moon. It also compares
@@ -275,14 +296,36 @@ source receives 48 cloud-shadow integration samples. A second source at least
 `0.0001` of dominant importance receives 12. Sources at or below the local
 horizon receive no map budget; ties retain the stable Sun slot.
 
-The two-source cloud shadow map is 256² RGBA16F over a ±32 km observer-centered
-ground footprint. R/G store Sun/Moon transmittance; B/A indicate valid mapped
-source channels. Receivers below 500 m, below the cloud base and inside the
-footprint use a source-ray projection onto the spherical ground before
-sampling, preserving height-dependent cloud-shadow parallax.
-Out-of-footprint, elevated or unbudgeted receivers use analytic cloud
-transmittance. The budget controls map work and does not rewrite or discard a
-source's direct irradiance.
+The Sun and Moon each have an orthographic light-space projection with a
+±32 km extent. The ground point under the observer snaps to UE's 20 km world
+grid. A per-light adjustment aligns world zero to its tracing texels. The
+[producer](../Shaders/Features/Environment/CloudShadow.slang) traces the
+first illuminated spherical cloud interval using the UE full-resolution
+shadow branch. It fuses the default 2×2 spatial filter into each output
+texel. Two 256² tiles share a 512×256 atlas. Metallic uses FP32 through the
+filter and in the atlas to accommodate its authored layer depths. UE writes
+separate R11G11B10 textures before and after filtering.
+
+Each column stores front depth in km, mean positive extinction per metre and
+integrated optical depth. The [receiver](../Shaders/Modules/CloudShadowMap.slang)
+interpolates within its tile and reconstructs optical depth from its distance
+behind the cloud front, capped by the column integral. Alpha flags columns
+whose light-side cloud interval crosses the near plane. The filter preserves
+that flag over its whole footprint. A tall layer or grazing Sun can therefore
+use the full analytic ray for the affected receivers. Surfaces, fog and
+single-scattered atmospheric light sample the atlas at their own world
+positions. Out-of-projection and unscheduled receivers also use analytic
+cloud transmittance. The cloud material retains its ray-marched self-shadow.
+The shadow atlas is rebuilt with the immutable atmosphere publication. Its
+integration uses the existing Metallic 48/12 light budgets and the UE
+single-frame spatial filter.
+
+Fog injection and Lumen Surface Cache select their physical-sun shaders
+when the environment publishes atmosphere parameters. The authored-sun
+shaders use the scene irradiance directly. The GPU cases
+`volumetric_fog_graph_toggle` and `lumen_surface_cache_capture` compare
+clear and cloud-shadowed sunlight in the fog and on a surface card,
+respectively.
 
 The existing single-source screen-space shadow path automatically selects the
 largest positive elevation-weighted celestial importance, then falls back to

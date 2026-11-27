@@ -119,7 +119,7 @@ public:
 
 private:
     Device* device_ = nullptr;
-    ComputeKernel material_, shadow_, lighting_, integration_, depth_, localTileCulling_;
+    ComputeKernel material_, shadow_, lighting_, physicalLighting_, integration_, depth_, localTileCulling_;
     HistoryResourceManager history_;
     struct Previous {
         ViewCameraConstants camera{};
@@ -250,6 +250,7 @@ Result<> VolumetricFogPass::compile(const RenderGraphCompileContext& context, st
     }
     if (auto r = compileFogKernel(*device_, "materialSetup", material_, log); !r) { return r; }
     if (auto r = compileFogKernel(*device_, "lightScattering", lighting_, log); !r) { return r; }
+    if (auto r = compileFogKernel(*device_, "lightScatteringPhysicalSun", physicalLighting_, log); !r) { return r; }
     if (auto r = compileFogKernel(*device_, "finalIntegration", integration_, log); !r) { return r; }
     previous_ = {};
     return history_.initialize(*device_);
@@ -544,7 +545,8 @@ Result<> VolumetricFogPass::execute(RenderGraphExecutionContext& context)
     if (conservative) { stage("Fog conservative depth", depth_, depthUses, false); }
     stage("Fog material setup", material_, materialUses, true);
     if (rayTraced) { stage("Fog directional shadow", shadow_, shadowUses, true); }
-    stage("Fog light scattering", lighting_, lightUses, true);
+    // Compile the physical lookup only into the dispatch with a bound atmosphere publication.
+    stage("Fog light scattering", p.atmosphereParameters.index != UINT32_MAX ? physicalLighting_ : lighting_, lightUses, true);
     stage("Fog final integration", integration_, integrationUses, false);
     if (auto r = context.executeStages(stages, {}, imports); !r) { return r; }
     if (temporal) {

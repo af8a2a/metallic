@@ -2,6 +2,7 @@ module CloudsProbe;
 
 import Atmosphere;
 import Clouds;
+import CloudShadowMap;
 import CloudLightEnvironment;
 import VolumetricCloudLighting;
 import VolumetricCloudViewTrace;
@@ -27,14 +28,14 @@ void store(uint index, float3 value)
 void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
 {
     if (any(id != 0u)) { return; }
-    for (uint index = 0u; index < 60u; ++index) { store(index, float3(0.0)); }
+    for (uint index = 0u; index < 64u; ++index) { store(index, float3(0.0)); }
     GPUAtmosphereParameters p = loadParameters(gProbe.resources.parameters);
     let trans = resolveUniform(gProbe.resources.transmittance);
     let multi = resolveUniform(gProbe.resources.multiScattering);
     let sky = resolveUniform(gProbe.resources.skyView);
     let shadow = resolveUniform(gProbe.resources.sourceMip);
     let capture = resolveUniform(gProbe.radiance);
-    float3 ground = p.cloudShadowCentre.xyz;
+    float3 ground = normalize(p.observerPlanetBottom.xyz) * (p.observerPlanetBottom.w + 0.002f);
     float3 up = normalize(ground);
     float3 sun = p.sunDirectionRadius.xyz;
     GPUAtmosphereParameters clear = p;
@@ -42,8 +43,9 @@ void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
     float cloudT = Metallic.Clouds::transmittance(p, ground, sun, 1e9, 48u);
     store(0, float3(cloudT));
     store(1, float3(cloudShadowTransmittance(p, shadow, ground, 0u)));
-    float4 map = sampleLinear(shadow, float2(0.5));
-    store(2, map.xyz); store(3, float3(map.w, p.cloudShadowBudget.z, p.cloudShadowBudget.w));
+    // Sample both tile centres independently. An unscheduled emitter has zero optical depth.
+    store(2, sampleLinear(shadow, float2(0.25, 0.5)).xyz);
+    store(3, sampleLinear(shadow, float2(0.75, 0.5)).xyz);
     store(4, solarIrradiance(p, trans, ground, 0u));
     store(5, solarIrradiance(clear, trans, ground, 0u));
     float3 above = up * (p.observerPlanetBottom.w + p.cloudLayer.y + 1.0);
@@ -117,22 +119,22 @@ void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
     store(34, reference.radiance); store(35, reference.transmittance);
     store(36, solarIrradiance(p, trans, ground, 1u));
     store(37, solarIrradiance(clear, trans, ground, 1u));
-    // The map centre is between four texels. Compare the cached moon with
-    // the same four physical columns and integration budget.
+    // In the overhead Moon fixture the ground centre interpolates four published texels,
+    // each filtering four traced columns. Average optical depths before exponentiation.
     float filteredMoon = 1.0f;
-    if (uint(p.cloudShadowBudget.z) & 2u) {
+    if (Metallic.Clouds::enabled(p) && (uint(p.cloudShadowBudget.z) & 2u)) {
         uint width, height;
         shadow.GetDimensions(width, height);
-        float3 localUp, east, north;
-        radialBasis(p, localUp, east, north);
-        filteredMoon = 0.0f;
-        for (int y = -1; y <= 1; y += 2) {
-            for (int x = -1; x <= 1; x += 2) {
-                float3 column = ground + east * (x * p.cloudShadowCentre.w / width) + north * (y * p.cloudShadowCentre.w / height);
-                column = normalize(column) * (p.observerPlanetBottom.w + 0.002f);
-                filteredMoon += 0.25f * Metallic.Clouds::transmittance(p, column, p.moonDirectionRadius.xyz, 1e9f, uint(p.cloudShadowBudget.y));
+        let projection = Metallic.Clouds::CloudShadowProjection::forLight(p, 1u);
+        float opticalDepth = 0.0f;
+        for (int y = 0; y < 4; ++y) {
+            for (int x = 0; x < 4; ++x) {
+                float2 offset = (float2(x, y) - 1.5f) * (projection.halfWidthKm / float(height));
+                float3 point = ground + projection.right * offset.x - projection.up * offset.y;
+                opticalDepth += Metallic.Clouds::opticalDepth(p, point, p.moonDirectionRadius.xyz, 1e9f, uint(p.cloudShadowBudget.y));
             }
         }
+        filteredMoon = exp(-opticalDepth / 16.0f);
     }
     store(38, float3(cloudShadowTransmittance(p, shadow, ground, 1u),
         Metallic.Clouds::transmittance(p, ground, p.moonDirectionRadius.xyz), filteredMoon));
@@ -186,6 +188,31 @@ void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
     store(54, orders.luminance);
     store(55, float3(orders.transmittance, orders.representativeDepthMeters(), orders.depthWeightsSum));
 
+    if (Metallic.Clouds::enabled(p) && (uint(p.cloudShadowBudget.z) & 1u)) {
+        float groundT;
+        bool valid = tryCloudShadowMap(p, shadow, ground, 0u, groundT);
+        store(62, float3(valid ? 1.0f : 0.0f, cloudShadowTransmittance(p, shadow, ground, 0u),
+            Metallic.Clouds::transmittance(p, ground, sun)));
+        // Bilinear sampling at the Sun tile's right edge must not mix in the Moon tile.
+        uint width, height;
+        shadow.GetDimensions(width, height);
+        uint row = height / 2u;
+        float4 edge = Metallic.Clouds::sampleShadowColumn(p, shadow, float2(1, (float(row) + 0.5f) / float(height)), 0u);
+        store(63, abs(edge.xyz - shadow.Load(int3(height - 1u, row, 0)).xyz));
+        let projection = Metallic.Clouds::CloudShadowProjection::forLight(p, 0u);
+        float3 nearPoint = projection.nearPlanePosition(float2(0.5f));
+        float3 column = Metallic.Clouds::sampleShadowColumn(p, shadow, float2(0.5f), 0u).xyz;
+        float3 receiverT, mapped;
+        float halfDepthKm = column.z * 0.5f / max(column.y, 1e-8f) / 1000.0f;
+        for (uint i = 0; i < 3; ++i) {
+            float depthKm = column.x + (i == 0 ? -0.1f : (i == 1 ? halfDepthKm : 2.0f * halfDepthKm + 1.0f));
+            float value;
+            mapped[i] = tryCloudShadowMap(p, shadow, nearPoint + projection.forward * depthKm, 0u, value) ? 1.0f : 0.0f;
+            receiverT[i] = value;
+        }
+        store(60, receiverT);
+        store(61, mapped);
+    }
     if (Metallic.Clouds::enabled(p)) {
         // The UE instance reference coordinates use absolute world km and its original placement.
         GPUAtmosphereParameters shape = p;

@@ -61,6 +61,8 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
     add("Features/Environment/AerialPerspective", {"aerialPerspectiveMain", "shadowedAerialPerspectiveMain"});
     add("Features/Environment/CloudShadow", {"cloudShadowMain"});
     add("Features/Environment/CloudLightingLut", {"cloudLightingLutMain"});
+    add("Features/Environment/VolumetricCloudView", {"volumetricCloudViewMain", "clearCloudViewMain",
+        "cloudTraceTemporalMain", "cloudReconstructMain", "cloudComposeMain"});
     add("Features/GPUDriven/GPUDrivenCulling", {"gpuDrivenPreviewResetMain", "gpuDrivenPreviewInstanceCullMain", "gpuDrivenPreviewHzbMain"});
     add("Features/GPUDriven/GPUDrivenStreamWorkload", {"streamWorkloadResetMain", "streamWorkloadMain"});
     add("Features/GPUDriven/GPUDrivenStreamWorkRaster", {"streamClusterRasterWorkBinsMain", "streamClusterRasterWorkControlMain"});

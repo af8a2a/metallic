@@ -48,6 +48,8 @@ inline std::optional<uint32_t> userPushDataSize(const ShaderRequest& request)
     if (matches("Features/Environment/EnvironmentLightingPrecompute", {"environmentLightingPrecomputeMain"})) {
         return static_cast<uint32_t>(sizeof(EnvironmentLightingPrecomputeParams));
     }
+    if (matches("Features/Environment/VolumetricCloudView", {"volumetricCloudViewMain", "clearCloudViewMain",
+        "cloudTraceTemporalMain", "cloudReconstructMain", "cloudComposeMain"})) { return static_cast<uint32_t>(sizeof(GPUBufferSpan)); }
     if (matches("Features/Environment/Transmittance", {"transmittanceMain"}) ||
         matches("Features/Environment/MultiScattering", {"multiScatteringMain"}) ||
         matches("Features/Environment/SkyView", {"skyViewMain", "shadowedSkyViewMain"}) ||

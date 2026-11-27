@@ -423,11 +423,23 @@ public:
             const auto errors = context.validationMessageCount ? context.validationMessageCount->load() : 0;
             if (!executor.compile(context.device, graph, width, height, log)) { return RHITestResult::fail(log); }
             std::vector<std::byte> baseline;
-            for (int frame = 0; frame < 4; ++frame) {
+            double clearSunScattering = 0.0;
+            for (int frame = 0; frame < 6; ++frame) {
                 const bool enabled = frame != 3;
                 const bool hasSphere = frame == 1;
                 environment.volumetricFog.enabled = enabled;
                 environment.volumetricFog.localVolumes.clear();
+                if (frame >= 4) {
+                    environment.source = environment::EnvironmentSource::PhysicalAtmosphere;
+                    environment.sun.enabled = true;
+                    environment.sun.direction = {0, -1, 0};
+                    environment.volumetricFog.emissive = {};
+                    environment.volumetricFog.skyLightVolumetricScatteringIntensity = 0;
+                    environment.weather.cloudEnabled = frame == 5;
+                    environment.weather.cloudCoverage = 1.0f;
+                    environment.weather.cloudDensity = 0.75f;
+                    environment.weather.noiseSeed = 27;
+                }
                 if (hasSphere) {
                     // Pixel x=128 separates the first two tiles; the last tile has only 33 pixels.
                     environment.volumetricFog.localVolumes.push_back({.centerMeters = {-0.508f, 1, 0}, .radiusMeters = 1,
@@ -465,10 +477,16 @@ public:
                 const bool sameMedium = std::memcmp(integrated, baseline.data(), volumeBytes) == 0;
                 constexpr std::array<uint16_t, 4> identity{0, 0, 0, 0x3c00};
                 size_t mediumCount = 0;
+                double redScattering = 0.0;
                 for (size_t i = 0; i < volumeBytes / 8; ++i) {
                     mediumCount += !std::equal(identity.begin(), identity.end(), volume + 4 * i);
+                    if (frame >= 4) { redScattering += decodeHalf(volume[4 * i]); }
                 }
                 readback->unmap();
+                if (frame == 4) { clearSunScattering = redScattering; }
+                if (frame == 5 && !(redScattering > 0.0 && redScattering < clearSunScattering)) {
+                    return RHITestResult::fail("Cloud shadows did not attenuate physical sunlight in the fog volume");
+                }
                 if (!tilesMatch || (frame == 1 && sameMedium) || (frame == 2 && !sameMedium)) {
                     return RHITestResult::fail("Unexpected tile culling or stale local fog history on frame " + std::to_string(frame));
                 }

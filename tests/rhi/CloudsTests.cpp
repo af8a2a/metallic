@@ -15,7 +15,7 @@
 namespace metallic::tests {
 namespace {
 
-using CloudReadback = std::array<std::array<float, 4>, 60>;
+using CloudReadback = std::array<std::array<float, 4>, 64>;
 struct alignas(16) CloudsProbeParams {
     render::AtmospherePrecomputeParams resources;
     render::GPUBufferSpan inputAerial;
@@ -202,8 +202,12 @@ public:
         }
         if (denseValues[26][0] != 1.0f || denseValues[26][1] != sizeof(GPUAtmosphereParameters) || denseValues[26][2] != 0.75f ||
             denseValues[30][0] != 48.0f || denseValues[30][1] != 0.0f || denseValues[30][2] != 1.0f ||
-            denseValues[2][2] != 1.0f || denseValues[3][0] != 0.0f) {
+            denseValues[2][0] <= 0.0f || denseValues[2][1] <= 0.0f || denseValues[2][2] <= 0.0f || denseValues[3][2] != 0.0f) {
             return RHITestResult::fail("Atmosphere ABI or dominant Sun cloud-shadow budget mismatch");
+        }
+        if (!cloudClose(denseValues[61], {1, 1, 1, 1}) || !cloudClose(denseValues[63], {0, 0, 0, 1}) ||
+            !cloudClose(denseValues[60], {1, std::exp(-0.5f * denseValues[2][2]), std::exp(-denseValues[2][2]), 1}, 0.002f, 0.0002f)) {
+            return RHITestResult::fail("Cloud shadow front, partial optical depth or saturated column disagrees with the UE receiver");
         }
         if (!(denseValues[0][0] < 0.9f) || std::abs(denseValues[0][0] - denseValues[1][0]) > 0.035f ||
             !(denseValues[4][0] < 0.9f * denseValues[5][0]) || !cloudClose(denseValues[6], denseValues[7])) {
@@ -273,7 +277,7 @@ public:
             }
         }
         if (nightValues[30][0] != 0.0f || nightValues[30][1] != 48.0f || nightValues[30][2] != 2.0f ||
-            nightValues[2][2] != 0.0f || nightValues[3][0] != 1.0f ||
+            nightValues[2][2] != 0.0f || nightValues[3][2] <= 0.0f ||
             nightValues[26][2] != 1.125f || !(nightValues[20][1] < seedValues[20][1]) ||
             !(nightValues[36][0] < 0.9f * nightValues[37][0]) ||
             std::abs(nightValues[38][0] - nightValues[38][2]) > 0.001f) {
@@ -313,6 +317,25 @@ public:
             orbitValues[42][0] >= orbitValues[44][0] || !cloudClose(orbitValues[42], expectedOrbitalT, 0.05f, 0.001f)) {
             return RHITestResult::fail("150 km downward cloud ray missed thin shell or disagreed with independent cloud/gas extinction composition");
         }
+        for (bool highLayer : {false, true}) {
+            world.sun.direction = highLayer ? float3(0.0f, -1.0f, 0.0f) : float3(-1.0f, -0.02f, 0.0f);
+            world.weather.cloudBaseAltitudeKm = highLayer ? 34.0f : 1.5f;
+            world.weather.cloudTopAltitudeKm = highLayer ? 40.0f : 4.0f;
+            std::unique_ptr<AtmosphereResourcesGPU> clipped;
+            CloudReadback clippedValues;
+            if (!probe(highLayer ? "cloud-shadow-high-layer" : "cloud-shadow-grazing", 0.0, clippedValues, clipped, dense.get())) {
+                return RHITestResult::fail(log);
+            }
+            if (clippedValues[62][0] != 0.0f || clippedValues[62][1] != clippedValues[62][2]) {
+                return RHITestResult::fail("A near-plane-clipped cloud shadow column failed to use the full analytic light path");
+            }
+        }
+        const auto stable = buildGPUAtmosphereParameters(world.snapshot(), {0.0, 2.0, 0.0});
+        const auto subGrid = buildGPUAtmosphereParameters(world.snapshot(), {100.0, 2.0, 0.0});
+        const auto moved = buildGPUAtmosphereParameters(world.snapshot(), {20000.0, 2.0, 0.0});
+        if (stable.cloudShadowCentre != subGrid.cloudShadowCentre || stable.cloudShadowCentre == moved.cloudShadowCentre) {
+            return RHITestResult::fail("Cloud shadow anchor drifted within its snapped cell or failed to follow the camera");
+        }
         world.weather.humidity = 0.75f;
         AtmosphereResourcesGPU incompatible;
         if (!incompatible.initialize(*device, log, dense.get())) { return RHITestResult::fail(log); }
@@ -326,7 +349,7 @@ public:
         if (incompatible.record(*gpu.commands, world.snapshot(), {0.0, 2.0, 0.0}, log)) {
             return RHITestResult::fail("Active cloud shell outside atmosphere was accepted with inconsistent transport domains");
         }
-        return RHITestResult::pass("Nine submitted cloud publications: zero identity, seed/time reproducibility, wind/precipitation, bounded scattering, 32-cube aerial, Sun/Moon maps, elevated terrain projection, 150 km downward shell, fallback and retained static LUT ownership");
+        return RHITestResult::pass("Verified cloud transport, solar/lunar shadow columns, terrain parallax, orbital rays, snapped anchors and analytic coverage for tall and grazing cloud paths");
     }
 };
 METALLIC_REGISTER_RHI_TEST(CloudTransportTest);

@@ -411,9 +411,8 @@ private:
     ImportancePdfCompute rectPdfCompute_;
     ScenePathTraceResources materialResources_;
     std::unique_ptr<GraphicsPipeline> pipeline_;
-    ComputeKernel resolve_;
+    std::array<ComputeKernel, 2> cardLighting_; // Authored and physical Sun, respectively.
     ComputeKernel encodeDepth_;
-    ComputeKernel shadowedLighting_;
     ComputeKernel composeLighting_;
 };
 
@@ -669,19 +668,23 @@ Result<> LumenSurfaceCachePass::compile(const RenderGraphCompileContext& context
                     .debugName = "LumenSurfaceCacheEncodeDepth"}, encodeDepth_, log); !r) {
             return r;
         }
-        const auto lightingDefines = hardwareDefines.first(hardwareRect ? 2u : hardwarePunctual ? 1u : 0u);
-        const auto lightingAbi = hardwareRect ? parameterAbi<HardwareRectLightingParams>(kHardwareRectLightingABI) :
-            hardwarePunctual ? parameterAbi<HardwarePunctualLightingParams>(kHardwarePunctualLightingABI) :
-            parameterAbi<ShadowedLightingParams>(kShadowedLightingABI);
-        return ShaderRegistry::instance().getComputeKernel(*device_,
-            {.moduleName = kShaderModule, .entryPointName = "surfaceCacheShadowedLightingMain",
-                .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = lightingDefines},
-            {.parameters = lightingAbi,
-                .debugName = "LumenSurfaceCacheShadowedLighting"}, shadowedLighting_, log);
     }
-    return ShaderRegistry::instance().getComputeKernel(*device_,
-        {.moduleName = kShaderModule, .entryPointName = "surfaceCacheResolveMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
-        {.parameters = parameterAbi<ResolveParams>(kResolveABI), .debugName = "LumenSurfaceCacheResolve"}, resolve_, log);
+    const bool useShadows = shadowedLighting();
+    const auto hardwareLighting = hardwareDefines.first(useShadows ? (hardwareRect ? 2u : hardwarePunctual ? 1u : 0u) : 0u);
+    const auto lightingAbi = !useShadows ? parameterAbi<ResolveParams>(kResolveABI) :
+        hardwareRect ? parameterAbi<HardwareRectLightingParams>(kHardwareRectLightingABI) :
+        hardwarePunctual ? parameterAbi<HardwarePunctualLightingParams>(kHardwarePunctualLightingABI) :
+        parameterAbi<ShadowedLightingParams>(kShadowedLightingABI);
+    for (bool physical : {true, false}) {
+        std::vector<SlangMacroDefine> lightingDefines(hardwareLighting.begin(), hardwareLighting.end());
+        if (!physical) { lightingDefines.push_back({"METALLIC_SURFACE_CACHE_AUTHORED_SUN", "1"}); }
+        if (auto r = ShaderRegistry::instance().getComputeKernel(*device_,
+                {.moduleName = kShaderModule, .entryPointName = useShadows ? "surfaceCacheShadowedLightingMain" : "surfaceCacheResolveMain",
+                    .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = lightingDefines},
+                {.parameters = lightingAbi, .debugName = useShadows ? "LumenSurfaceCacheShadowedLighting" : "LumenSurfaceCacheResolve"},
+                cardLighting_[physical], log); !r) { return r; }
+    }
+    return {};
 }
 
 Result<std::unique_ptr<Buffer>> upload(Device& device, std::span<const std::byte> bytes, BufferUsageBits usage)
@@ -1146,6 +1149,7 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
     const auto worldEnvironment = resolveWorldEnvironment(&scene, context.world());
     const auto sun = buildCelestialLightRecords(worldEnvironment)[0];
     const auto* atmosphere = context.resources<EnvironmentResourceSet>();
+    const bool physicalSun = atmosphere && atmosphere->lighting.atmosphereParametersBuffer;
     PublishedSurfaceCache next{.geometry = captureGeometry_, .lighting = {
         .direction = {-sun.direction[0], -sun.direction[1], -sun.direction[2], 0.0f},
         .illuminance = {sun.irradiance[0], sun.irradiance[1], sun.irradiance[2], 0.0f},
@@ -1157,7 +1161,7 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         next.nonSunLightingRevision = world->nonSunLightingRevision();
     }
     auto& lighting = next.lighting;
-    if (atmosphere) {
+    if (physicalSun) {
         lighting.atmosphereRevisions = std::array{worldEnvironment.atmosphereRevision, worldEnvironment.weatherRevision};
     }
     const auto resolvedLighting = resolveSceneLighting(&scene, context.world());
@@ -1429,7 +1433,7 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         params.tileResolution = layout_.tile;
         params.lightDirection = lighting.direction;
         params.illuminance = lighting.illuminance;
-        if (atmosphere) {
+        if (physicalSun) {
             const auto& resources = atmosphere->lighting;
             params.atmosphere = {writer.buffer(resources.atmosphereParametersBuffer),
                 writer.sampledImageHandle(resources.transmittanceView), writer.sampledImageHandle(resources.cloudShadowView)};
@@ -1457,7 +1461,7 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         if (!encoded) { return makeError(encoded.error()); }
         resolveEncoded = std::move(*encoded);
         stages.push_back({"Encode depth and shade cards", resolveUses, [&](CommandBuffer& cmd) {
-            return lightingDispatch->record(resolve_, cmd, *resolveEncoded, exactRectLightBuffer != nullptr);
+            return lightingDispatch->record(cardLighting_[physicalSun], cmd, *resolveEncoded, exactRectLightBuffer != nullptr);
         }});
     }
 
@@ -1524,7 +1528,7 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         shadowedEncoded = std::move(*encoded);
         stages.push_back({hardwarePunctual ? "Shade cards with hardware punctual shadows" : "Shade cards with GDF shadows",
             lightingUses, [&](CommandBuffer& cmd) {
-            return lightingDispatch->record(shadowedLighting_, cmd, *shadowedEncoded, true);
+            return lightingDispatch->record(cardLighting_[physicalSun], cmd, *shadowedEncoded, true);
         }});
     }
 

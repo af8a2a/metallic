@@ -162,10 +162,33 @@ GPUAtmosphereParameters buildGPUAtmosphereParameters(const environment::Environm
         static_cast<float>(std::remainder(windKm * wind.y, 2048.0)), std::bit_cast<float>(weather.noiseSeed)};
     const double observerRadius = std::sqrt(double(p.observerPlanetBottom[0]) * p.observerPlanetBottom[0] +
         double(p.observerPlanetBottom[1]) * p.observerPlanetBottom[1] + double(p.observerPlanetBottom[2]) * p.observerPlanetBottom[2]);
-    for (uint32_t axis = 0; axis < 3; ++axis) {
-        p.cloudShadowCentre[axis] = static_cast<float>(p.observerPlanetBottom[axis] * (a.bottomRadiusKm + 0.002) / std::max(observerRadius, 1e-6));
-    }
+    // UE VolumetricCloudRendering.cpp: snap the sub-camera ground point in world
+    // space, then align world zero to the light's two-texel tracing grid.
+    const double3 centreKm(a.planetCenter[0] * 0.001, a.planetCenter[1] * 0.001, a.planetCenter[2] * 0.001);
+    const auto snapGround = [&](uint32_t axis) {
+        const double groundKm = a.planetCenter[axis] * 0.001 +
+            double(p.observerPlanetBottom[axis]) * a.bottomRadiusKm / std::max(observerRadius, 1e-6);
+        return std::floor((groundKm + 10.0) / 20.0) * 20.0;
+    };
+    const double3 snappedKm(snapGround(0), snapGround(1), snapGround(2));
     p.cloudShadowCentre[3] = 32.0f;
+    const auto shadowAnchor = [&](const AtmosphereFloat4& direction, AtmosphereFloat4& anchor) {
+        const double3 forward(-direction[0], -direction[1], -direction[2]);
+        const double3 up = std::abs(forward.y) > 0.99 ? double3(1, 0, 0) : double3(0, 1, 0);
+        const double3 right = normalize(cross(forward, up));
+        const double3 vertical = cross(right, forward);
+        const double grid = 4.0 * p.cloudShadowCentre[3] / (2 * AtmosphereResourcesGPU::kCloudShadowSize);
+        const auto offset = [&](const double3& axis) {
+            const double origin = -dot(snappedKm, axis);
+            return origin - std::floor(origin / grid + 0.5) * grid;
+        };
+        const double3 planetKm = (snappedKm - centreKm) + right * offset(right) + vertical * offset(vertical);
+        anchor[0] = static_cast<float>(planetKm.x);
+        anchor[1] = static_cast<float>(planetKm.y);
+        anchor[2] = static_cast<float>(planetKm.z);
+    };
+    shadowAnchor(p.sunDirectionRadius, p.cloudShadowCentre);
+    shadowAnchor(p.moonDirectionRadius, p.cloudShadowMoonAnchor);
     const auto shadowPlan = buildCelestialShadowPlan(environment, observerWorldMetres);
     p.cloudShadowBudget = {float(shadowPlan.sampleCounts[0]), float(shadowPlan.sampleCounts[1]),
         float(shadowPlan.activeMask), shadowPlan.dominantIndex == 0xffffffffu ? -1.0f : float(shadowPlan.dominantIndex)};
@@ -203,7 +226,7 @@ struct AtmosphereResourcesGPU::Impl {
     std::shared_ptr<Image> multiScattering = std::make_shared<Image>();
     Image skyView, radiance, cloudShadow;
     Image cloudLighting;
-    ResourceLease cloudLightingSampled;
+    ResourceLease cloudLightingSampled, cloudShadowSampled;
     std::unique_ptr<Buffer> aerial;
     std::unique_ptr<Buffer> parameterBuffer;
     GPUAtmosphereParameters parameters{};
@@ -336,11 +359,12 @@ Result<> AtmosphereResourcesGPU::initialize(Device& device, std::string& log, co
     impl_->kernels = std::move(preparedKernels);
     for (auto request : {std::array<uint32_t, 4>{0, kTransmittanceWidth, kTransmittanceHeight, 1},
         {1, kMultiScatteringSize, kMultiScatteringSize, 1}, {2, kSkyViewWidth, kSkyViewHeight, 1},
-        {3, kRadianceWidth, kRadianceHeight, kRadianceMipCount}, {4, kCloudShadowSize, kCloudShadowSize, 1}}) {
+        {3, kRadianceWidth, kRadianceHeight, kRadianceMipCount}, {4, 2 * kCloudShadowSize, kCloudShadowSize, 1}}) {
         if (impl_->sharedMedium && request[0] < 2) { continue; }
         auto* image = request[0] == 0 ? impl_->transmittance.get() : request[0] == 1 ? impl_->multiScattering.get() :
             request[0] == 2 ? &impl_->skyView : request[0] == 3 ? &impl_->radiance : &impl_->cloudShadow;
-        const auto format = request[0] == 2 || request[0] == 3 ? Format::RGBA32Sfloat : Format::RGBA16Sfloat;
+        // Sky radiance and shadow-column optical depth can exceed FP16 for valid authored media.
+        const auto format = request[0] >= 2 ? Format::RGBA32Sfloat : Format::RGBA16Sfloat;
         if (auto result = impl_->createImage(*image, request[1], request[2], request[3], format); !result) { return result; }
     }
     auto result = device.createBuffer(BufferDesc{.size = uint64_t(kAerialSize) * kAerialSize * kAerialSize * 2 * 16,
@@ -393,6 +417,10 @@ Result<> AtmosphereResourcesGPU::record(CommandBuffer& commands, const environme
         if (!sampled) { return makeError(sampled.error()); }
         impl_->cloudLightingSampled = std::move(*sampled);
         impl_->parameters.settings[3] = std::bit_cast<float>(impl_->cloudLightingSampled.shaderIndex());
+        auto shadow = (*registry)->sampledImage(*impl_->cloudShadow.view);
+        if (!shadow) { return makeError(shadow.error()); }
+        impl_->cloudShadowSampled = std::move(*shadow);
+        impl_->parameters.cloudShadowMoonAnchor[3] = std::bit_cast<float>(impl_->cloudShadowSampled.shaderIndex());
     }
     void* mapped = impl_->parameterBuffer->map();
     if (mapped == nullptr) { return makeError(Error::Failure); }
@@ -426,7 +454,7 @@ Result<> AtmosphereResourcesGPU::record(CommandBuffer& commands, const environme
     if (impl_->cloudLighting.texture) {
         if (auto result = imageDispatch(6, impl_->cloudLighting, 3, 1); !result) { return result; }
     }
-    if (auto result = imageDispatch(5, impl_->cloudShadow, kCloudShadowSize, kCloudShadowSize); !result) { return result; }
+    if (auto result = imageDispatch(5, impl_->cloudShadow, 2 * kCloudShadowSize, kCloudShadowSize); !result) { return result; }
     if (auto result = imageDispatch(2, impl_->skyView, kSkyViewWidth, kSkyViewHeight); !result) { return result; }
     params.skyView = writer.sampledImage(impl_->skyView.view.get());
     if (auto result = imageDispatch(3, impl_->radiance, kRadianceWidth, kRadianceHeight); !result) { return result; }

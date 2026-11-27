@@ -11,9 +11,52 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
+using Access = RenderGraphResourceAccess;
+using StageUse = RenderGraphStageUse;
+
+// Each traced quantity has a quarter-resolution producer and a half-resolution history.
+struct CloudChannel {
+    const char* trace;
+    const char* current;
+    const char* previous;
+    Format format;
+    ColorValue clear;
+    ShaderSampledImage VolumetricCloudViewParams::*input;
+    ShaderSampledImage VolumetricCloudViewParams::*past;
+    ShaderStorageImage VolumetricCloudViewParams::*output;
+};
+using CloudParams = VolumetricCloudViewParams;
+constexpr std::array<CloudChannel, 4> kCloudChannels{{
+    {"traceFar", "currentFar", "previousFar", Format::RGBA32Sfloat, {0, 0, 0, 1},
+        &CloudParams::currentFar, &CloudParams::previousFar, &CloudParams::writeFar},
+    {"traceNear", "currentNear", "previousNear", Format::RGBA32Sfloat, {0, 0, 0, 1},
+        &CloudParams::currentNear, &CloudParams::previousNear, &CloudParams::writeNear},
+    {"traceDepth", "currentDepth", "previousDepth", Format::RGBA32Sfloat, {65504, 65504, 65504, 65504},
+        &CloudParams::currentDepth, &CloudParams::previousDepth, &CloudParams::writeDepth},
+    {"traceRepresentativeDepth", "currentRepresentative", "previousRepresentative", Format::RG32Sfloat, {},
+        &CloudParams::currentRepresentativeDepth, &CloudParams::previousRepresentativeDepth, &CloudParams::writeRepresentativeDepth},
+}};
+
+struct CloudHistoryContent {
+    uint64_t scene, discontinuity, atmosphereRevision, rasterSettings;
+    uint32_t viewIndex, viewGeneration, cutSerial, width, height, skyVisible;
+    environment::WeatherState weather;
+    std::array<environment::CelestialLight, environment::kCelestialLightCount> authoredLights;
+    environment::EnvironmentTimeState authoredTime;
+    environment::AstronomyState astronomy;
+    bool operator==(const CloudHistoryContent&) const = default;
+};
+
 class VolumetricCloudViewPass final : public ComputePass {
 public:
     QueueType queueType() const override { return QueueType::Graphics; }
+
+    std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
+    {
+        auto setting = runtimeBoolSetting("temporalReconstruction", "Temporal cloud reconstruction", true, true);
+        setting.rebuildGraph = true;
+        return {std::move(setting)};
+    }
 
     RenderGraphSceneDependency sceneDependency() const override
     {
@@ -53,6 +96,15 @@ public:
         output("cloudDepth", "Representative cloud distance along the camera ray in metres, zero on a miss",
             Format::R32Sfloat);
         output("color", "Scene-linear HDR after cloud compositing", Format::RGBA32Sfloat).colorEncoding = DisplayColorEncoding::SceneLinear;
+        if (temporalEnabled()) {
+            for (const auto& channel : kCloudChannels) {
+                auto& field = output(channel.trace, "Quarter-resolution cloud trace", channel.format);
+                field.matchOutputExtent = false;
+                field.extentSourceInput = "depth";
+                field.extentDivisor = 4;
+                field.stageAccess(Access::TextureSampleRead).stageAccess(Access::TextureTransferWrite);
+            }
+        }
         return r;
     }
 
@@ -81,6 +133,11 @@ public:
 
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
+        const auto property = properties().find("temporalReconstruction");
+        if (property != properties().end() && !property->is_boolean()) {
+            log = "VolumetricCloudViewPass temporalReconstruction must be a boolean";
+            return makeError(Error::InvalidArgument);
+        }
         device_ = context.device;
         const auto compileKernel = [&](const char* entry, ComputeKernel& kernel) {
             return ShaderRegistry::instance().getComputeKernel(*device_,
@@ -92,10 +149,21 @@ public:
         if (!result) { return result; }
         result = compileKernel("clearCloudViewMain", clearKernel_);
         if (!result) { return result; }
+        if (temporalEnabled()) {
+            if (!(result = compileKernel("cloudTraceTemporalMain", trace_))) { return result; }
+            if (!(result = compileKernel("cloudReconstructMain", reconstruct_))) { return result; }
+            if (!(result = compileKernel("cloudComposeMain", compose_))) { return result; }
+        }
         auto noise = loadLumenBlueNoise(*device_, *context.graphicsQueue, LumenBlueNoise::Scalar, log);
         if (!noise) { return makeError(noise.error()); }
         blueNoise_ = std::move(*noise);
-        return {};
+        lastContent_.reset();
+        return history_.initialize(*device_);
+    }
+
+    Result<> prepare(const RenderGraphCompileContext& context, std::string& log) override
+    {
+        return temporalEnabled() && kernel_.valid() && !trace_.valid() ? compile(context, log) : Result<>{};
     }
 
     Result<> execute(RenderGraphExecutionContext& context) override
@@ -152,17 +220,144 @@ public:
                 p.worldShadowFaces = writer.buffer(faces.buffer());
             }
         }
+        if (set && temporalEnabled() && p.camera.upProjection[3] == 0.0f) {
+            return executeTemporal(context, raster, p, writer);
+        }
+        lastContent_.reset();
         auto packet = writer.encode(p, kVolumetricCloudViewABI);
         if (!packet) { return makeError(packet.error()); }
         auto& kernel = set ? kernel_ : clearKernel_;
-        return kernel.dispatch(commands, *packet, (raster.width + 7u) / 8u, (raster.height + 7u) / 8u, 1u);
+        if (auto result = kernel.dispatch(commands, *packet, (raster.width + 7u) / 8u, (raster.height + 7u) / 8u, 1u); !result) {
+            return result;
+        }
+        if (temporalEnabled()) {
+            // The diagnostic trace outputs are public even for an empty or orthographic view.
+            std::array<StageUse, kCloudChannels.size()> uses;
+            for (size_t i = 0; i < kCloudChannels.size(); ++i) { uses[i] = {kCloudChannels[i].trace, Access::TextureTransferWrite}; }
+            RenderGraphStage clear{"Clear cloud trace", uses, [&](CommandBuffer& cmd) -> Result<> {
+                for (const auto& channel : kCloudChannels) {
+                    if (auto r = cmd.clearColorTexture(*context.outputTexture(channel.trace).texture(),
+                        TextureLayout::TransferDestination, channel.clear); !r) { return r; }
+                }
+                return {};
+            }};
+            return context.executeStages({&clear, 1});
+        }
+        return {};
     }
 
 private:
+    bool temporalEnabled() const
+    {
+        const auto value = properties().find("temporalReconstruction");
+        return value == properties().end() || *value == true;
+    }
+
+    Result<> executeTemporal(RenderGraphExecutionContext& context, const VisibilityBufferFrameInfo& raster,
+        CloudParams& p, ParameterWriter& writer);
+
     Device* device_ = nullptr;
     ComputeKernel kernel_, clearKernel_;
+    ComputeKernel trace_, reconstruct_, compose_;
     std::unique_ptr<TextureView> blueNoise_;
+    HistoryResourceManager history_;
+    std::optional<CloudHistoryContent> lastContent_;
+    ViewCameraConstants previousCamera_{};
+    uint32_t frameId_ = 0;
 };
+
+Result<> VolumetricCloudViewPass::executeTemporal(RenderGraphExecutionContext& context, const VisibilityBufferFrameInfo& raster,
+    CloudParams& p, ParameterWriter& writer)
+{
+    const auto environment = resolveWorldEnvironment(context.runtimeScene(), context.world());
+    const auto* view = context.viewConstants();
+    const auto* shared = context.historyResources();
+    // Weather revision advances with wind and celestial revision advances with time of day.
+    // Compare the authored controls so ordinary playback can reuse the last cloud image.
+    const CloudHistoryContent content{raster.sceneIdentity,
+        (shared ? *shared : context.graphHistoryResources()).geometryReprojectionInvalidationRevision(),
+        environment.atmosphereRevision, raster.rasterSettingsRevision, raster.lightGridViewIndex, raster.lightGridViewGeneration,
+        view ? view->frame[3] : 0u, raster.width, raster.height, p.skyVisible, environment.weather, environment.authoredCelestial,
+        environment.time, environment.astronomy};
+    history_.beginFrame(context.frameIndex());
+    const uint32_t halfWidth = (raster.width + 1u) / 2u, halfHeight = (raster.height + 1u) / 2u;
+    bool valid = lastContent_ == content && (!view || view->frame[1] != 0u);
+    for (const auto& channel : kCloudChannels) {
+        auto desc = context.outputTexture(channel.trace).desc();
+        desc.width = halfWidth;
+        desc.height = halfHeight;
+        desc.usage = TextureUsageBits::Storage | TextureUsageBits::Sampled;
+        if (auto r = history_.ensureTexture(channel.current, desc, {.format = desc.format}); !r) { return r; }
+        const auto previous = history_.texture(channel.current, HistorySlot::Previous);
+        valid = valid && previous.valid && previous.writtenFrameIndex + 1 == context.frameIndex();
+    }
+
+    // FVolumetricRenderTargetViewStateData::Initialise increments FrameId before selecting the phase.
+    constexpr std::array<uint32_t, 4> orderDithering{0, 2, 3, 1};
+    const uint32_t frameId = ((valid ? frameId_ : 0u) + 1u) % 4u;
+    const uint32_t offset = orderDithering[frameId];
+    p.tracingPixelOffset = {offset % 2u, offset / 2u};
+    p.noiseFrameIndex = uint32_t(context.frameIndex() % 8u);
+    p.historyValid = valid;
+    p.previousCamera = valid ? previousCamera_ : p.camera;
+    auto reconstruction = p, composite = p;
+    std::vector<RenderGraphTextureImport> imports;
+    const auto import = [&](const char* name, const HistoryTextureRef& h) {
+        imports.push_back({name, h.texture, h.view, h.state, ResourceState::ShaderRead});
+        return h.view;
+    };
+    std::vector<StageUse> traceUses{{"depth", Access::TextureSampleRead}};
+    if (context.inputBuffer("cameraAerial").valid()) { traceUses.push_back({"cameraAerial", Access::BufferStorageRead}); }
+    if (context.inputBuffer("worldShadowFaces").valid()) { traceUses.push_back({"worldShadowFaces", Access::BufferStorageRead}); }
+    std::vector<StageUse> reconstructUses;
+    std::vector<StageUse> composeUses{{"sceneColor", Access::TextureSampleRead}, {"depth", Access::TextureSampleRead},
+        {"color", Access::TextureStorageWrite}, {"scattering", Access::TextureStorageWrite},
+        {"transmittance", Access::TextureStorageWrite}, {"cloudDepth", Access::TextureStorageWrite}};
+    for (const auto& channel : kCloudChannels) {
+        auto* traceView = context.outputTexture(channel.trace).view();
+        auto* current = import(channel.current, history_.texture(channel.current, HistorySlot::Current));
+        p.*channel.output = writer.storageImageHandle(traceView);
+        reconstruction.*channel.input = writer.sampledImageHandle(traceView);
+        reconstruction.*channel.output = writer.storageImageHandle(current);
+        composite.*channel.input = writer.sampledImageHandle(current);
+        traceUses.push_back({channel.trace, Access::TextureStorageWrite});
+        reconstructUses.push_back({channel.trace, Access::TextureSampleRead});
+        reconstructUses.push_back({channel.current, Access::TextureStorageWrite});
+        composeUses.push_back({channel.current, Access::TextureSampleRead});
+        if (valid) {
+            auto* previous = import(channel.previous, history_.texture(channel.current, HistorySlot::Previous));
+            reconstruction.*channel.past = writer.sampledImageHandle(previous);
+            reconstructUses.push_back({channel.previous, Access::TextureSampleRead});
+        }
+    }
+    auto tracePacket = writer.encode(p, kVolumetricCloudViewABI);
+    if (!tracePacket) { return makeError(tracePacket.error()); }
+    auto reconstructionPacket = writer.encode(reconstruction, kVolumetricCloudViewABI);
+    if (!reconstructionPacket) { return makeError(reconstructionPacket.error()); }
+    auto composePacket = writer.encode(composite, kVolumetricCloudViewABI);
+    if (!composePacket) { return makeError(composePacket.error()); }
+    const auto& traceExtent = context.outputTexture("traceFar").desc();
+    const RenderGraphStage stages[]{
+        {"Cloud quarter-resolution trace", traceUses, [&](CommandBuffer& cmd) {
+            return trace_.dispatch(cmd, *tracePacket, (traceExtent.width + 7u) / 8u, (traceExtent.height + 7u) / 8u, 1u);
+        }},
+        {valid ? "Cloud temporal reconstruction" : "Cloud spatial reconstruction", reconstructUses, [&](CommandBuffer& cmd) {
+            return reconstruct_.dispatch(cmd, *reconstructionPacket, (halfWidth + 7u) / 8u, (halfHeight + 7u) / 8u, 1u);
+        }},
+        {"Cloud full-resolution composite", composeUses, [&](CommandBuffer& cmd) {
+            return compose_.dispatch(cmd, *composePacket, (raster.width + 7u) / 8u, (raster.height + 7u) / 8u, 1u);
+        }},
+    };
+    if (auto r = context.executeStages(stages, {}, imports); !r) { return r; }
+    for (const auto& channel : kCloudChannels) {
+        if (auto r = history_.publishTextureState(context.commandBuffer(), channel.current,
+            HistorySlot::Current, ResourceState::ShaderRead, true); !r) { return r; }
+    }
+    lastContent_ = content;
+    previousCamera_ = p.camera;
+    frameId_ = frameId;
+    return {};
+}
 
 } // namespace
 

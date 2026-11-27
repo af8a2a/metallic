@@ -446,6 +446,26 @@ public:
             readSurfaceValue<std::array<float, 4>>(preview.readbackBytes(), pixel)[3] != 2.0f) {
             return RHITestResult::fail("Basic Resolve did not accumulate a second Rect batch");
         }
+        lighting.rectLights.clear();
+        if (!preview.setLighting(lighting)) { return RHITestResult::fail("Could not isolate sunlight on the card"); }
+        world.source = environment::EnvironmentSource::PhysicalAtmosphere;
+        world.sun.direction = {0.0f, -0.8660254f, -0.5f};
+        world.weather.cloudCoverage = 1.0f;
+        world.weather.cloudDensity = 0.75f;
+        world.weather.noiseSeed = 27;
+        float cardSunlight[2]{};
+        for (uint32_t cloudy = 0; cloudy < 2; ++cloudy) {
+            world.weather.cloudEnabled = cloudy != 0;
+            if (!preview.setWorldEnvironment(world) || !preview.render(graph, kAtlasEdge, kAtlasEdge, "SurfaceCache.lighting")) {
+                return RHITestResult::fail("Physical sunlight on a Surface Cache card: " + preview.lastLog());
+            }
+            const auto sample = readSurfaceValue<HalfPixel>(preview.readbackBytes(), pixel);
+            cardSunlight[cloudy] = halfToFloat(sample[0]) + halfToFloat(sample[1]) + halfToFloat(sample[2]);
+        }
+        if (!(cardSunlight[1] > 0.0f && cardSunlight[1] < cardSunlight[0])) {
+            return RHITestResult::fail(std::format("Expected less sunlight on the cloud-shadowed card, clear={} cloudy={}",
+                cardSunlight[0], cardSunlight[1]));
+        }
         if (validation.failed()) {
             return RHITestResult::fail("Surface Cache Vulkan validation: " + validation.snapshot().dump());
         }

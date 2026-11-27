@@ -165,9 +165,13 @@ struct SurfaceCacheSunAtmosphereParams
 
 float3 surfaceCacheSunIrradiance(SurfaceCacheSunAtmosphereParams atmosphere, float3 authoredIrradiance, float3 worldPosition)
 {
+#if defined(METALLIC_SURFACE_CACHE_AUTHORED_SUN)
+    return authoredIrradiance;
+#else
     if (atmosphere.parameters.index == 0xffffffffu) { return authoredIrradiance; }
     return physicalCelestialIrradiance(resolveUniform(atmosphere.parameters)[0], resolveUniform(atmosphere.transmittance),
         atmosphere.cloudShadow, 0u, worldPosition);
+#endif
 }
 
 struct SurfaceCacheResolveParams

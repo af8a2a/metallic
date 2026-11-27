@@ -1,5 +1,6 @@
 #include "RHITest.h"
 #include "harness/Fixtures.h"
+#include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
@@ -32,9 +33,9 @@ struct CloudPixel {
     float transmittance, cloudDepthMeters, sceneDepth;
 };
 
-CloudPixel capture(RHITestContext& context, RenderGraphExecutor& executor, Buffer& readback)
+CloudPixel capture(RHITestContext& context, RenderGraphExecutor& executor, HistoryResourceManager& history, Buffer& readback)
 {
-    checked(executor.execute({.graphicsQueue = &context.graphicsQueue}), "render cloud view");
+    checked(executor.execute({.graphicsQueue = &context.graphicsQueue, .historyResources = &history}), "render cloud view");
     checked(executor.waitForSubmittedWork(), "wait for cloud view");
     bench::GPUCommands copy(context.graphicsQueue);
     checked(copy.initialize(context.device), "begin cloud readback");
@@ -43,13 +44,14 @@ CloudPixel capture(RHITestContext& context, RenderGraphExecutor& executor, Buffe
         Format::R32Sfloat, Format::RGBA32Sfloat, Format::RGBA32Sfloat, Format::D32Sfloat};
     for (size_t i = 0; i < kOutputs.size(); ++i) {
         auto* output = executor.outputResource(kOutputs[i]);
-        if (!output || output->desc.width != kWidth || output->desc.height != kHeight || output->desc.format != formats[i]) {
+        if (!output || output->desc.width != executor.width() || output->desc.height != executor.height() || output->desc.format != formats[i]) {
             throw std::runtime_error("Unexpected cloud view resource: " + std::string(kOutputs[i]));
         }
         checked(executor.transitionOutput(*copy.commands, kOutputs[i], ResourceState::TransferSource), "transition cloud readback");
         checked(copy.commands->copyTextureToBuffer({.texture = output->texture,
             .buffer = checked(readback.slice({i * sizeof(pixel[0]), sizeof(pixel[0])}), "cloud pixel slice"),
-            .textureOffsetX = kWidth / 2, .textureOffsetY = kHeight / 2, .width = 1, .height = 1}), "copy center pixel");
+            .textureOffsetX = int32_t(output->desc.width / 2), .textureOffsetY = int32_t(output->desc.height / 2),
+            .width = 1, .height = 1}), "copy center pixel");
     }
     const BufferBarrierDesc host{.buffer = &readback, .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
         .after = {PipelineStageBits::Host, AccessBits::HostRead}};
@@ -93,6 +95,7 @@ public:
             env.weather.cloudBaseAltitudeKm = 1.0f;
             env.weather.cloudTopAltitudeKm = 3.0f;
             env.weather.noiseSeed = 27;
+            env.weather.windSpeed = 10.0f;
             if (!world.setWorldEnvironment(env)) { return RHITestResult::fail("Invalid physical cloud fixture"); }
             RenderView view;
             view.setRenderResolution(kWidth, kHeight);
@@ -112,6 +115,8 @@ public:
             graph.addEdge("Deferred.color", "Cloud.sceneColor");
             graph.addEdge("Deferred.cameraAerial", "Cloud.cameraAerial");
             for (auto output : kOutputs) { graph.markOutput(std::string(output)); }
+            HistoryResourceManager history;
+            checked(history.initialize(context.device), "initialize cloud history");
             RenderGraphExecutor executor;
             executor.bindRenderWorld(&world);
             executor.bindRenderView(&view);
@@ -120,8 +125,19 @@ public:
             auto readback = checked(context.device.createBuffer({.size = kOutputs.size() * sizeof(float) * 4,
                 .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}), "cloud readback");
             nlohmann::json cases;
-            const auto measure = [&](const char* name) {
-                const auto sample = capture(context, executor, *readback);
+            const auto measure = [&](const std::string& name, std::string_view expectedStage = {}) {
+                const auto sample = capture(context, executor, history, *readback);
+                auto frames = checked(executor.collectCompletedGpuExecutionStats(), "read cloud reconstruction stages");
+                if (!expectedStage.empty()) {
+                    bool found = false;
+                    for (const auto& frame : frames) {
+                        for (const auto& node : frame.nodes) {
+                            if (node.name != "Cloud") { continue; }
+                            for (const auto& section : node.sections) { found |= section.name == expectedStage; }
+                        }
+                    }
+                    if (!found) { throw std::runtime_error(name + " missing " + std::string(expectedStage)); }
+                }
                 cases[name] = {{"scattering", sample.scattering}, {"transmittance", sample.transmittance},
                     {"cloudDepthMeters", sample.cloudDepthMeters}, {"sceneDepth", sample.sceneDepth},
                     {"background", sample.background}, {"color", sample.color}};
@@ -153,15 +169,64 @@ public:
             camera.eye[1] = 1800.0f;
             camera.center[1] = 1801.0f;
             view.setCamera(camera);
-            const auto inside = measure("inside-perspective");
+            constexpr std::string_view spatial = "Cloud spatial reconstruction";
+            constexpr std::string_view temporal = "Cloud temporal reconstruction";
+            const auto inside = measure("inside-perspective", spatial);
+            for (unsigned i = 0; i < 4; ++i) {
+                const auto sample = measure("static-phase-" + std::to_string(i), temporal);
+                if (!(sample.transmittance < 1.0f && sample.cloudDepthMeters > 0.0f)) {
+                    throw std::runtime_error("Interleaved cloud sample disappeared: " + cases.dump());
+                }
+            }
+            camera.eye[0] += 0.25f;
+            camera.center[0] += 0.25f;
+            view.setCamera(camera);
+            measure("translated", temporal);
+            world.setEnvironmentElapsedSeconds(1.0 / 60.0);
+            measure("wind-advanced", temporal);
+
+            // Move a small foreground ceiling into the view. Then move only the
+            // camera across its edge, revealing and covering the same cloud pixel.
+            float4x4 nearby;
+            nearby.SetupByTranslation(float3(0.0f, 1830.0f, 0.0f));
+            if (!scene.setNodeLocalMatrix(1, nearby) || !scene.setObjectVisible(scene.objectForNode(1).entity(), true)) {
+                return RHITestResult::fail("Could not place the perspective foreground occluder");
+            }
+            world.notifySceneChanged(RenderChangeBits::Geometry);
+            const auto foreground = measure("perspective-foreground");
+            camera.eye[0] += 3.0f;
+            camera.center[0] += 3.0f;
+            view.setCamera(camera);
+            const auto revealed = measure("revealed-cloud", temporal);
+            camera.eye[0] -= 3.0f;
+            camera.center[0] -= 3.0f;
+            view.setCamera(camera);
+            const auto covered = measure("covered-cloud", temporal);
+            ViewCamera below = camera;
+            below.eye[1] = 400.0f;
+            below.center[1] = 399.0f;
+            view.setCamera(below);
+            view.cameraCut();
+            const auto cut = measure("cut-below-layer", spatial);
+            view.setCamera(camera);
+            view.cameraCut();
+            measure("cut-back", spatial);
             env.weather.cloudEnabled = false;
             world.setWorldEnvironment(env);
             const auto clearSky = measure("disabled-open-sky");
+            env.weather.cloudEnabled = true;
+            world.setWorldEnvironment(env);
+            measure("re-enabled", spatial);
+            view.setRenderResolution(kWidth + 2, kHeight + 2);
+            checked(executor.compile(context.device, graph, kWidth + 2, kHeight + 2, log), "resize cloud targets");
+            measure("resized", spatial);
             std::ofstream(context.outputDirectory / "VolumetricCloudView.json") << cases.dump(2);
             const auto identity = [](const CloudPixel& p) {
                 return p.transmittance == 1 && p.cloudDepthMeters == 0 && p.scattering == std::array<float, 4>{} && p.color == p.background;
             };
-            if (!identity(clear) || !identity(clearSky) || !identity(blocked) || !(blocked.sceneDepth > clipped.sceneDepth &&
+            if (!identity(clear) || !identity(clearSky) || !identity(blocked) || !identity(cut) ||
+                !identity(foreground) || !identity(covered) || !(foreground.sceneDepth > 0 && covered.sceneDepth > 0 &&
+                    revealed.sceneDepth == 0 && revealed.transmittance < 1.0f) || !(blocked.sceneDepth > clipped.sceneDepth &&
                     clipped.sceneDepth > 0 && open.sceneDepth == 0 && inside.sceneDepth == 0)) {
                 return RHITestResult::fail("Cloud bypass or foreground depth clipping failed: " + cases.dump());
             }
