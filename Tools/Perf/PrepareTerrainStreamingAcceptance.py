@@ -146,6 +146,72 @@ def write_directed_case(output, cap, flight, first_crossing):
     write_json(output / name / "Targets.json", dict(firstCrossing=crossing_target, observations=observations))
 
 
+def append_camera_transition(cameras, end, frames):
+    start = cameras[-1]
+    for step in range(1, frames + 1):
+        t = step / frames
+        blend = t * t * (3 - 2 * t)
+        pose = {key: [(1 - blend) * a + blend * b for a, b in zip(start[key], end[key])]
+                for key in ("eye", "center")}
+        fov = (1 - blend) * start["fovDegrees"] + blend * end["fovDegrees"]
+        cameras.append({**start, **pose, "fovDegrees": fov})
+
+
+def append_high_transit(cameras, end):
+    altitude = max(73.0, cameras[-1]["eye"][1], end["eye"][1])
+
+    def at_altitude(camera):
+        x, _, z = camera["eye"]
+        return {**camera, "eye": [x, altitude, z]}
+
+    append_camera_transition(cameras, at_altitude(cameras[-1]), 3)
+    append_camera_transition(cameras, at_altitude(end), 8)
+    append_camera_transition(cameras, end, 3)
+
+
+def write_directed_8x8_case(output, cap, flight, crossing):
+    name = "motion-directed-8x8-tight"
+    frame = crossing["frame"]
+    crossing_frames = [frame - 1, frame, frame + 1]
+    # Keep the original moving eyes. Prime the eastern tile before exposing the seam.
+    prime_aim = [-52.0, 7.0, 47.0]
+    seam_aim = [-64.64214324951172, -0.7328170010365, 52.0]
+    cameras = []
+    for index, camera in enumerate(flight[:frame + 3]):
+        t = min(1.0, max(0.0, (index - (frame - 4)) / 3))
+        blend = t * t * (3 - 2 * t)
+        center = [(1 - blend) * a + blend * b for a, b in zip(prime_aim, seam_aim)]
+        cameras.append({**camera, "center": center, "fovDegrees": (1 - blend) * 18.0 + blend * 60.0})
+
+    captures = set(crossing_frames)
+    stations = read_json(Path(__file__).with_name("Terrain8x8DirectedRoute.json"))["stations"]
+    observations = []
+    template = cameras[0]
+    for station in stations:
+        # A narrow view gives the selected tile the detail slots before revealing its neighbors.
+        append_high_transit(cameras, {**template, **station["prime"]})
+        entered = len(cameras) - 1
+        cameras.extend([cameras[-1]] * 22)
+        append_camera_transition(cameras, {**template, **station["reveal"]}, 1)
+        reveal = len(cameras) - 1
+        cameras.extend([cameras[-1]] * 2)
+        samples = [reveal, reveal + 2]
+        for view in station.get("additionalViews", []):
+            append_camera_transition(cameras, {**template, **view}, 5)
+            samples.append(len(cameras) - 1)
+        captures.update(samples)
+        observations.append(dict(tile=station["tile"], edges=station["edges"], primeFrame=entered,
+                                 captureFrames=samples))
+
+    events = [dict(frame=index, camera=camera) for index, camera in enumerate(cameras)
+              if index and camera != cameras[index - 1]]
+    write_case(output, name, cap, cameras[0], events, 640, 360, len(cameras), sorted(captures),
+               pressure=True, trace_streaming=True, scene=SCENE_8X8)
+    crossing_target = {**crossing, "tiles": [[1, 5], [2, 5]], "captureFrames": crossing_frames,
+                       "mixedLODFrame": frame}
+    write_json(output / name / "Targets.json", dict(crossing=crossing_target, observations=observations))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tiles-per-axis", type=int, choices=(4, 8), default=4)
@@ -189,6 +255,8 @@ def main():
         write_case(output, f"cold-{view['name']}", tight_cap, view["camera"], [], 960, 540, 1, [0], scene=scene)
     if tiles == 4:
         write_directed_case(output, tight_cap, cameras, crossings[0])
+    else:
+        write_directed_8x8_case(output, tight_cap, cameras, next(crossing for crossing in crossings if crossing["frame"] == 19))
     write_json(output / "Route.json", dict(scene=scene.as_posix(), stream=stream.as_posix(),
                                                 fixedViews=views, cameras=cameras, crossings=crossings,
                                                 captureFrames=sorted(flight_frames), movingFrames=MOVING_STEPS + 1,
