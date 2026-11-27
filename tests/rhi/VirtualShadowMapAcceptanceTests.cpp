@@ -641,6 +641,13 @@ Json frameStatistics(RenderGraphPreviewRenderer& preview)
             {"loadFailures", stream.loadFailures}, {"allocationFailures", stream.allocationFailures},
             {"allocationBudgetDeferrals", stream.allocationBudgetDeferrals},
             {"requestOverflows", stream.requestOverflows}});
+        if (!stream.wantedRegions.empty() || !stream.publishedRegions.empty() || stream.regionPublicationRevision != 0) {
+            result["streaming"].back()["regionSelection"] = {
+                {"wantedRegions", stream.wantedRegions}, {"publishedRegions", stream.publishedRegions},
+                {"pinnedTerminalPages", stream.pinnedTerminalPages}, {"pinnedTerminalBytes", stream.pinnedTerminalBytes},
+                {"committedTerminalPages", stream.committedTerminalPages}, {"committedTerminalBytes", stream.committedTerminalBytes},
+                {"publicationRevision", stream.regionPublicationRevision}};
+        }
     }
     return result;
 }
@@ -814,9 +821,12 @@ public:
                 requireAcceptance(raster && raster->type == "VisibilityBufferPass", "Acceptance requires production VBuffer");
                 const uint32_t rasterId = raster->id;
                 const bool allowBudgetDeferral = spec.value("allowResidentBudgetDeferral", false);
+                const bool requireBudgetDeferral = spec.value("requireResidentBudgetDeferral", allowBudgetDeferral);
                 const uint32_t residentPageLimit = allowBudgetDeferral ? raster->properties.value("maxResidentPages", 0u) : 0u;
                 requireAcceptance(!allowBudgetDeferral || (diagnostic && residentPageLimit != 0),
                     "Resident budget deferrals require diagnostic mode and an explicit VBuffer page limit");
+                requireAcceptance(!requireBudgetDeferral || allowBudgetDeferral,
+                    "Cannot require resident budget deferrals when they are disabled");
                 bool observedBudgetDeferral = false;
                 const bool worldBinding = raster->properties.value("sceneBinding", std::string("world")) == "world";
                 if (diagnostic) { graph.setNodeRuntimeProperty(rasterId, "benchmarkCaptureSemanticSource", true); }
@@ -1166,7 +1176,7 @@ public:
                         [](const Json& value) { return value.at("status") == "passed"; });
                     requireAcceptance(verified, "All cache comparisons were incomparable; no cache equivalence evidence");
                 }
-                requireAcceptance(!allowBudgetDeferral || observedBudgetDeferral,
+                requireAcceptance(!requireBudgetDeferral || observedBudgetDeferral,
                     "VBuffer did not exercise resident budget deferral");
                 requireAcceptance(!validation.failed(), "Vulkan validation failed");
                 save();

@@ -1,10 +1,12 @@
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <numeric>
 #include <thread>
 #include <spdlog/spdlog.h>
@@ -17,11 +19,78 @@
 #include "Runtime/Render/Profiling/CPUProfile.h"
 
 namespace metallic::render {
+namespace {
+struct StreamRegionBounds {
+    std::array<float, 2> minXZ;
+    std::array<float, 2> maxXZ;
+    bool operator==(const StreamRegionBounds&) const = default;
+};
+
+struct StreamRegionSelection {
+    std::vector<StreamRegionBounds> bounds;
+    float loadDistance = 0.0f;
+    float unloadDistance = 0.0f;
+    bool operator==(const StreamRegionSelection&) const = default;
+};
+
+Result<> readStreamRegionSelection(const RenderGraphProperties& properties,
+    MeshletStreamRuntimeDesc& desc, StreamRegionSelection& selection, std::string& log)
+{
+    const auto regions = properties.find("streamRegions");
+    if (regions == properties.end()) { return {}; }
+    const auto readIndex = [](const nlohmann::json& value) {
+        if (!value.is_number_integer() || value < 0 || value > std::numeric_limits<uint32_t>::max()) {
+            throw std::invalid_argument("region instance ranges and IDs must be unsigned 32-bit integers");
+        }
+        return value.get<uint32_t>();
+    };
+    try {
+        selection.loadDistance = properties.at("geometryRegionLoadDistance").get<float>();
+        selection.unloadDistance = properties.at("geometryRegionUnloadDistance").get<float>();
+        const auto& initialRegions = properties.at("initialStreamRegions");
+        if (!regions->is_array() || regions->empty() || !initialRegions.is_array() ||
+            !std::isfinite(selection.loadDistance) || !std::isfinite(selection.unloadDistance) ||
+            selection.loadDistance < 0.0f || selection.unloadDistance < selection.loadDistance) {
+            throw std::invalid_argument("region arrays and ordered, finite load/unload distances required");
+        }
+        for (const auto& region : *regions) {
+            const auto& bounds = region.at("worldBounds");
+            const auto& lower = bounds.at("min");
+            const auto& upper = bounds.at("max");
+            if (!lower.is_array() || !upper.is_array() || lower.size() != 3 || upper.size() != 3) {
+                throw std::invalid_argument("region bounds require world-space XYZ min and max");
+            }
+            const StreamRegionBounds horizontal{
+                {lower[0].get<float>(), lower[2].get<float>()},
+                {upper[0].get<float>(), upper[2].get<float>()}};
+            for (size_t axis = 0; axis < horizontal.minXZ.size(); ++axis) {
+                if (!std::isfinite(horizontal.minXZ[axis]) || !std::isfinite(horizontal.maxXZ[axis]) ||
+                    horizontal.minXZ[axis] > horizontal.maxXZ[axis]) {
+                    throw std::invalid_argument("region horizontal bounds must be finite and ordered");
+                }
+            }
+            selection.bounds.push_back(horizontal);
+            desc.regions.push_back({readIndex(region.at("sourceInstanceOffset")),
+                readIndex(region.at("instanceCount"))});
+        }
+        for (const auto& id : initialRegions) {
+            desc.initialRegions.push_back(readIndex(id));
+        }
+    } catch (const std::exception& error) {
+        log = std::string("Invalid geometry stream region configuration: ") + error.what();
+        return makeError(Error::InvalidArgument);
+    }
+    return {};
+}
+} // namespace
+
 struct SceneStreamingState {
     MeshletStreamRuntimeDesc desc;
     uint64_t sceneIdentity = 0;
     uint64_t structuralRevision = 0;
     bool debugReadback = false;
+    StreamRegionSelection regionSelection;
+    std::vector<uint32_t> wantedRegions;
 };
 
 Result<> StreamerSubsystem::initialize(const RenderSubsystemInitContext& context, std::string& log)
@@ -156,6 +225,10 @@ Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requi
     prepared->sourceScene = scene;
     auto sourcePath = scene->filename().empty() ? std::filesystem::path{} : normalizedScenePath(scene->filename());
     auto desc = sceneStreamRuntimeDesc(properties, sourcePath, uint32_t(scene->textures().size()) + 1);
+    StreamRegionSelection regionSelection;
+    if (const auto result = readStreamRegionSelection(properties, desc, regionSelection, log); !result) {
+        return result;
+    }
     const bool rayTracing = (uint32_t(features) &
         uint32_t(SceneResourceFeatureBits::AccelerationStructure)) != 0 ||
         properties.value("enableClusterRtx", false);
@@ -173,6 +246,10 @@ Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requi
     const bool runtimeCook = scene->isComposed() ||
         (prepared->state && (prepared->state->sceneIdentity != identity ||
          prepared->state->structuralRevision != structural));
+    if (!desc.regions.empty() && (runtimeCook || sourcePath.empty())) {
+        log = "Geometry stream regions require an offline cook for this scene topology";
+        return makeError(Error::InvalidArgument);
+    }
     const auto selectRuntimeCache = [&]() -> Result<> {
         const auto directory = std::filesystem::path(PROJECT_SOURCE_DIR) / ".cache" / "scene-streams";
         std::error_code error;
@@ -227,6 +304,10 @@ Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requi
             return compatible;
         };
         bool compatible = compatibleStreamAsset();
+        if (!compatible && !desc.regions.empty()) {
+            log = "Geometry stream regions require a current offline pack: " + reason;
+            return makeError(Error::Failure);
+        }
         if (!compatible && std::filesystem::exists(desc.streamAssetPath)) {
             // A graph rebuild can select an already-cooked runtime identity.
             // Validate that replacement before attempting to rewrite its mapped file.
@@ -254,9 +335,13 @@ Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requi
         auto result = acquireStream(desc, debugReadback, log).transform([&](auto value) { stream = std::move(value); });
         if (!result) { return result; }
         prepared->geometry = std::move(stream);
-        prepared->state = std::make_shared<SceneStreamingState>(SceneStreamingState{desc, identity, structural, debugReadback});
+        prepared->state = std::make_shared<SceneStreamingState>(
+            SceneStreamingState{desc, identity, structural, debugReadback, regionSelection, desc.initialRegions});
         prepared->streamSourcePath = desc.sourcePath;
         prepared->streamAssetPath = desc.streamAssetPath;
+    }
+    if (prepared->state->regionSelection != regionSelection) {
+        prepared->state->regionSelection = std::move(regionSelection);
     }
     return {};
 }
@@ -288,6 +373,28 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
         auto* gpuScene = context.subsystem<GPUSceneSubsystem>();
         if (!gpuScene) { return makeError(Error::InvalidArgument); }
         auto& stream = *prepared.geometry;
+        auto& state = *prepared.state;
+        const auto& regions = state.regionSelection;
+        if (!regions.bounds.empty()) {
+            // The pass-specific stream view is described after this stage.
+            const auto* renderView = context.viewConstants();
+            if (renderView == nullptr) {
+                log = "Geometry stream region selection requires a render view";
+                return makeError(Error::InvalidArgument);
+            }
+            const auto& eye = renderView->current.eye;
+            std::vector<uint32_t> wanted;
+            for (uint32_t id = 0; id < regions.bounds.size(); ++id) {
+                const auto& bounds = regions.bounds[id];
+                const float dx = std::max({bounds.minXZ[0] - eye[0], eye[0] - bounds.maxXZ[0], 0.0f});
+                const float dz = std::max({bounds.minXZ[1] - eye[2], eye[2] - bounds.maxXZ[1], 0.0f});
+                const float distance = std::ranges::find(state.wantedRegions, id) != state.wantedRegions.end()
+                    ? regions.unloadDistance : regions.loadDistance;
+                if (std::hypot(dx, dz) <= distance) { wanted.push_back(id); }
+            }
+            if (const auto result = stream.updateRegionSelection(wanted, log); !result) { return result; }
+            state.wantedRegions = std::move(wanted);
+        }
         const auto* scene = prepared.sourceScene;
         const bool profilePrepare = context.properties().value("benchmarkPrepareProfile", false);
         CPUProfileRecorder prepareRecorder;

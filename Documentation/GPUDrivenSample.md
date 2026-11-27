@@ -194,3 +194,19 @@ python -B tests/editor/RunTerrainPlacementSmoke.py --executable build-relwithdeb
 `BuildTerrainMesh.py --height-field-output <path>` 从渲染网格使用的同一组缩放、偏移及翻转后的源样本导出 `.heightfield.bin`。`TerrainHeightField::sample` 提供世界 XZ 处的高度和插值法线，`raycast` 返回最近的世界交点、法线和沿归一化射线的距离。两者使用源网格三角形，独立于流式 LOD 和裙边。后续笔刷、散布或碰撞可直接使用此查询类型。
 
 编辑器 smoke 用视口点击分别放置岩石和植被，再以同一路径重导入整体抬高 3 单位的测试地形。两个摆放 ID 和保存的 XZ 均保持一致，世界 Y 各增加 3，且 +Y 继续与地表法线对齐。重导入后的截图和运行日志保存在 `build/terrain-placement/editor-smoke/run-*/`。
+
+### 独立区域流式加载
+
+```powershell
+cmake --build build-relwithdebinfo --target MetallicTerrainRegionsSample
+cmake --build build-relwithdebinfo --target MetallicTerrainRegionsSmoke
+cmake --build build-ci --target MetallicTerrainRegionStreamingRegression
+```
+
+编辑器样例 **GPUDrivenSample / Terrain Regions + VSM** 从西区起飞。样例将原 8×8 地形分为东西两个 4×8 区域。每区有独立的 glTF、顶点缓冲和 StreamAsset。聚合步骤将两份已烘焙的目录和页写入同一个寻址空间，保留原来的顶点属性、世界坐标和边界几何。生成文件位于 `Asset/MeshletCache/TerrainRegions/`。
+
+相机与区域 XZ 包围盒的距离进入 44 个世界单位时开始锁定目标区的保底页，超过 56 时请求卸载。Visibility Buffer 和 VSM 共用已发布的区域集合。发布前等待所有目标保底页就绪，切换时等待读取旧实例数据的 GPU 命令完成，随后通过原有的页退休流程回收旧区独占分配。预算须容纳交接时两区的保底页。
+
+回归在 80 页和 1 MiB 的几何页池里往返跨区。栅格和 VSM 都使用保底 LOD，以隔离细节页请求，并检查实际过界前、中、后的深度和可见性覆盖。编辑器样例使用自动 LOD。逐帧报告记录目标区、已发布区、GPU 页表锁定页、保底页占用和几何页池的已用字节。后两项计量的是页池内分配，页池预留容量由运行配置决定。报告位于构建目录的 `tests/terrain-region-streaming-regression/run-*/TerrainRegionStreamingAcceptance.json`。
+
+首次通过的 204 帧往返中，双区分别在第 31 和 124 帧就绪并发布，先于第 59 和 154 帧的实际过界。旧区独占分配分别在第 81 和 175 帧完成回收。锁定页数随西区、双区、东区在 32、64、32 之间变化，对应几何页池已用字节为 306,944、611,072、304,128。回到西区后恢复为 306,944 字节。

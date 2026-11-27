@@ -209,6 +209,62 @@ if(Python3_Interpreter_FOUND)
         "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainPlacement16x16/terrain_placement_16x16"
         WEIGHT_MAP "${CMAKE_SOURCE_DIR}/Asset/Terrain/TerrainRockWeight.exr"
         HEIGHT_FIELD "${METALLIC_TERRAIN_BLOCKS_16X16_QUERY}")
+
+    set(terrain_regions_dir "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainRegions")
+    set(terrain_regions_scene "${terrain_regions_dir}/terrain_regions")
+    set(terrain_regions_lighting "${CMAKE_SOURCE_DIR}/Asset/Terrain/TerrainVSM.metallic_scene.json")
+    add_custom_command(
+        OUTPUT "${terrain_regions_scene}.gltf" "${terrain_regions_scene}.metallic_scene.json"
+            "${terrain_regions_dir}/terrain_region_west.gltf" "${terrain_regions_dir}/terrain_region_west.bin"
+            "${terrain_regions_dir}/terrain_region_east.gltf" "${terrain_regions_dir}/terrain_region_east.bin"
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainRegions.py"
+            "${METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT}.gltf" --output-directory "${terrain_regions_dir}"
+            --lighting "${terrain_regions_lighting}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainRegions.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainVSMSample.py" "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py"
+            "${METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT}.gltf" "${METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT}.bin"
+            "${terrain_regions_lighting}"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Splitting the 8x8 terrain into two adjacent regions"
+        VERBATIM
+    )
+    set(terrain_region_cooks)
+    foreach(region IN ITEMS west east)
+        set(region_source "${terrain_regions_dir}/terrain_region_${region}")
+        set(region_cook "${region_source}.gltf.meshstream.bin")
+        add_custom_command(
+            OUTPUT "${region_cook}"
+            COMMAND "$<TARGET_FILE:MetallicMeshletCook>" --source "${region_source}.gltf"
+                --output "${region_cook}" --compression none
+            DEPENDS MetallicMeshletCook "${region_source}.gltf" "${region_source}.bin"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            COMMENT "Cooking the ${region} terrain region"
+            VERBATIM
+        )
+        list(APPEND terrain_region_cooks "${region_cook}")
+    endforeach()
+    set(terrain_regions_cook "${terrain_regions_scene}.gltf.meshstream.bin")
+    set(terrain_regions_receipt "${terrain_regions_scene}.meshstream.regions.json")
+    add_custom_command(
+        OUTPUT "${terrain_regions_cook}" "${terrain_regions_receipt}"
+        COMMAND "$<TARGET_FILE:MetallicMeshletCook>" --source "${terrain_regions_scene}.gltf"
+            --output "${terrain_regions_cook}" --compression none --validate-payloads
+        DEPENDS MetallicMeshletCook "${terrain_regions_scene}.gltf"
+            "${terrain_regions_scene}.metallic_scene.json"
+            ${terrain_region_cooks}
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Packing the independent terrain region MeshletStreamAssets"
+        VERBATIM
+    )
+    add_custom_target(MetallicTerrainRegionsSample DEPENDS "${terrain_regions_cook}" "${terrain_regions_receipt}")
+    add_custom_target(MetallicTerrainRegionsSmoke
+        COMMAND ${CMAKE_COMMAND} -E env METALLIC_SMOKE_TEST_HIDDEN=1
+            METALLIC_SMOKE_TEST_SAMPLE=gpu-driven-terrain-regions-vsm "$<TARGET_FILE:Metallic>" --smoke-test
+        DEPENDS MetallicTerrainRegionsSample
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Rendering the gpu-driven-terrain-regions-vsm smoke frame"
+        VERBATIM
+    )
 else()
     message(STATUS "Python3 was not found; terrain sample build targets are unavailable")
 endif()

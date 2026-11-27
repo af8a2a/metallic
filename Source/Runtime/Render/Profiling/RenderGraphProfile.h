@@ -242,6 +242,10 @@ struct SceneStreamingProfile {
     uint64_t clasTotalBuiltPages = 0;
     uint64_t clasTotalBuiltClusters = 0;
     uint32_t totalPages = 0;
+    std::vector<uint32_t> wantedRegions, publishedRegions;
+    std::vector<uint32_t> pinnedTerminalPages, committedTerminalPages;
+    uint64_t pinnedTerminalBytes = 0, committedTerminalBytes = 0;
+    uint64_t regionPublicationRevision = 0;
     uint32_t maxResidentPages = 0;
     uint32_t activePages = 0;
     uint32_t residentPages = 0;

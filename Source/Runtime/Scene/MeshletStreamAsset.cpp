@@ -27,6 +27,7 @@
 #include <limits>
 #include <memory>
 #include <map>
+#include <set>
 #include <string_view>
 #include <system_error>
 #include <type_traits>
@@ -1950,6 +1951,7 @@ struct StreamglTFSource {
     };
 
     tinygltf::Model model;
+    nlohmann::json terrainRegions;
     std::filesystem::path directory;
     std::vector<uint64_t> bufferByteLengths;
     std::vector<std::string> externalBufferUris;
@@ -2973,6 +2975,11 @@ bool loadExternalGltfMetadataForStreamAssetBuilder(
         source = {};
         source.directory = sourcePath.parent_path();
         source.rangeReadExternalBuffers = true;
+        if (const auto extras = root.find("extras"); extras != root.end() && extras->is_object()) {
+            if (const auto regions = extras->find("metallicTerrainRegions"); regions != extras->end()) {
+                source.terrainRegions = *regions;
+            }
+        }
         glTFInstanceExpansion expansion;
         if (!detail::expandGltfGpuInstances(root, source.directory, expansion, reason)) { return false; }
         tinygltf::Model& model = source.model;
@@ -4171,6 +4178,280 @@ bool appendStreamAssetInstancesFromGltf(
     return true;
 }
 
+bool appendCookedTerrainRegion(
+    std::ostream& stream, MeshletStreamBuildState& state, const MeshletStreamAsset& region,
+    uint32_t materialBase, uint32_t materialCount, const std::string& id,
+    nlohmann::json& receipt, std::string& reason)
+{
+    const auto primitiveBase = uint32_t(state.primitives.size());
+    const auto lodBase = uint32_t(state.lodLevels.size());
+    const auto groupBase = uint32_t(state.groups.size());
+    const auto refinedBase = uint32_t(state.refinedGroups.size());
+    const auto nodeBase = uint32_t(state.nodes.size());
+    const auto pageBase = uint32_t(state.pages.size());
+    const auto fits = [](size_t current, size_t added) {
+        return added <= std::numeric_limits<uint32_t>::max() - current;
+    };
+    if (!fits(primitiveBase, region.primitiveCount()) || !fits(lodBase, region.lodLevelCount()) ||
+        !fits(groupBase, region.groupCount()) || !fits(refinedBase, region.refinedGroups().size()) ||
+        !fits(nodeBase, region.nodeCount()) || !fits(pageBase, region.pageCount())) {
+        reason = "terrain region directories exceed StreamAsset index limits";
+        return false;
+    }
+    const auto rebaseGroup = [groupBase](uint32_t group) {
+        return group == kMeshletStreamInvalidGroupIndex ? group : group + groupBase;
+    };
+    for (auto primitive : region.primitives()) {
+        if (primitive.materialIndex >= materialCount) {
+            reason = "terrain region primitive references an undeclared material";
+            return false;
+        }
+        primitive.renderPrimitiveIndex += primitiveBase;
+        primitive.materialIndex += materialBase;
+        primitive.lodLevelOffset += lodBase;
+        primitive.pageOffset += pageBase;
+        primitive.fallbackPageOffset += pageBase;
+        primitive.groupOffset += groupBase;
+        primitive.fallbackGroupOffset += groupBase;
+        primitive.nodeOffset += nodeBase;
+        state.primitives.push_back(primitive);
+    }
+    for (auto lod : region.lodLevels()) {
+        lod.primitiveIndex += primitiveBase;
+        lod.pageOffset += pageBase;
+        state.lodLevels.push_back(lod);
+    }
+    for (auto group : region.groups()) {
+        group.primitiveIndex += primitiveBase;
+        group.pageIndex += pageBase;
+        group.clusterRefinedOffset += refinedBase;
+        state.groups.push_back(group);
+    }
+    for (const uint32_t group : region.refinedGroups()) {
+        state.refinedGroups.push_back(rebaseGroup(group));
+    }
+    for (auto node : region.nodes()) {
+        node.primitiveIndex += primitiveBase;
+        if (node.childCount != 0) { node.childOffset += nodeBase; }
+        node.groupIndex = rebaseGroup(node.groupIndex);
+        state.nodes.push_back(node);
+    }
+
+    for (uint32_t index = 0; index < region.pageCount(); ++index) {
+        auto page = region.pages()[index];
+        if (page.compressionMode != uint32_t(MeshletStreamPayloadCompression::None) ||
+            page.materialIndex >= materialCount) {
+            reason = "terrain region packing requires uncompressed pages with region-local materials";
+            return false;
+        }
+        const auto payload = region.pagePayload(index);
+        page.payloadOffset = 0;
+        if (!validatePayloadHeader(payload.data(), payload.size(), page, index, reason) ||
+            !validateDevicePayloadClusters(payload, page, reason)) {
+            return false;
+        }
+        state.payload.assign(payload.begin(), payload.end());
+        MeshletStreamPayloadHeader header;
+        std::memcpy(&header, state.payload.data(), sizeof(header));
+        header.primitiveIndex += primitiveBase;
+        header.materialIndex += materialBase;
+        header.lodGroupIndex += groupBase;
+        std::memcpy(state.payload.data(), &header, sizeof(header));
+        for (uint32_t i = 0; i < header.clusterCount; ++i) {
+            auto* bytes = state.payload.data() + header.clusterOffsetBytes + size_t(i) * sizeof(MeshletStreamPayloadCluster);
+            MeshletStreamPayloadCluster cluster;
+            std::memcpy(&cluster, bytes, sizeof(cluster));
+            cluster.primitiveIndex += primitiveBase;
+            cluster.materialIndex += materialBase;
+            cluster.lodGroupIndex += groupBase;
+            cluster.refinedGroupIndex = rebaseGroup(cluster.refinedGroupIndex);
+            std::memcpy(bytes, &cluster, sizeof(cluster));
+        }
+        for (uint32_t i = 0; i < header.materialCount; ++i) {
+            auto* bytes = state.payload.data() + header.materialOffsetBytes + size_t(i) * sizeof(uint32_t);
+            uint32_t material;
+            std::memcpy(&material, bytes, sizeof(material));
+            if (material >= materialCount) {
+                reason = "terrain region payload references an undeclared material";
+                return false;
+            }
+            material += materialBase;
+            std::memcpy(bytes, &material, sizeof(material));
+        }
+        page.primitiveIndex += primitiveBase;
+        page.materialIndex += materialBase;
+        page.lodGroupIndex += groupBase;
+        page.primitiveGroupOffset += groupBase;
+        if (!writePayload(stream, state.payload, page.payloadOffset)) {
+            reason = "terrain region page write failed";
+            return false;
+        }
+        state.header.maxPagePayloadBytes = std::max(state.header.maxPagePayloadBytes, uint32_t(page.payloadSize));
+        state.pageOffsets.push_back(page.payloadOffset);
+        state.pages.push_back(page);
+    }
+    for (auto geometry : region.geometries()) {
+        geometry.primitiveIndex += primitiveBase;
+        geometry.renderPrimitiveIndex += primitiveBase;
+        geometry.pageOffset += pageBase;
+        geometry.pagePayloadOffsetTableOffset += pageBase;
+        const auto& last = state.pages[geometry.pageOffset + geometry.pageCount - 1];
+        geometry.payloadFileOffset = state.pages[geometry.pageOffset].payloadOffset;
+        geometry.payloadFileSize = last.payloadOffset + last.payloadSize - geometry.payloadFileOffset;
+        state.geometries.push_back(geometry);
+    }
+    std::set<uint32_t> terminalPages;
+    for (const uint32_t group : region.terminalGroups()) {
+        terminalPages.insert(pageBase + region.groups()[group].pageIndex);
+    }
+    uint64_t terminalBytes = 0;
+    for (const uint32_t page : terminalPages) {
+        const auto bytes = meshletStreamDevicePayloadSize(state.pages[page]);
+        terminalBytes += (bytes + kPageSlotAlignment - 1) / kPageSlotAlignment * kPageSlotAlignment;
+    }
+    receipt.push_back({{"id", id}, {"firstPage", pageBase}, {"pageCount", region.pageCount()},
+        {"terminalPages", terminalPages}, {"terminalBytes", terminalBytes}});
+    return true;
+}
+
+bool packCookedTerrainRegions(
+    const MeshletStreamAssetOfflineBuildDesc& desc, StreamglTFSource& source,
+    int32_t sceneIndex, const std::filesystem::path& outputPath, std::string& reason)
+{
+    if (desc.compressionMode != MeshletStreamPayloadCompression::None || desc.maxNewGeometriesPerInvocation != 0) {
+        reason = "terrain region packaging requires uncompressed complete offline cooks";
+        return false;
+    }
+    const auto receiptPath = outputPath.parent_path() / (desc.sourcePath.stem().string() + ".meshstream.regions.json");
+    const std::filesystem::path temporary = outputPath.string() + ".packing";
+    const std::filesystem::path temporaryReceipt = receiptPath.string() + ".packing";
+    std::ofstream stream;
+    struct Cleanup {
+        std::ofstream& stream;
+        const std::filesystem::path& pack;
+        const std::filesystem::path& receipt;
+        ~Cleanup() {
+            stream.close();
+            std::error_code ignored;
+            std::filesystem::remove(pack, ignored);
+            std::filesystem::remove(receipt, ignored);
+        }
+    } cleanup{stream, temporary, temporaryReceipt};
+    if (!openStreamAssetBuildFile(temporary, stream, reason)) { return false; }
+    MeshletStreamBuildState state;
+    nlohmann::json receipt = nlohmann::json::array();
+    state.header = makeStreamFileHeader(desc.sourcePath, 0);
+    if (!writeStreamAssetHeaderPlaceholder(stream, state.header, reason)) { return false; }
+
+    std::unordered_map<uint64_t, uint32_t> primitiveMap;
+    std::vector<MeshletStreamInstanceInfo> expectedInstances;
+    uint32_t materialBase = 0;
+    std::set<std::string> ids;
+    try {
+        const auto& regions = source.terrainRegions.at("regions");
+        if (!regions.is_array() || regions.empty()) {
+            reason = "terrain region package requires a nonempty region list";
+            return false;
+        }
+        for (const auto& record : regions) {
+            const auto id = record.at("id").get<std::string>();
+            const auto gltf = record.at("gltf").get<std::string>();
+            const auto cook = record.at("streamAsset").get<std::string>();
+            const auto primitiveBase = uint32_t(state.primitives.size());
+            const auto primitiveCount = record.at("primitiveCount").get<uint32_t>();
+            const auto materialCount = record.at("materialCount").get<uint32_t>();
+            const auto sibling = [](const std::string& name) {
+                const std::filesystem::path path(name);
+                return !name.empty() && path == path.filename() && path != "." && path != "..";
+            };
+            if (id.empty() || !ids.insert(id).second || !sibling(gltf) || !sibling(cook) ||
+                primitiveCount == 0 || materialCount == 0 ||
+                uint64_t(materialBase) + materialCount > std::numeric_limits<uint32_t>::max() ||
+                uint64_t(primitiveBase) + primitiveCount > source.model.meshes.size() ||
+                record.at("sourcePrimitiveOffset").get<uint32_t>() != primitiveBase ||
+                record.at("sourceInstanceOffset").get<uint32_t>() != expectedInstances.size() ||
+                record.at("instanceCount").get<uint32_t>() != primitiveCount ||
+                record.at("materialOffset").get<uint32_t>() != materialBase) {
+                reason = "terrain region package has invalid names, paths or directory ranges";
+                return false;
+            }
+            MeshletStreamAsset region;
+            if (!region.open(source.directory / cook, reason)) {
+                reason = "cannot open independent terrain cook " + id + ": " + reason;
+                return false;
+            }
+            if (!region.isCurrentForSource(source.directory / gltf) ||
+                region.primitiveCount() != primitiveCount || region.instanceCount() != primitiveCount) {
+                reason = "independent terrain cook " + id + " is stale or has a different topology";
+                return false;
+            }
+            for (uint32_t local = 0; local < primitiveCount; ++local) {
+                const auto index = primitiveBase + local;
+                const auto& packedMesh = source.model.meshes[index];
+                auto instance = region.instances()[local];
+                if (packedMesh.primitives.size() != 1 || instance.renderNodeIndex != local ||
+                    instance.primitiveIndex != local || region.primitives()[local].renderPrimitiveIndex != local ||
+                    instance.materialIndex >= materialCount ||
+                    packedMesh.primitives[0].material != int32_t(instance.materialIndex + materialBase)) {
+                    reason = "terrain region package requires matching ordered single-primitive meshes";
+                    return false;
+                }
+                primitiveMap.emplace(gltfPrimitiveKey(int32_t(index), 0), index);
+                instance.primitiveIndex = index;
+                instance.renderNodeIndex = index;
+                instance.materialIndex += materialBase;
+                expectedInstances.push_back(instance);
+            }
+            if (!appendCookedTerrainRegion(stream, state, region, materialBase, materialCount, id, receipt, reason)) {
+                return false;
+            }
+            source.externalBufferUris.push_back(gltf);
+            source.externalBufferUris.push_back(cook);
+            materialBase += materialCount;
+        }
+    } catch (const nlohmann::json::exception& error) {
+        reason = std::string("invalid terrain region package: ") + error.what();
+        return false;
+    }
+    if (state.primitives.size() != source.model.meshes.size() ||
+        !appendStreamAssetInstancesFromGltf(state, source, sceneIndex, primitiveMap, reason) ||
+        state.instances.size() != expectedInstances.size()) {
+        if (reason.empty()) { reason = "terrain region package does not cover the aggregate scene"; }
+        return false;
+    }
+    for (size_t i = 0; i < state.instances.size(); ++i) {
+        const auto& actual = state.instances[i];
+        const auto& expected = expectedInstances[i];
+        if (actual.primitiveIndex != expected.primitiveIndex || actual.materialIndex != expected.materialIndex ||
+            actual.visible != expected.visible || !std::ranges::equal(actual.worldMatrix, expected.worldMatrix)) {
+            reason = "terrain region package changes an independently cooked instance";
+            return false;
+        }
+    }
+    state.header.sourceDependencyFingerprint = sourceDependencyFingerprintFor(desc.sourcePath, source.externalBufferUris);
+    if (state.header.sourceDependencyFingerprint == 0 ||
+        !setStreamSourceDependencies(state, source.externalBufferUris, reason) ||
+        !finalizeStreamAssetBuild(stream, state, reason)) {
+        if (reason.empty()) { reason = "cannot fingerprint terrain region dependencies"; }
+        return false;
+    }
+    stream.close();
+    std::ofstream receiptFile(temporaryReceipt);
+    receiptFile << nlohmann::json{{"regions", std::move(receipt)}}.dump(2) << '\n';
+    receiptFile.close();
+    if (!stream || !receiptFile) {
+        reason = "terrain region pack or receipt write failed";
+        return false;
+    }
+    std::error_code error;
+    if (!publishFileReplacingDestination(temporary, outputPath, error) ||
+        !publishFileReplacingDestination(temporaryReceipt, receiptPath, error)) {
+        reason = "cannot publish terrain region pack: " + error.message();
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 struct MeshletStreamAsset::Impl {
@@ -5234,6 +5515,9 @@ bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& de
     const std::filesystem::path outputPath = desc.outputPath.empty()
         ? meshletStreamAssetPathFor(desc.sourcePath)
         : desc.outputPath;
+    if (!source.terrainRegions.is_null()) {
+        return packCookedTerrainRegions(desc, source, sceneIndex, outputPath, reason);
+    }
     const std::filesystem::path partialPath = meshletStreamPartialPathFor(outputPath);
     {
         MeshletStreamAsset existingAsset;

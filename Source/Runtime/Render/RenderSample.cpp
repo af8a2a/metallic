@@ -1112,6 +1112,54 @@ public:
     }
 };
 
+class GPUDrivenTerrainRegionsVSMSample final : public GPUDrivenTerrainVSMSample {
+public:
+    std::string_view id() const override { return "gpu-driven-terrain-regions-vsm"; }
+    std::string_view name() const override { return "GPUDrivenSample / Terrain Regions + VSM"; }
+    std::string_view description() const override
+    {
+        return "Fly across two independently cooked terrain regions with OpenPBR and VSM.";
+    }
+    std::string scenePath() const override
+    {
+        return "Asset/MeshletCache/TerrainRegions/terrain_regions.gltf";
+    }
+    bool configureGraph(RenderGraph& graph, std::string& outMessage) const override
+    {
+        const auto* visibility = graph.findNode("VBuffer");
+        if (visibility == nullptr || visibility->type != "VisibilityBufferPass") {
+            outMessage = "Terrain Regions requires the VBuffer visibility pass";
+            return false;
+        }
+
+        std::ifstream source(projectPath(scenePath()));
+        if (!source) {
+            outMessage = "Bake MetallicTerrainRegionsSample to generate " + scenePath();
+            return false;
+        }
+        RenderGraphProperties properties = visibility->properties;
+        try {
+            const auto document = nlohmann::json::parse(source);
+            const auto& regions = document.at("extras").at("metallicTerrainRegions").at("regions");
+            if (!regions.is_array() || regions.empty()) {
+                outMessage = "Terrain Regions requires a nonempty region list in " + scenePath();
+                return false;
+            }
+            properties["streamRegions"] = regions;
+        } catch (const nlohmann::json::exception& error) {
+            outMessage = "Terrain Regions could not read the region list from " + scenePath() + ": " + error.what();
+            return false;
+        }
+        properties["initialStreamRegions"] = nlohmann::json::array({0});
+        properties["geometryRegionLoadDistance"] = 44.0;
+        properties["geometryRegionUnloadDistance"] = 56.0;
+        properties["maxResidentPages"] = 80;
+        properties["compactShadingAttributes"] = false;
+        graph.setNodeProperties(visibility->id, std::move(properties));
+        return true;
+    }
+};
+
 const RenderSample& pathTracingMeetMatSample()
 {
     static const PathTracingMeetMatSample sample;
@@ -1235,6 +1283,12 @@ const RenderSample& gpuDrivenTerrainLayers16x16VSMSample()
 const RenderSample& gpuDrivenTerrainPlacement16x16VSMSample()
 {
     static const GPUDrivenTerrainPlacement16x16VSMSample sample;
+    return sample;
+}
+
+const RenderSample& gpuDrivenTerrainRegionsVSMSample()
+{
+    static const GPUDrivenTerrainRegionsVSMSample sample;
     return sample;
 }
 
@@ -1426,6 +1480,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &gpuDrivenTerrainBlocks16x16VSMSample(),
         &gpuDrivenTerrainLayers16x16VSMSample(),
         &gpuDrivenTerrainPlacement16x16VSMSample(),
+        &gpuDrivenTerrainRegionsVSMSample(),
         &gpuDrivenRtasVisualizationSample(),
     };
     const bool hasBoxDistanceField = std::filesystem::is_regular_file(projectPath(".cache/mesh-distance-field/BoxInstances.meshdf"));

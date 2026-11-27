@@ -880,6 +880,22 @@ if(Python3_Interpreter_FOUND)
         MetallicTerrainBlocks4x4VSMSample terrain-streaming-regression 600)
     add_metallic_terrain_streaming_regression(MetallicTerrain8x8StreamingRegression 8
         MetallicTerrainBlocks8x8VSMSample terrain-streaming-regression-8x8 1200)
+    if(TARGET MetallicTerrainRegionsSample)
+        set(terrain_region_regression
+            "${Python3_EXECUTABLE}" -B "${CMAKE_SOURCE_DIR}/Tools/Perf/TerrainRegionStreamingAcceptance.py" run
+            --executable "$<TARGET_FILE:MetallicRHITests>"
+            --output "${CMAKE_CURRENT_BINARY_DIR}/terrain-region-streaming-regression" --round-trip)
+        add_custom_target(MetallicTerrainRegionStreamingRegression
+            COMMAND ${terrain_region_regression}
+            DEPENDS MetallicRHITests MetallicTerrainRegionsSample
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            USES_TERMINAL
+            VERBATIM)
+        add_test(NAME MetallicTerrainRegionStreamingRegression COMMAND ${terrain_region_regression})
+        set_tests_properties(MetallicTerrainRegionStreamingRegression PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "rhi;terrain"
+            RESOURCE_LOCK MetallicGPU TIMEOUT 1200)
+    endif()
     if(TARGET MetallicTerrainPlacement16x16VSMSample)
         add_test(NAME MetallicTerrainPlacementEditorSmoke
             COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunTerrainPlacementSmoke.py"

@@ -368,7 +368,12 @@ public:
     // Register before recording geometry consumers. An unload snapshots all
     // outstanding readers; frame age alone must never recycle their page ranges.
     void trackGeometryUse(const GPUCompletionPoint& completion);
+    Result<bool> quiesceGeometryUses();
     bool lockFallbackPages(std::span<const uint32_t> pageIndices, std::string& reason);
+    bool tryPinFallbackPage(uint32_t pageIndex);
+    void unpinFallbackPage(uint32_t pageIndex);
+    void setPageAdmissionMask(std::span<const uint8_t> mask) { pageAdmissionMask_ = mask; }
+    void prioritizeFallbackPins(bool enabled) { prioritizeFallbackPins_ = enabled; }
     bool requestPage(uint32_t pageIndex);
     bool unloadPage(uint32_t pageIndex);
     uint32_t consumeGpuRequests(std::span<const uint32_t> pageIds);
@@ -395,6 +400,7 @@ public:
     MeshletStreamPageResidencyState pageState(uint32_t pageIndex) const;
     uint64_t deviceOffsetForPage(uint32_t pageIndex) const;
     uint32_t deviceSizeForPage(uint32_t pageIndex) const;
+    uint64_t allocationBytesForPage(uint32_t pageIndex) const;
     bool pageAllocated(uint32_t pageIndex) const;
     bool pageResident(uint32_t pageIndex) const;
     uint64_t pageAge(uint32_t pageIndex) const;
@@ -433,6 +439,11 @@ public:
     }
 
 private:
+    bool pageAdmissionAllowed(uint32_t pageIndex) const
+    {
+        return pageAdmissionMask_.empty() || pageAdmissionMask_[pageIndex] != 0;
+    }
+
     struct PageRequest {
         uint32_t pageIndex;
         float screenBenefit = -1.0f;
@@ -492,6 +503,8 @@ private:
     const scene::MeshletStreamAsset* asset_ = nullptr;
     MeshletStreamStorage storage_;
     std::unordered_map<uint32_t, PageEntry> pages_;
+    std::span<const uint8_t> pageAdmissionMask_;
+    bool prioritizeFallbackPins_ = false;
     std::deque<uint32_t> uploadQueue_;
     MeshletStreamPageLoader pageLoader_;
     std::unique_ptr<MeshletStreamLatencyTracker> latency_;

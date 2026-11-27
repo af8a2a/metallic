@@ -41,6 +41,7 @@ namespace metallic::render {
 namespace {
 
 inline constexpr uint64_t kImmutableMetadataUploadBatchBytes = 64ull * 1024ull * 1024ull;
+std::atomic<uint64_t> nextShadowGeometryRevision{1};
 
 uint64_t alignUp(uint64_t value, uint64_t alignment)
 {
@@ -1263,7 +1264,6 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
 
     phase.next("streamInit.boundsAndBudget");
     asset_ = std::move(openedAsset);
-    static std::atomic<uint64_t> nextShadowGeometryRevision{1};
     shadowGeometryRevision_ = nextShadowGeometryRevision.fetch_add(1, std::memory_order_relaxed);
     if (desc.compactShadingAttributes && !asset_.compactShadingForDevice(reason)) {
         log = "MeshletStreamRuntime compact shading: " + reason;
@@ -1285,6 +1285,10 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         return makeError(Error::Unsupported);
     }
     const bool enableClas = desc.enableClas && device.capabilities().clusterAccelerationStructure;
+    if (!desc.regions.empty() && (desc.enableClusterRtx || desc.enableClas)) {
+        log = "Meshlet stream regions require raster geometry without CLAS or ray tracing";
+        return makeError(Error::Unsupported);
+    }
     clusterRtxEnabled_ = desc.enableClusterRtx;
     maxResidentPages_ = desc.maxResidentPages;
     maxPageUploadsPerFrame_ = desc.maxPageUploadsPerFrame;
@@ -1398,6 +1402,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     }
 
     phase.next("streamInit.terminalCutAndCapacity");
+    if (auto result = initializeRegions(desc, log); !result) { return result; }
     const MeshletStreamStorage& residencyStorage = residency_.storage();
     // Every terminal branch belongs to the base cut, including branches
     // that stopped simplifying before the primitive's coarsest level.
@@ -1406,7 +1411,9 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     std::vector<uint32_t> lockedFallbackPrimitives;
     std::unordered_set<uint32_t> consideredFallbackPrimitives;
     uint64_t terminalInstanceCount = 0;
-    for (const auto& instance : asset_.instances()) {
+    for (size_t instanceIndex = 0; instanceIndex < asset_.instances().size(); ++instanceIndex) {
+        if (regionCount_ != 0 && publishedRegionInstances_[instanceIndex] == 0) { continue; }
+        const auto& instance = asset_.instances()[instanceIndex];
         if (instance.primitiveIndex >= asset_.primitiveCount()) {
             continue;
         }
@@ -1443,6 +1450,10 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         return makeError(Error::Failure);
     }
     lockedFallbackPages_ = std::move(fallbackPages);
+    if (regionCount_ != 0) {
+        wantedTerminalPages_ = lockedFallbackPages_;
+        pinnedRegionPages_ = lockedFallbackPages_;
+    }
 
     maxActiveGroups_ = computeMaxActiveGroups(desc.maxActiveGroups);
     maxActiveGroupClusters_ = asset_.maxPageClusters();
@@ -2936,6 +2947,19 @@ void MeshletStreamRuntime::reset()
     currentResidentPageCount_ = 0;
     maxResidentBytes_ = 0;
     lockedFallbackPages_.clear();
+    regionForInstance_.clear();
+    publishedRegionInstances_.clear();
+    regionPageAdmission_.clear();
+    wantedRegions_.clear();
+    publishedRegions_.clear();
+    wantedTerminalPages_.clear();
+    pinnedRegionPages_.clear();
+    retiringRegionPages_.clear();
+    allRegionTerminalPages_.clear();
+    regionCount_ = 0;
+    maxLockedRegionPages_ = 0;
+    regionPublicationRevision_ = 0;
+    regionVisibilityDirty_ = false;
     maxActiveGroups_ = 0;
     rasterCandidateCapacity_ = 0;
     maxActiveGroupClusters_ = 0;
@@ -3156,13 +3180,205 @@ StreamSceneReadiness MeshletStreamRuntime::sceneReadiness() const
         result.completedPages += residency_.pageResident(page) ? 1u : 0u;
         if (needsClas) { result.completedPages += clasPool_->pageHasClas(page) ? 1u : 0u; }
     }
-    result.ready = ready() && metadataReady && *pageTableInitialized_ && result.requiredPages != 0 &&
+    result.ready = ready() && metadataReady && *pageTableInitialized_ && (result.requiredPages != 0 || regionCount_ != 0) &&
         result.completedPages == result.requiredPages &&
         (!clusterRtxEnabled_ || std::all_of(fallbackBlasPrimitives_.begin(), fallbackBlasPrimitives_.end(),
             [](const auto& fallback) { return fallback.submitted(); }));
     cache.value = result;
     cache.valid = true;
     return result;
+}
+
+Result<> MeshletStreamRuntime::initializeRegions(const MeshletStreamRuntimeDesc& desc, std::string& log)
+{
+    if (desc.regions.empty()) {
+        if (!desc.initialRegions.empty()) {
+            log = "Initial meshlet stream regions require an instance range directory";
+            return makeError(Error::InvalidArgument);
+        }
+        return {};
+    }
+
+    regionCount_ = static_cast<uint32_t>(desc.regions.size());
+    maxLockedRegionPages_ = desc.maxLockedFallbackPages;
+    regionForInstance_.assign(asset_.instanceCount(), UINT32_MAX);
+    std::vector<uint32_t> allRegions;
+    for (uint32_t region = 0; region < regionCount_; ++region) {
+        const auto& range = desc.regions[region];
+        if (range.instanceCount == 0 || uint64_t(range.firstInstance) + range.instanceCount > regionForInstance_.size()) {
+            log = "Meshlet stream region instance range is empty or out of bounds";
+            return makeError(Error::InvalidArgument);
+        }
+        for (uint32_t index = range.firstInstance; index < range.firstInstance + range.instanceCount; ++index) {
+            if (regionForInstance_[index] != UINT32_MAX) {
+                log = "Meshlet stream region instance ranges overlap";
+                return makeError(Error::InvalidArgument);
+            }
+            regionForInstance_[index] = region;
+        }
+        allRegions.push_back(region);
+    }
+    publishedRegions_ = desc.initialRegions;
+    std::ranges::sort(publishedRegions_);
+    publishedRegions_.erase(std::unique(publishedRegions_.begin(), publishedRegions_.end()), publishedRegions_.end());
+    if (!publishedRegions_.empty() && publishedRegions_.back() >= regionCount_) {
+        log = "Initial meshlet stream region index is out of bounds";
+        return makeError(Error::InvalidArgument);
+    }
+    wantedRegions_ = publishedRegions_;
+    publishedRegionInstances_.resize(regionForInstance_.size());
+    regionPageAdmission_.resize(asset_.pageCount());
+    collectRegionTerminalPages(allRegions, allRegionTerminalPages_);
+    updatePublishedRegionInstances();
+    updateRegionPageAdmission();
+    return {};
+}
+
+uint64_t MeshletStreamRuntime::collectRegionTerminalPages(
+    std::span<const uint32_t> regions, std::vector<uint32_t>& pages) const
+{
+    uint64_t terminalInstanceGroups = 0;
+    pages.clear();
+    for (size_t index = 0; index < regionForInstance_.size(); ++index) {
+        const uint32_t region = regionForInstance_[index];
+        if (region != UINT32_MAX && !std::ranges::binary_search(regions, region)) { continue; }
+        const auto groups = asset_.primitiveTerminalGroups(asset_.instances()[index].primitiveIndex);
+        terminalInstanceGroups += groups.size();
+        for (const auto group : groups) { pages.push_back(asset_.groups()[group].pageIndex); }
+    }
+    std::ranges::sort(pages);
+    pages.erase(std::unique(pages.begin(), pages.end()), pages.end());
+    return terminalInstanceGroups;
+}
+
+void MeshletStreamRuntime::updatePublishedRegionInstances()
+{
+    std::ranges::transform(regionForInstance_, publishedRegionInstances_.begin(), [&](uint32_t region) -> uint8_t {
+        return region == UINT32_MAX || std::ranges::binary_search(publishedRegions_, region);
+    });
+    regionVisibilityDirty_ = true;
+}
+
+void MeshletStreamRuntime::updateRegionPageAdmission()
+{
+    std::vector<uint8_t> enabledPrimitives(asset_.primitiveCount(), 0);
+    for (size_t index = 0; index < publishedRegionInstances_.size(); ++index) {
+        if (publishedRegionInstances_[index] != 0) { enabledPrimitives[asset_.instances()[index].primitiveIndex] = 1; }
+    }
+    std::ranges::transform(asset_.pages(), regionPageAdmission_.begin(), [&](const auto& page) {
+        return enabledPrimitives[page.primitiveIndex];
+    });
+    residency_.setPageAdmissionMask(regionPageAdmission_);
+}
+
+void MeshletStreamRuntime::retireExcludedRegionPages()
+{
+    std::erase_if(retiringRegionPages_, [&](uint32_t page) {
+        if (regionPageAdmission_[page] != 0 || std::ranges::binary_search(wantedTerminalPages_, page) ||
+            !residency_.pageAllocated(page)) { return true; }
+        // Queued I/O and already recorded uploads retain their allocation
+        // until completion. This also keeps a discarded decode out of the
+        // actual I/O failure counts.
+        if (residency_.pageResident(page)) { residency_.unloadPage(page); }
+        return false;
+    });
+}
+
+Result<> MeshletStreamRuntime::updateRegionSelection(std::span<const uint32_t> wantedRegions, std::string& log)
+{
+    log.clear();
+    if (!ready() || regionCount_ == 0) {
+        log = "Meshlet stream regions are not initialized";
+        return makeError(Error::InvalidArgument);
+    }
+    if (!std::ranges::equal(wantedRegions, wantedRegions_)) {
+        std::vector<uint32_t> target(wantedRegions.begin(), wantedRegions.end());
+        std::ranges::sort(target);
+        target.erase(std::unique(target.begin(), target.end()), target.end());
+        if (!target.empty() && target.back() >= regionCount_) {
+            log = "Wanted meshlet stream region index is out of bounds";
+            return makeError(Error::InvalidArgument);
+        }
+        std::vector<uint32_t> targetRoots;
+        const uint64_t targetGroups = collectRegionTerminalPages(target, targetRoots);
+        std::vector<uint32_t> overlap;
+        std::ranges::set_union(lockedFallbackPages_, targetRoots, std::back_inserter(overlap));
+        uint64_t overlapBytes = 0;
+        for (const uint32_t page : overlap) {
+            overlapBytes += residency_.storage().allocationSize(scene::meshletStreamDevicePayloadSize(asset_.pages()[page]));
+        }
+        if (overlap.size() > maxLockedRegionPages_ ||
+            (maxResidentPages_ != 0 && overlap.size() > maxResidentPages_) ||
+            overlapBytes > residency_.maxResidentBytes() || targetGroups > maxActiveGroups_) {
+            log = "Meshlet stream region handoff cannot fit the published and incoming terminal cuts";
+            return makeError(Error::InvalidArgument);
+        }
+        wantedRegions_ = std::move(target);
+        wantedTerminalPages_ = std::move(targetRoots);
+        std::erase_if(pinnedRegionPages_, [&](uint32_t page) {
+            if (std::ranges::binary_search(overlap, page)) { return false; }
+            residency_.unpinFallbackPage(page);
+            retiringRegionPages_.push_back(page);
+            return true;
+        });
+        residency_.prioritizeFallbackPins(wantedRegions_ != publishedRegions_);
+    }
+
+    prepareMaintenance(nullptr, true);
+    retireExcludedRegionPages();
+    if (wantedRegions_ == publishedRegions_) { return {}; }
+
+    const auto pin = [&](uint32_t page) {
+        const auto position = std::ranges::lower_bound(pinnedRegionPages_, page);
+        if (position != pinnedRegionPages_.end() && *position == page) { return; }
+        if (residency_.tryPinFallbackPage(page)) { pinnedRegionPages_.insert(position, page); }
+    };
+    // Protect already allocated incoming roots before considering detail victims.
+    for (const uint32_t page : wantedTerminalPages_) {
+        if (residency_.pageAllocated(page)) { pin(page); }
+    }
+    for (const uint32_t page : wantedTerminalPages_) {
+        if (!residency_.pageAllocated(page)) { pin(page); }
+    }
+    for (const uint32_t page : pinnedRegionPages_) {
+        if (!residency_.pageAllocated(page)) {
+            log = "A pinned meshlet stream region terminal page failed to load: " + std::to_string(page);
+            return makeError(Error::Failure);
+        }
+    }
+    if (!std::ranges::all_of(wantedTerminalPages_, [&](uint32_t page) {
+            return residency_.pageState(page) == MeshletStreamPageResidencyState::LockedFallback;
+        })) { return {}; }
+
+    // syncRuntimeScene writes a shared host-upload instance buffer. Older
+    // raster, deferred and VSM readers must finish before changing its flags.
+    const auto quiesced = residency_.quiesceGeometryUses();
+    if (!quiesced) {
+        log = "Meshlet stream region handoff could not drain previous geometry readers";
+        return std::unexpected(quiesced.error());
+    }
+    if (!*quiesced) { return {}; }
+
+    publishedRegions_ = wantedRegions_;
+    lockedFallbackPages_ = wantedTerminalPages_;
+    updatePublishedRegionInstances();
+    updateRegionPageAdmission();
+    sceneReadinessCache_->valid = false;
+    shadowGeometryRevision_ = nextShadowGeometryRevision.fetch_add(1, std::memory_order_relaxed);
+    ++regionPublicationRevision_;
+    std::erase_if(pinnedRegionPages_, [&](uint32_t page) {
+        if (std::ranges::binary_search(lockedFallbackPages_, page)) { return false; }
+        residency_.unpinFallbackPage(page);
+        return true;
+    });
+    for (uint32_t page = 0; page < asset_.pageCount(); ++page) {
+        if (regionPageAdmission_[page] == 0 && residency_.pageAllocated(page)) { retiringRegionPages_.push_back(page); }
+    }
+    std::ranges::sort(retiringRegionPages_);
+    retiringRegionPages_.erase(std::unique(retiringRegionPages_.begin(), retiringRegionPages_.end()), retiringRegionPages_.end());
+    retireExcludedRegionPages();
+    residency_.prioritizeFallbackPins(false);
+    return {};
 }
 
 RayTracingAccelerationStructure* MeshletStreamRuntime::accelerationStructure() const
@@ -3849,7 +4065,8 @@ MeshletStreamShadowGeometryView MeshletStreamRuntime::shadowGeometryResources() 
     return {.instanceBuffer = instanceBuffer_.get(), .pageBuffer = pageBuffer_.get(),
         .pageTableBuffer = pageTableBuffer_.get(), .asset = &asset_,
         .pageBufferBytes = static_cast<uint32_t>(residency_.pageBufferSize()),
-        .runtimeRenderNodeIndices = runtimeRenderNodeIndices_, .geometryRevision = shadowGeometryRevision_};
+        .runtimeRenderNodeIndices = runtimeRenderNodeIndices_, .publishedRegionInstances = publishedRegionInstances_,
+        .geometryRevision = shadowGeometryRevision_};
 }
 
 MeshletStreamRuntime::ShadowPageRequests MeshletStreamRuntime::requestShadowPages(
@@ -4004,7 +4221,7 @@ Result<> MeshletStreamRuntime::syncRuntimeScene(
         log = "MeshletStreamRuntime runtime render-node mapping does not match the stream instances.";
         return makeError(Error::InvalidArgument);
     }
-    if (sceneResourceIdentity_ == scene.resourceIdentity() &&
+    if (!regionVisibilityDirty_ && sceneResourceIdentity_ == scene.resourceIdentity() &&
         sceneTransformRevision_ == scene.transformRevision() &&
         sceneVisibilityRevision_ == scene.visibilityRevision() &&
         runtimeRenderNodeIndices_.size() == runtimeRenderNodeIndices.size() &&
@@ -4050,7 +4267,7 @@ Result<> MeshletStreamRuntime::syncRuntimeScene(
         // The cook owns shared geometry; the runtime node owns the binding.
         // Composed scenes rebase material indices independently of the cache.
         gpuInstance.materialIndex = static_cast<uint32_t>(std::max(renderNode.materialIndex, 0));
-        gpuInstance.visible = renderNode.visible ? 1u : 0u;
+        gpuInstance.visible = renderNode.visible && (regionCount_ == 0 || publishedRegionInstances_[index] != 0) ? 1u : 0u;
         gpuInstance.gpuSceneInstanceIndex = index < gpuSceneInstanceMapping_.size()
             ? gpuSceneInstanceMapping_[index]
             : kMeshletStreamInvalidClusterIndex;
@@ -4097,6 +4314,7 @@ Result<> MeshletStreamRuntime::syncRuntimeScene(
     ++shadingStateRevision_;
     sceneTransformRevision_ = scene.transformRevision();
     sceneVisibilityRevision_ = scene.visibilityRevision();
+    regionVisibilityDirty_ = false;
     sceneResourceIdentity_ = scene.resourceIdentity();
     runtimeRenderNodeIndices_.assign(
         runtimeRenderNodeIndices.begin(),
@@ -4192,7 +4410,7 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
     rasterInstanceCandidates_.clear();
     rasterInstanceCandidates_.reserve(instances.size());
     for (uint32_t index = 0; index < instances.size(); ++index) {
-        if (instances[index].visible != 0u) {
+        if (instances[index].visible != 0u && (regionCount_ == 0 || publishedRegionInstances_[index] != 0)) {
             rasterInstanceCandidates_.push_back(index);
         }
     }
@@ -4211,7 +4429,7 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
             gpuInstance = MeshletStreamGPUInstance{};
             gpuInstance.primitiveIndex = instance.primitiveIndex;
             gpuInstance.materialIndex = instance.materialIndex;
-            gpuInstance.visible = instance.visible;
+            gpuInstance.visible = regionCount_ == 0 || publishedRegionInstances_[index] != 0 ? instance.visible : 0u;
             gpuInstance.gpuSceneInstanceIndex = gpuSceneInstanceMapping_[index];
             for (uint32_t row = 0; row < 4; ++row) {
                 gpuInstance.world0[row] = instance.worldMatrix[0 + row];
@@ -5827,6 +6045,21 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.geometryUsedBytes = stats.usedResidentBytes;
     result.geometryBudgetBytes = stats.maxResidentBytes;
     result.totalPages = stats.pageCount;
+    if (regionCount_ != 0) {
+        result.wantedRegions = wantedRegions_;
+        result.publishedRegions = publishedRegions_;
+        result.pinnedTerminalPages = pinnedRegionPages_;
+        result.regionPublicationRevision = regionPublicationRevision_;
+        for (const uint32_t page : pinnedRegionPages_) {
+            result.pinnedTerminalBytes += residency_.allocationBytesForPage(page);
+        }
+        for (const uint32_t page : allRegionTerminalPages_) {
+            const auto bytes = residency_.allocationBytesForPage(page);
+            if (bytes == 0) { continue; }
+            result.committedTerminalPages.push_back(page);
+            result.committedTerminalBytes += bytes;
+        }
+    }
     result.maxResidentPages = stats.maxResidentPages;
     result.activePages = stats.activePageCount;
     result.residentPages = stats.residentPageCount;

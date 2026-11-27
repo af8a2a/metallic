@@ -369,6 +369,8 @@ void MeshletStreamResidencyManager::reset()
     }
     unloadTaskQueue_.reset();
     geometryUses_.clear();
+    pageAdmissionMask_ = {};
+    prioritizeFallbackPins_ = false;
     for (auto& uses : unloadTaskUses_) { uses.clear(); }
     for (std::vector<uint32_t>& taskPages : unloadTaskPages_) {
         taskPages.clear();
@@ -417,6 +419,21 @@ void MeshletStreamResidencyManager::trackGeometryUse(const GPUCompletionPoint& c
             [&](const auto& use) { return use.sameSubmission(completion); })) {
         geometryUses_.push_back(completion);
     }
+}
+
+Result<bool> MeshletStreamResidencyManager::quiesceGeometryUses()
+{
+    std::erase_if(geometryUses_, [](const auto& use) { return use.isComplete(); });
+    // A recording can still be accepted by the coordinator. Its readers are
+    // not safe to overwrite, and it cannot be waited on before submission.
+    if (std::ranges::any_of(geometryUses_, [](const auto& use) { return !use.isSubmitted(); })) {
+        return false;
+    }
+    for (const auto& use : geometryUses_) {
+        if (auto result = use.wait(UINT64_MAX); !result) { return std::unexpected(result.error()); }
+    }
+    geometryUses_.clear();
+    return true;
 }
 
 void MeshletStreamResidencyManager::beginFrame(CPUProfileRecorder* profiler)
@@ -627,6 +644,7 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks(CPUProfileRecorder*
                 [](const PageRequest& request) { return request.screenBenefit >= 0.0f || request.prefetch; });
             size_t candidateCount = 0;
             for (auto request : taskPages) {
+                if (!pageAdmissionAllowed(request.pageIndex)) { continue; }
                 requestedPages_.push_back(request.pageIndex);
                 const auto found = pages_.find(request.pageIndex);
                 if (found != pages_.end()) {
@@ -843,7 +861,7 @@ bool MeshletStreamResidencyManager::lockFallbackPages(
 
 bool MeshletStreamResidencyManager::requestPage(uint32_t pageIndex)
 {
-    if (asset_ == nullptr || pageIndex >= pageCount_) {
+    if (asset_ == nullptr || pageIndex >= pageCount_ || !pageAdmissionAllowed(pageIndex)) {
         return false;
     }
 
@@ -851,6 +869,7 @@ bool MeshletStreamResidencyManager::requestPage(uint32_t pageIndex)
     const bool allocated = pageIter != pages_.end() &&
         pageIter->second.deviceOffsetBytes != kInvalidStreamDeviceOffsetBytes;
     if (!allocated) {
+        if (prioritizeFallbackPins_) { return false; }
         // Do not create and erase a hash node for every over-budget request.
         // This is a capacity gate, not a per-ID cooldown: new priorities are
         // honored immediately and a large rejection cannot block smaller pages.
@@ -899,6 +918,47 @@ bool MeshletStreamResidencyManager::requestPage(uint32_t pageIndex)
         queueUpload(pageIndex);
     }
     return false;
+}
+
+bool MeshletStreamResidencyManager::tryPinFallbackPage(uint32_t pageIndex)
+{
+    const auto found = pages_.find(pageIndex);
+    if (found != pages_.end() && found->second.state == MeshletStreamPageResidencyState::PendingUnload) {
+        return false;
+    }
+    if (!pageAllocated(pageIndex) && ((maxResidentPages_ != 0 && activePages_.size() >= maxResidentPages_) ||
+            !storage_.canAllocate(scene::meshletStreamDevicePayloadSize(asset_->pages()[pageIndex])))) {
+        // The published roots stay pinned. Reclaim detail through the same
+        // fence-backed unload that owns ordinary eviction and slot retirement.
+        for (const uint32_t victim : residentPages_) {
+            if (scheduleUnload(victim, true)) { return false; }
+        }
+        return false;
+    }
+
+    auto [entry, inserted] = pages_.try_emplace(pageIndex);
+    if (!pageAllocated(pageIndex) && !allocatePageStorage(pageIndex)) {
+        if (inserted) { pages_.erase(entry); }
+        return false;
+    }
+    auto& page = entry->second;
+    page.lockedFallback = true;
+    updateLatencyEligibility(pageIndex, page);
+    if (page.state == MeshletStreamPageResidencyState::Resident) {
+        setPageState(pageIndex, MeshletStreamPageResidencyState::LockedFallback);
+    }
+    if (page.state == MeshletStreamPageResidencyState::Unloaded) { queueUpload(pageIndex); }
+    return true;
+}
+
+void MeshletStreamResidencyManager::unpinFallbackPage(uint32_t pageIndex)
+{
+    auto& page = pages_.at(pageIndex);
+    page.lockedFallback = false;
+    updateLatencyEligibility(pageIndex, page);
+    if (page.state == MeshletStreamPageResidencyState::LockedFallback) {
+        setPageState(pageIndex, MeshletStreamPageResidencyState::Resident);
+    }
 }
 
 bool MeshletStreamResidencyManager::unloadPage(uint32_t pageIndex)
@@ -974,6 +1034,7 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGPUReques
             ++stats_.totalGpuInvalidRequestCount;
             continue;
         }
+        if (!pageAdmissionAllowed(pageIndex)) { continue; }
         float benefit = index < requests.loadPriorities.size() ? requests.loadPriorities[index] : -1.0f;
         if (!std::isfinite(benefit)) { benefit = 0.0f; }
         benefit = std::clamp(benefit, -1.0f, 1e9f);
@@ -1568,6 +1629,12 @@ uint32_t MeshletStreamResidencyManager::deviceSizeForPage(uint32_t pageIndex) co
     }
     const auto pageIter = pages_.find(pageIndex);
     return pageIter != pages_.end() ? pageIter->second.deviceSizeBytes : 0u;
+}
+
+uint64_t MeshletStreamResidencyManager::allocationBytesForPage(uint32_t pageIndex) const
+{
+    const auto found = pages_.find(pageIndex);
+    return found == pages_.end() ? 0u : found->second.allocationBytes;
 }
 
 bool MeshletStreamResidencyManager::pageAllocated(uint32_t pageIndex) const

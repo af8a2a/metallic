@@ -487,8 +487,9 @@ struct MeshletStreamShadowGeometryView {
     // Full instance mapping published by syncRuntimeScene, including composed
     // scene rebasing. Valid for this same-frame borrowed view.
     std::span<const uint32_t> runtimeRenderNodeIndices;
-    // Locked terminal pages and their decoded content are immutable for this
-    // generation; ordinary refined-page streaming does not change this token.
+    // Empty in the default mode. Otherwise this is indexed by cooked instance.
+    std::span<const uint8_t> publishedRegionInstances;
+    // Ordinary refined-page streaming does not change this token.
     uint64_t geometryRevision = 0;
     std::shared_ptr<MeshletStreamRuntime> owner;
 
@@ -589,6 +590,12 @@ static_assert(offsetof(MeshletStreamGPUParams, gpuSceneInstanceBufferIndexPlusOn
 static_assert(sizeof(MeshletStreamGPURasterBindings) == 108);
 static_assert(sizeof(MeshletStreamUserPush) == 140);
 
+struct MeshletStreamRegionRange {
+    uint32_t firstInstance = 0;
+    uint32_t instanceCount = 0;
+    bool operator==(const MeshletStreamRegionRange&) const = default;
+};
+
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;
     std::filesystem::path streamAssetPath;
@@ -651,6 +658,8 @@ struct MeshletStreamRuntimeDesc {
     // The subsystem drains a dedicated root-loading queue after scene/pass
     // replacement, before graph recording. Direct callers may use the loader.
     bool initialLoad = true;
+    std::vector<MeshletStreamRegionRange> regions;
+    std::vector<uint32_t> initialRegions;
 
     bool operator==(const MeshletStreamRuntimeDesc&) const = default;
 };
@@ -748,6 +757,10 @@ public:
     bool immutableMetadataReady() const;
     uint64_t immutableMetadataUploadedBytes() const;
     Result<> syncRuntimeScene(const scene::Scene& scene, std::string& log);
+    // Call before synchronizing scene instances and recording this runtime's
+    // geometry consumers. The requested selection may need several frames.
+    Result<> updateRegionSelection(std::span<const uint32_t> wantedRegions, std::string& log);
+    std::span<const uint32_t> publishedRegions() const { return publishedRegions_; }
     Result<> syncRuntimeScene(
         const scene::Scene& scene,
         std::span<const uint32_t> runtimeRenderNodeIndices,
@@ -895,6 +908,11 @@ private:
     uint32_t computeMaxActiveGroups(uint32_t capacity) const;
     uint32_t computeMaxPrimitiveGroups() const;
     Result<> initializeSceneMetadataBuffers(Device& device, std::string& log);
+    Result<> initializeRegions(const MeshletStreamRuntimeDesc& desc, std::string& log);
+    uint64_t collectRegionTerminalPages(std::span<const uint32_t> regions, std::vector<uint32_t>& pages) const;
+    void updatePublishedRegionInstances();
+    void updateRegionPageAdmission();
+    void retireExcludedRegionPages();
     Result<> uploadImmutableMetadata(CommandBuffer& commandBuffer);
     Result<> prepareImmutableMetadataRead(CommandBuffer& commandBuffer) const;
 
@@ -1142,6 +1160,15 @@ private:
     uint32_t currentResidentPageCount_ = 0;
     uint64_t maxResidentBytes_ = 0;
     std::vector<uint32_t> lockedFallbackPages_;
+    std::vector<uint32_t> regionForInstance_;
+    std::vector<uint8_t> publishedRegionInstances_;
+    std::vector<uint8_t> regionPageAdmission_;
+    std::vector<uint32_t> wantedRegions_, publishedRegions_;
+    std::vector<uint32_t> wantedTerminalPages_, pinnedRegionPages_, retiringRegionPages_;
+    std::vector<uint32_t> allRegionTerminalPages_;
+    uint32_t regionCount_ = 0, maxLockedRegionPages_ = 0;
+    uint64_t regionPublicationRevision_ = 0;
+    bool regionVisibilityDirty_ = false;
     uint32_t maxActiveGroups_ = 0;
     uint32_t rasterCandidateCapacity_ = 0;
     uint32_t maxActiveGroupClusters_ = 0;

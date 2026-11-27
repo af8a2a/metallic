@@ -571,6 +571,9 @@ static Result<VirtualShadowMapCasterResources> prepareCasterGeometry(
         owner->stream = stream->owner;
         std::vector<std::array<uint32_t, 4>> candidates;
         for (uint32_t instanceIndex = 0; instanceIndex < asset.instances().size(); ++instanceIndex) {
+            if (!stream->publishedRegionInstances.empty() && !stream->publishedRegionInstances[instanceIndex]) {
+                continue;
+            }
             const auto& instance = asset.instances()[instanceIndex];
             const uint32_t nodeIndex = stream->runtimeRenderNodeIndices[instanceIndex];
             const auto& node = scene.renderNodes()[nodeIndex];
@@ -817,6 +820,9 @@ static Result<VirtualShadowMapCasterResources> selectShadowLOD(
     if (stream) {
         const auto& asset = *stream->asset;
         for (uint32_t instanceIndex = 0; instanceIndex < asset.instances().size(); ++instanceIndex) {
+            if (!stream->publishedRegionInstances.empty() && !stream->publishedRegionInstances[instanceIndex]) {
+                continue;
+            }
             const auto& sourceInstance = asset.instances()[instanceIndex];
             const auto& primitive = asset.primitives()[sourceInstance.primitiveIndex];
             const uint32_t nodeIndex = stream->runtimeRenderNodeIndices[instanceIndex];
