@@ -150,7 +150,7 @@ GPUAtmosphereParameters buildGPUAtmosphereParameters(const environment::Environm
     const auto& weather = environment.weather;
     p.cloudLayer = {weather.cloudBaseAltitudeKm, weather.cloudTopAltitudeKm,
         weather.cloudCoverage, weather.cloudDensity * (1.0f + 0.5f * weather.precipitation)};
-    p.cloudOptics = {weather.cloudExtinctionPerKm, 0.98f, 0.75f, weather.cloudEnabled ? 1.0f : 0.0f};
+    p.cloudOptics = {weather.cloudExtinctionPerKm, 0.98f, 0.8f, weather.cloudEnabled ? 1.0f : 0.0f};
     const auto wind = environment::normalizedWeatherWindDirection(weather);
     // The two material noise layers move by integer UV periods when the wind
     // displacement wraps by 2048 km (eight 256 km layouts). Reduce before narrowing.
@@ -188,7 +188,7 @@ std::array<float, 3> atmosphereSpectrumToWorkingColor(std::array<float, 3> spect
 class AtmospherePrecomputeKernels {
     friend class AtmosphereResourcesGPU;
     const Device* device_ = nullptr;
-    std::array<ComputeKernel, 6> kernels_;
+    std::array<ComputeKernel, 7> kernels_;
 };
 
 struct AtmosphereResourcesGPU::Impl {
@@ -202,6 +202,8 @@ struct AtmosphereResourcesGPU::Impl {
     std::shared_ptr<Image> transmittance = std::make_shared<Image>();
     std::shared_ptr<Image> multiScattering = std::make_shared<Image>();
     Image skyView, radiance, cloudShadow;
+    Image cloudLighting;
+    ResourceLease cloudLightingSampled;
     std::unique_ptr<Buffer> aerial;
     std::unique_ptr<Buffer> parameterBuffer;
     GPUAtmosphereParameters parameters{};
@@ -289,8 +291,8 @@ Result<std::shared_ptr<const AtmospherePrecomputeKernels>> AtmosphereResourcesGP
 {
     auto prepared = std::make_shared<AtmospherePrecomputeKernels>();
     prepared->device_ = &device;
-    constexpr std::array<const char*, 6> modules{"Transmittance", "MultiScattering", "SkyView", "EnvironmentCapture", "AerialPerspective", "CloudShadow"};
-    constexpr std::array<const char*, 6> entries{"transmittanceMain", "multiScatteringMain", "skyViewMain", "environmentCaptureMain", "aerialPerspectiveMain", "cloudShadowMain"};
+    constexpr std::array<const char*, 7> modules{"Transmittance", "MultiScattering", "SkyView", "EnvironmentCapture", "AerialPerspective", "CloudShadow", "CloudLightingLut"};
+    constexpr std::array<const char*, 7> entries{"transmittanceMain", "multiScatteringMain", "skyViewMain", "environmentCaptureMain", "aerialPerspectiveMain", "cloudShadowMain", "cloudLightingLutMain"};
     for (size_t index = 0; index < modules.size(); ++index) {
         const std::string module = std::string("Features/Environment/") + modules[index];
         auto result = ShaderRegistry::instance().getComputeKernel(device,
@@ -386,6 +388,11 @@ Result<> AtmosphereResourcesGPU::record(CommandBuffer& commands, const environme
         auto shapes = cloudShapeResources(*impl_->device, **registry, log);
         if (!shapes) { return makeError(shapes.error()); }
         impl_->parameters.cloudShapeResources = *shapes;
+        if (auto result = impl_->createImage(impl_->cloudLighting, 3, 1, 1, Format::RGBA32Sfloat); !result) { return result; }
+        auto sampled = (*registry)->sampledImage(*impl_->cloudLighting.view);
+        if (!sampled) { return makeError(sampled.error()); }
+        impl_->cloudLightingSampled = std::move(*sampled);
+        impl_->parameters.settings[3] = std::bit_cast<float>(impl_->cloudLightingSampled.shaderIndex());
     }
     void* mapped = impl_->parameterBuffer->map();
     if (mapped == nullptr) { return makeError(Error::Failure); }
@@ -416,6 +423,9 @@ Result<> AtmosphereResourcesGPU::record(CommandBuffer& commands, const environme
         if (auto result = imageDispatch(1, *impl_->multiScattering, kMultiScatteringSize, kMultiScatteringSize); !result) { return result; }
     }
     params.multiScattering = writer.sampledImage(impl_->multiScattering->view.get());
+    if (impl_->cloudLighting.texture) {
+        if (auto result = imageDispatch(6, impl_->cloudLighting, 3, 1); !result) { return result; }
+    }
     if (auto result = imageDispatch(5, impl_->cloudShadow, kCloudShadowSize, kCloudShadowSize); !result) { return result; }
     if (auto result = imageDispatch(2, impl_->skyView, kSkyViewWidth, kSkyViewHeight); !result) { return result; }
     params.skyView = writer.sampledImage(impl_->skyView.view.get());
@@ -448,6 +458,7 @@ void AtmosphereResourcesGPU::appendDebugBindings(std::vector<DebugResourceBindin
     add("multiScattering", impl_->multiScattering->texture.get());
     add("skyView", impl_->skyView.texture.get());
     add("cloudShadow", impl_->cloudShadow.texture.get());
+    if (impl_->cloudLighting.texture) { add("cloudLighting", impl_->cloudLighting.texture.get()); }
     bindings.push_back({.id = prefix + "aerialPerspective", .buffer = impl_->aerial.get(), .state = ResourceState::ShaderRead, .layout = "float4"});
     bindings.push_back({.id = prefix + "parameters", .buffer = impl_->parameterBuffer.get(), .state = ResourceState::ShaderRead, .layout = "raw"});
 }

@@ -53,7 +53,8 @@ inline std::optional<uint32_t> userPushDataSize(const ShaderRequest& request)
         matches("Features/Environment/SkyView", {"skyViewMain", "shadowedSkyViewMain"}) ||
         matches("Features/Environment/EnvironmentCapture", {"environmentCaptureMain"}) ||
         matches("Features/Environment/AerialPerspective", {"aerialPerspectiveMain", "shadowedAerialPerspectiveMain"}) ||
-        matches("Features/Environment/CloudShadow", {"cloudShadowMain"})) { return static_cast<uint32_t>(sizeof(AtmospherePrecomputeParams)); }
+        matches("Features/Environment/CloudShadow", {"cloudShadowMain"}) ||
+        matches("Features/Environment/CloudLightingLut", {"cloudLightingLutMain"})) { return static_cast<uint32_t>(sizeof(AtmospherePrecomputeParams)); }
     if (matches("Features/Lighting/BuildReGIR", {"buildReGIRMain"})) { return static_cast<uint32_t>(sizeof(BuildReGIRParams)); }
     if (matches("Features/Lighting/ClusterLightGrid", {"clusterLightGridMain"})) { return static_cast<uint32_t>(sizeof(ClusterLightGridBuildParams)); }
     if (matches("Features/Lighting/PrepareLightsPdf", {"prepareLightsPdfMain"})) { return static_cast<uint32_t>(sizeof(PrepareLightsPdfParams)); }

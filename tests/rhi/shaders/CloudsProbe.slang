@@ -2,6 +2,8 @@ module CloudsProbe;
 
 import Atmosphere;
 import Clouds;
+import CloudLightEnvironment;
+import VolumetricCloudLighting;
 import VolumetricCloudViewTrace;
 import Lighting;
 using Metallic;
@@ -25,7 +27,7 @@ void store(uint index, float3 value)
 void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
 {
     if (any(id != 0u)) { return; }
-    for (uint index = 0u; index < 51u; ++index) { store(index, float3(0.0)); }
+    for (uint index = 0u; index < 60u; ++index) { store(index, float3(0.0)); }
     GPUAtmosphereParameters p = loadParameters(gProbe.resources.parameters);
     let trans = resolveUniform(gProbe.resources.transmittance);
     let multi = resolveUniform(gProbe.resources.multiScattering);
@@ -78,13 +80,12 @@ void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
         transMean += t / 64.0; minT = min(minT, t);
     }
     store(20, float3(densityMean, transMean, minT));
-    float directPhase = 0.0, higherPhase = 0.0;
+    float3 integratedPhase = 0.0f;
     for (uint sample = 0; sample < 512u; ++sample) {
         float cosine = (float(sample) + 0.5) / 256.0 - 1.0;
-        directPhase += Metallic.Clouds::scatteringPhase(cosine, p.cloudOptics.z, p.cloudOptics.y, 1.0) * 4.0 * kPi / 512.0;
-        higherPhase += Metallic.Clouds::scatteringPhase(cosine, p.cloudOptics.z, p.cloudOptics.y, 0.0) * 4.0 * kPi / 512.0;
+        integratedPhase += Metallic.Clouds::cloudPhaseOrders(cosine, p.cloudOptics.z) * (4.0f * kPi / 512.0f);
     }
-    store(21, float3(directPhase, higherPhase, p.cloudOptics.y));
+    store(21, integratedPhase);
     GPUAtmosphereParameters zero = p; zero.cloudLayer.w = 0.0;
     AtmosphereSegment zeroSegment = segmentIntegration(zero, trans, multi, ground, up, 8.0);
     AtmosphereSegment clearSegment = segmentIntegration(clear, trans, multi, ground, up, 8.0);
@@ -170,6 +171,21 @@ void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
     store(47, slab.luminance);
     store(48, float3(slab.transmittance, slab.representativeDepthMeters(), slab.depthWeightsSum));
 
+    store(51, Metallic.Clouds::cloudPhaseOrders(1.0f, p.cloudOptics.z));
+    store(52, Metallic.Clouds::cloudPhaseOrders(0.0f, p.cloudOptics.z));
+    store(53, Metallic.Clouds::cloudPhaseOrders(-1.0f, p.cloudOptics.z));
+    // Illuminate each scattering order in a different channel through one homogeneous slab.
+    float3 scattering = Metallic.Clouds::cloudScatteringOrders(p.cloudOptics.y, extinctionPerMeter);
+    float3 extinction = Metallic.Clouds::cloudExtinctionOrders(extinctionPerMeter);
+    Metallic.Clouds::CloudViewIntegral orders = Metallic.Clouds::CloudViewIntegral::empty();
+    for (int order = 2; order >= 0; --order) {
+        float3 source = 0.0f;
+        source[order] = scattering[order];
+        orders.integrateOrder(350.0f, 500.0f, extinction[order], source, order);
+    }
+    store(54, orders.luminance);
+    store(55, float3(orders.transmittance, orders.representativeDepthMeters(), orders.depthWeightsSum));
+
     if (Metallic.Clouds::enabled(p)) {
         // The UE instance reference coordinates use absolute world km and its original placement.
         GPUAtmosphereParameters shape = p;
@@ -180,6 +196,12 @@ void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
         float3 b = worldToAtmosphereKm(shape, float3(4000, 3750, 18000));
         float3 c = worldToAtmosphereKm(shape, float3(6000, 2500, 3000));
         store(49, float3(Metallic.Clouds::density(shape, a), Metallic.Clouds::density(shape, b), Metallic.Clouds::density(shape, c)));
+        store(56, cloudDistantSkyLuminance(p));
+        store(57, cloudAtmosphereLightIlluminanceOnGround(p, 0u));
+        store(58, cloudAtmosphereLightIlluminanceOnGround(p, 1u));
+        GPUAtmosphereParameters thin = shape;
+        thin.cloudOptics.x = 0.8f;
+        store(59, Metallic.Clouds::cloudShadowTransmittanceOrders(thin, a, -up, 10u));
         // Hold the world-space material sample still while moving the camera to 250 m and 0 m.
         shape.observerPlanetBottom.xyz = a - float3(0.25, 0, 0);
         shape.observerWorldTop.xyz = float3(-13250, 3000, 16000);

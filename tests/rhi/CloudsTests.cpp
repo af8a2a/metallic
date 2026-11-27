@@ -15,7 +15,7 @@
 namespace metallic::tests {
 namespace {
 
-using CloudReadback = std::array<std::array<float, 4>, 51>;
+using CloudReadback = std::array<std::array<float, 4>, 60>;
 struct alignas(16) CloudsProbeParams {
     render::AtmospherePrecomputeParams resources;
     render::GPUBufferSpan inputAerial;
@@ -161,6 +161,16 @@ public:
             !cloudClose(clearValues[48], {expectedT, float(depthNumerator / depthDenominator), float(depthDenominator), 1})) {
             return RHITestResult::fail("Cloud view integral disagrees with homogeneous Beer transport or depth weighting");
         }
+        // UE's dual HG at forward, side and back scattering, followed by the
+        // single-slab solution S/E * (1 - exp(-500 E)) for each order.
+        if (!cloudClose(clearValues[51], {1.59879106f, 0.35303592f, 0.12879999f, 1}) ||
+            !cloudClose(clearValues[52], {0.04849193f, 0.07398207f, 0.07857030f, 1}) ||
+            !cloudClose(clearValues[53], {0.03010217f, 0.07067192f, 0.07797447f, 1}) ||
+            !cloudClose(clearValues[21], {1, 1, 1, 1}, 0.0f, 0.003f) ||
+            !cloudClose(clearValues[54], {0.61947815f, 0.57806758f, 0.28811405f, 1}) ||
+            !cloudClose(clearValues[55], {expectedT, 350.0f, 1, 1})) {
+            return RHITestResult::fail("Default cloud phase, scattering octaves or zero-order view attenuation disagrees with UE");
+        }
         const auto disabledLater = buildGPUAtmosphereParameters(world.snapshot(1, 1, 1, 1, 1, 10000.0), {0.0, 2.0, 0.0});
         if (clear->parameters().cloudAdvection != disabledLater.cloudAdvection ||
             clear->parameters().weatherComposition != disabledLater.weatherComposition) {
@@ -172,6 +182,11 @@ public:
         world.weather.noiseSeed = 27;
         world.weather.windSpeed = 30.0f;
         if (!probe("cloud-dense", 0.0, denseValues, dense, clear.get())) { return RHITestResult::fail(log); }
+        const float shadowT = denseValues[59][0];
+        if (!(shadowT > 0.0f && shadowT < 0.9999f) ||
+            !cloudClose(denseValues[59], {shadowT, std::pow(shadowT, 0.25f), std::pow(shadowT, 0.015625f), 1})) {
+            return RHITestResult::fail("Cloud self-shadow extinction disagrees across the three scattering orders");
+        }
         if (dense->transmittanceView() != clear->transmittanceView() || dense->multiScatteringView() != clear->multiScatteringView() ||
             !cloudClose(denseValues[27], clearValues[27], 0.0f, 0.0f) || !cloudClose(denseValues[28], clearValues[28], 0.0f, 0.0f)) {
             return RHITestResult::fail("Dynamic clouds rebuilt or altered the static medium LUTs");
@@ -205,10 +220,9 @@ public:
         }
         if (std::abs(denseValues[17][0] - denseValues[17][1]) > 1e-6f ||
             std::abs(denseValues[18][0] - denseValues[18][1]) > 1e-6f || denseValues[18][0] != 1.0f ||
-            denseValues[21][0] < 0.99f || denseValues[21][0] > 1.001f || denseValues[21][1] < 0.8f || denseValues[21][1] > 1.0f ||
             !cloudClose(denseValues[22], denseValues[24]) || !cloudClose(denseValues[23], denseValues[25]) ||
             denseValues[31][0] != 1.0f || denseValues[31][1] != 1.0f) {
-            return RHITestResult::fail("Cloud fallback, bounded phase energy, or zero-density identity failed");
+            return RHITestResult::fail("Cloud shadow fallback or zero-density identity failed");
         }
         if (!(denseValues[36][0] < 0.9f * denseValues[37][0]) ||
             std::abs(denseValues[38][0] - denseValues[38][1]) > 1e-6f) {
@@ -238,11 +252,26 @@ public:
         world.weather.noiseSeed = 28;
         if (!probe("cloud-seed", 120.0, seedValues, seed, dense.get())) { return RHITestResult::fail(log); }
         if (std::abs(seedValues[20][0] - windValues[20][0]) < 1e-5f) { return RHITestResult::fail("Cloud noise seed did not affect density field"); }
+        // Distant sky samples the gas only. Wind and seed moved the clouds above,
+        // while the gas and celestial sources feeding the ambient calculation stayed fixed.
+        if (seedValues[56] != denseValues[56]) { return RHITestResult::fail("Cloud density fed back into distant sky lighting"); }
         world.sun.enabled = false;
         world.moon.enabled = true;
         world.moon.direction = {0.0f, -1.0f, 0.0f};
         world.weather.precipitation = 1.0f;
         if (!probe("cloud-night", 120.0, nightValues, night, dense.get())) { return RHITestResult::fail(log); }
+        // Independent vertical integration through the default atmosphere: sample
+        // heights 0.5 + i * (100 - 0.5) / 15 km, Beer attenuation times solar TOA.
+        if (!cloudClose(denseValues[57], {1.34274438f, 1.51916888f, 1.29876151f, 1})) {
+            return RHITestResult::fail("Cloud sunlight disagrees with the UE ground-level transmittance integral");
+        }
+        for (uint32_t channel = 0; channel < 3; ++channel) {
+            if (!(denseValues[56][channel] > nightValues[56][channel] && nightValues[56][channel] > 0.0f) ||
+                nightValues[57][channel] != 0.0f || nightValues[58][channel] <= 0.0f ||
+                nightValues[58][channel] > night->parameters().moonIrradianceEnabled[channel]) {
+                return RHITestResult::fail("Cloud distant sky or ground illuminance omitted the Moon or leaked disabled sunlight");
+            }
+        }
         if (nightValues[30][0] != 0.0f || nightValues[30][1] != 48.0f || nightValues[30][2] != 2.0f ||
             nightValues[2][2] != 0.0f || nightValues[3][0] != 1.0f ||
             nightValues[26][2] != 1.125f || !(nightValues[20][1] < seedValues[20][1]) ||
@@ -267,7 +296,7 @@ public:
         // For this thin forward-lit layer, the exact source-facing cloud
         // radiance exceeds FP16. Check the 32F sky and capture preserve it.
         // The solar elevation is 30 degrees: the nearest sky nodes differ by
-        // <2.8 degrees, versus the HG lobe width (1-g)/sqrt(g) ~=16.5 degrees.
+        // <2.8 degrees, versus the narrower HG lobe width (1-g)/sqrt(g) ~=12.8 degrees.
         // A 10% bound includes that angular interpolation and finite LUT noise.
         if (terrainValues[46][0] <= 65504.0f || terrainValues[14][0] <= 65504.0f || terrainValues[16][0] <= 65504.0f ||
             !cloudClose(terrainValues[14], terrainValues[46], 0.1f, 1.0f) ||

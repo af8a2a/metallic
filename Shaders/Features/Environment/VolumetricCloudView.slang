@@ -5,6 +5,8 @@ import ParameterRoot;
 import Atmosphere;
 import AtmosphereVirtualShadowMap;
 import Clouds;
+import CloudLightEnvironment;
+import VolumetricCloudLighting;
 import VolumetricCloudViewTrace;
 import LumenProbeMath;
 import LumenScreenTrace;
@@ -16,20 +18,18 @@ using Metallic.Lumen;
 #include "../../../Source/Runtime/Render/Environment/VolumetricCloudViewParameters.h"
 
 // Reference: UE 5.7.4 NvRTX VolumetricCloud.usf, DistanceFromCloudLayerEntryPoint.
-// Reuse the existing spherical weather field and its spectral Sun/Moon lighting.
 static const float kStopTracingTransmittance = 0.005f;
 
-float3 cloudLight(GPUAtmosphereParameters a, Texture2D<float4> transmittanceLut, float3 positionKm,
-    float3 viewDir, float3 lightDir, float4 irradiance, DirectionalAtmosphereShadow shadow, float tKm)
+float3 cloudDirectTransmittance(GPUAtmosphereParameters a, float3 positionKm, float3 lightDir,
+    float3 illuminance, DirectionalAtmosphereShadow shadow, float tKm)
 {
-    if (irradiance.w <= 0.0f || all(irradiance.xyz <= 0.0f)) { return 0.0f; }
-    float lightT = Clouds::transmittance(a, positionKm, lightDir, 1e9f, 8u);
-    float phase = scatteringPhase(dot(viewDir, lightDir), a.cloudOptics.z, a.cloudOptics.y, lightT);
-    return transmittanceToSource(a, transmittanceLut, positionKm, lightDir) *
-        irradiance.xyz * irradiance.w * phase * shadow.visibility(tKm);
+    if (all(illuminance <= 0.0f)) { return 0.0f; }
+    float opaqueShadow = shadow.visibility(tKm);
+    if (opaqueShadow == 0.0f) { return 0.0f; }
+    return opaqueShadow * cloudShadowTransmittanceOrders(a, positionKm, lightDir, kCloudShadowSampleCount);
 }
 
-CloudViewIntegral traceViewCloud(VolumetricCloudViewParams p, GPUAtmosphereParameters a, float3 originKm,
+CloudViewIntegral traceViewCloud(GPUAtmosphereParameters a, float3 originKm,
     float3 direction, float maximumDistanceKm, float stepNoise, DirectionalAtmosphereShadow shadow)
 {
     CloudViewIntegral result = CloudViewIntegral::empty();
@@ -44,7 +44,11 @@ CloudViewIntegral traceViewCloud(VolumetricCloudViewParams p, GPUAtmosphereParam
     uint stepCount = uint(max(2.0f, 96.0f * saturate((tMax - tMin) * (1.0f / 15000.0f))));
     float stepMeters = (tMax - tMin) / float(stepCount);
     float t = tMin + stepNoise * stepMeters;
-    let lightTransmittance = resolveUniform(p.transmittanceLut);
+    float3 sunIlluminance = cloudAtmosphereLightIlluminanceOnGround(a, 0u);
+    float3 moonIlluminance = cloudAtmosphereLightIlluminanceOnGround(a, 1u);
+    float3 sunPhase = cloudPhaseOrders(dot(a.sunDirectionRadius.xyz, direction), a.cloudOptics.z);
+    float3 moonPhase = cloudPhaseOrders(dot(a.moonDirectionRadius.xyz, direction), a.cloudOptics.z);
+    float3 distantSky = cloudDistantSkyLuminance(a) * kCloudMaterialAmbientOcclusion;
     var sunShadow = shadow;
     var moonShadow = shadow;
     sunShadow.selectLight(0u, direction, 0.0f);
@@ -55,11 +59,17 @@ CloudViewIntegral traceViewCloud(VolumetricCloudViewParams p, GPUAtmosphereParam
         float3 positionKm = originKm + direction * tKm;
         float extinction = density(a, positionKm) * a.cloudOptics.x * 0.001f;
         if (extinction > 0.0f) {
-            float3 incident = cloudLight(a, lightTransmittance, positionKm, direction,
-                a.sunDirectionRadius.xyz, a.sunIrradianceEnabled, sunShadow, tKm) +
-                cloudLight(a, lightTransmittance, positionKm, direction,
-                    a.moonDirectionRadius.xyz, a.moonIrradianceEnabled, moonShadow, tKm);
-            result.integrateSample(t, stepMeters, extinction, (extinction * a.cloudOptics.y) * incident);
+            float3 sunT = cloudDirectTransmittance(a, positionKm, a.sunDirectionRadius.xyz, sunIlluminance, sunShadow, tKm);
+            float3 moonT = cloudDirectTransmittance(a, positionKm, a.moonDirectionRadius.xyz, moonIlluminance, moonShadow, tKm);
+            float3 scatteringOrders = cloudScatteringOrders(a.cloudOptics.y, extinction);
+            float3 extinctionOrders = cloudExtinctionOrders(extinction);
+            [unroll]
+            for (int ms = 2; ms >= 0; --ms) {
+                float3 incident = sunT[ms] * sunIlluminance * sunPhase[ms];
+                incident += moonT[ms] * moonIlluminance * moonPhase[ms];
+                if (ms == 0) { incident += distantSky; }
+                result.integrateOrder(t, stepMeters, extinctionOrders[ms], incident * scatteringOrders[ms], uint(ms));
+            }
             if (result.transmittance < kStopTracingTransmittance) { break; }
         }
         t += stepMeters;
@@ -125,7 +135,7 @@ void volumetricCloudViewMain(uint3 id : SV_DispatchThreadID)
         let shadow = DirectionalAtmosphereShadow::forRay(p.worldShadowFaces.index, p.shadowMask, originMeters);
         // Freeze UE's blue-noise phase in this full-resolution view without history.
         float stepNoise = lumenProbeBlueNoiseScalar(resolveUniform(p.blueNoise), pixel, 0u);
-        CloudViewIntegral cloud = traceViewCloud(p, a, originKm, direction, distanceKm, stepNoise, shadow);
+        CloudViewIntegral cloud = traceViewCloud(a, originKm, direction, distanceKm, stepNoise, shadow);
         if (cloud.depthWeightsSum > 0.0f) {
             cloudDepthMeters = cloud.representativeDepthMeters();
             AtmosphereSegment aerial = cloudAerialPerspective(p, a, originMeters, originKm, direction, cloudDepthMeters, shadow);

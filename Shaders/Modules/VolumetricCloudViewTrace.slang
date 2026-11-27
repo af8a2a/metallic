@@ -1,5 +1,7 @@
 module VolumetricCloudViewTrace;
 
+import VolumetricCloudLighting;
+
 namespace Metallic.Clouds
 {
 // UE 5.7.4 VolumetricCloud.usf, tAP and improved scattering integration.
@@ -18,19 +20,26 @@ public struct CloudViewIntegral
         return result;
     }
 
+    [mutating] public void integrateOrder(float distanceMeters, float stepMeters,
+        float extinctionPerMeter, float3 scatteredLuminancePerMeter, uint order)
+    {
+        float3 segmentTransmittance;
+        float3 luminanceIntegral = integrateCloudScattering(extinctionPerMeter, scatteredLuminancePerMeter,
+            stepMeters, segmentTransmittance);
+        luminance += transmittance * luminanceIntegral;
+        // Accumulate higher octaves first so all three see the same incoming view transmittance.
+        if (order == 0u) {
+            depthWeightedSum += distanceMeters * transmittance;
+            depthWeightsSum += transmittance;
+            transmittance *= segmentTransmittance.x;
+        }
+    }
+
     [mutating] public void integrateSample(float distanceMeters, float stepMeters,
         float extinctionPerMeter, float3 scatteredLuminancePerMeter)
     {
         if (extinctionPerMeter > 0.0f) {
-            float weight = transmittance;
-            depthWeightedSum += distanceMeters * weight;
-            depthWeightsSum += weight;
-            float safeExtinction = max(0.000001f, extinctionPerMeter);
-            float stepTransmittance = exp(-safeExtinction * stepMeters);
-            float3 luminanceIntegral = (scatteredLuminancePerMeter -
-                scatteredLuminancePerMeter * stepTransmittance) / safeExtinction;
-            luminance += transmittance * luminanceIntegral;
-            transmittance *= stepTransmittance;
+            integrateOrder(distanceMeters, stepMeters, extinctionPerMeter, scatteredLuminancePerMeter, 0u);
         }
     }
 

@@ -165,14 +165,37 @@ Camera, light and environment capture rays all sample this material. The
 Windows platform mip-zero images and their import instructions. Each device
 uploads the 9 MiB pack on first use by active clouds.
 
-Cloud extinction is grey. The fixed approximation uses scattering albedo 0.98,
-Henyey–Greenstein anisotropy 0.75, a transmitted direct term and three broadened
-higher scattering orders. This finite-order closure is not a full volumetric
-path-traced multiple-scattering solution. The environment provider clips disjoint spherical
-layer intervals, supports below-cloud, inside-cloud and above-cloud rays, and
-adds cloud extinction/scattering to the existing atmosphere integrals. Each
-clipped cloud region uses 24 integration steps and each clear region uses 32
-gas integration steps.
+The [cloud lighting](../Shaders/Modules/VolumetricCloudLighting.slang) follows
+the same UE instance and the default `VolumetricCloud.usf` lighting permutation.
+It mixes two Henyey–Greenstein lobes (g = 0.8 and 0.166667) with weight 0.575
+on the second lobe. The grey medium has albedo 0.98. Two additional scattering
+orders use the material's scattering, extinction and phase controls of 0.666667,
+0.25 and 0.18. Each source traces its own 15 km cloud shadow ray at ten
+quadratically spaced segment midpoints. Each order integrates with its own
+extinction. Only order zero advances the view transmittance.
+
+The [cloud lighting LUT](../Shaders/Features/Environment/CloudLightingLut.slang)
+stores the distant sky luminance and the ground-level illuminance of the Sun
+and Moon in three RGBA32F texels. The sky calculation integrates the gas at
+6 km altitude over 64 stratified directions with ten samples per ray. Its
+disk-free luminance enters order zero once with the default material AO of 0.5.
+Each celestial source uses its top-of-atmosphere irradiance attenuated along
+a 15-step ray starting at 500 m, matching the UE component default with
+per-sample atmospheric light transmittance disabled.
+This path covers the default physical sky, Sun and Moon. UE's optional
+local-light and ground-contribution cloud permutations are outside its scope.
+The GPU generates the reference sphere sample sequence with the same seed
+and stratum order. The parallel reduction synchronizes the final four lanes
+explicitly. During ground-level integration, a zero extinction coefficient
+keeps a vacuum band transparent even when a below-horizon ray crosses dense
+subsurface samples.
+
+The environment provider clips disjoint spherical layer intervals, supports
+below-cloud, inside-cloud and above-cloud rays, and integrates gas and cloud
+extinction together. It uses the same lighting inputs and ten-step light rays
+as the primary view, with 24 view steps per clipped cloud interval and 32 per
+clear interval. The finite capture integration and shared sky LUT feed the
+existing Metallic IBL and path-tracing paths.
 
 The same prescribed field attenuates surface Sun/Moon lighting, visible disks
 and ground illumination. It contributes to sky view and aerial perspective,
@@ -223,9 +246,11 @@ integration, representative depth and aerial perspective at that depth.
 Entry is limited to 350 km and the trace to 50 km. The step count scales
 from 2 to 96, reaching 96 at a 15 km interval.
 
-The view pass uses the shared UE cloud shape, grey extinction, Metallic's
-spectral solar/lunar transport and eight-sample light transmittance.
-The adapters use Y-up world metres, kilometres for the
+Both directional slots can receive opaque VSM shadows in the view pass.
+The UE reference applies its opaque shadow query to the first slot.
+Metallic uses its three atmospheric wavelengths, gas LUTs and existing
+spectral-to-working-color conversion. The sky directions and ground
+illuminance are evaluated on the GPU. The adapters use Y-up world metres, kilometres for the
 spherical atmosphere, reversed Z and a zero empty-depth marker. The buffer
 formats are full precision. Blue-noise sampling uses a fixed phase because
 this path traces at full resolution without temporal reconstruction.
@@ -233,8 +258,9 @@ this path traces at full resolution without temporal reconstruction.
 The GPU regression `volumetric_cloud_view_depth_and_composite` checks the
 outputs against an opaque ceiling before and within the cloud layer, an open
 orthographic view, an in-cloud perspective view and disabled clouds.
-`cloud_transport_weather_shadow_domains` checks the ray integrator against
-a homogeneous slab with an analytic Beer–Lambert solution. It also compares
+`cloud_transport_weather_shadow_domains` checks forward, side and back
+scattering, per-order self-shadow and radiance, the Beer–Lambert solution for
+a homogeneous slab, and the lighting inputs under the Sun and Moon. It also compares
 world-space density samples against an offline evaluation of the reference
 material and verifies half and zero extinction at camera distances of 250 m
 and 0 m.
@@ -275,7 +301,7 @@ therefore rebuild dynamic resources while reusing those medium LUTs. Changing
 the effective Mie medium, Rayleigh/ozone coefficients, radii or ground albedo
 requires the corresponding medium computation again.
 
-Dynamic sky view, cloud shadows, lighting capture/mips, aerial perspective,
+Dynamic sky view, cloud lighting, cloud shadows, lighting capture/mips, aerial perspective,
 SH projection, specular prefilter and environment PDF are recorded together
 with explicit resource dependencies. C uses synchronous publication of the
 current evaluated state. It does not claim async overlap, temporally amortized

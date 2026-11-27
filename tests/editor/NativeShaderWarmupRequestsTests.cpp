@@ -96,6 +96,7 @@ TEST(NativeShaderWarmupRequests, InlineLayoutsMatchRuntimeTypesIncludingSPDPipel
         {"Features/Debug/SliderDebug", "sliderDebugOverlayMain", sizeof(SliderDebugParams)},
         {"Features/Environment/EnvironmentLightingPrecompute", "environmentLightingPrecomputeMain", sizeof(EnvironmentLightingPrecomputeParams)},
         {"Features/Environment/CloudShadow", "cloudShadowMain", sizeof(AtmospherePrecomputeParams)},
+        {"Features/Environment/CloudLightingLut", "cloudLightingLutMain", sizeof(AtmospherePrecomputeParams)},
         {"Features/Lighting/BuildReGIR", "buildReGIRMain", sizeof(BuildReGIRParams)},
         {"Features/Lighting/ClusterLightGrid", "clusterLightGridMain", sizeof(ClusterLightGridBuildParams)},
         {"Features/Lighting/PrepareLightsPdf", "prepareLightsPdfMain", sizeof(PrepareLightsPdfParams)},

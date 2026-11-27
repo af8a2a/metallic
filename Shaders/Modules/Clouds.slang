@@ -17,27 +17,51 @@ uint hash(uint value)
     value ^= value >> 15; value *= 0x846ca68bu;
     return value ^ (value >> 16);
 }
-public float density(GPUAtmosphereParameters p, float3 planetPositionKm)
+public float cloudNormalizedHeight(GPUAtmosphereParameters p, float3 planetPositionKm)
 {
-    if (!enabled(p)) { return 0.0; }
     float altitude = length(planetPositionKm) - p.observerPlanetBottom.w;
-    float h = (altitude - p.cloudLayer.x) / (p.cloudLayer.y - p.cloudLayer.x);
-    // UE material If_1 uses AEqualsB for abs(h - 0.5) <= EqualsThreshold.
-    if (abs(h - 0.5f) > 0.48f) { return 0.0f; }
+    return (altitude - p.cloudLayer.x) / (p.cloudLayer.y - p.cloudLayer.x);
+}
 
-    float3 cameraRelativeKm = planetPositionKm - p.observerPlanetBottom.xyz;
+public float4 cloudConservativeDensity(GPUAtmosphereParameters p, float3 cameraRelativeKm, float h)
+{
     float3 worldKm = cameraRelativeKm + p.observerWorldTop.xyz * 0.001f;
     float3 skyTexScale = worldKm.xzy / 256.0f + float3(0.5f, 0.5f, 0.0f);
     // Seed zero preserves the reference placement. Other seeds translate the same field.
     uint seed = hash(asuint(p.cloudAdvection.w));
     skyTexScale.xy += float2(seed & 0xffffu, seed >> 16u) * (1.0f / 65536.0f);
     float3 wind = -p.cloudAdvection.xzy / 256.0f;
-    float4 conservative = simpleCloudConservativeDensity(p.cloudShapeResources, skyTexScale, h, wind,
+    return simpleCloudConservativeDensity(p.cloudShapeResources, skyTexScale, h, wind,
         p.cloudLayer.z - 0.7f);
+}
+
+// UE material If_1 uses AEqualsB for abs(h - 0.5) <= EqualsThreshold.
+public bool cloudMaterialContainsHeight(float h)
+{
+    return abs(h - 0.5f) <= 0.48f;
+}
+
+public float cloudMaterialExtinction(GPUAtmosphereParameters p, float4 conservative, float3 cameraRelativeKm)
+{
     float extinctionPerMetre = p.cloudOptics.x * 0.001f;
-    float extinction = simpleCloudExtinction(conservative, extinctionPerMetre * p.cloudLayer.w, length(cameraRelativeKm));
+    return simpleCloudExtinction(conservative, extinctionPerMetre * p.cloudLayer.w, length(cameraRelativeKm));
+}
+
+// Called within an active cloud layer, where extinction and the shape textures are valid.
+public float cloudExtinctionPerMeter(GPUAtmosphereParameters p, float3 planetPositionKm)
+{
+    float h = cloudNormalizedHeight(p, planetPositionKm);
+    if (!cloudMaterialContainsHeight(h)) { return 0.0f; }
+    float3 cameraRelativeKm = planetPositionKm - p.observerPlanetBottom.xyz;
+    float4 conservative = cloudConservativeDensity(p, cameraRelativeKm, h);
+    return cloudMaterialExtinction(p, conservative, cameraRelativeKm);
+}
+
+public float density(GPUAtmosphereParameters p, float3 planetPositionKm)
+{
+    if (!enabled(p)) { return 0.0; }
     // The transport callers multiply dimensionless density by the authored extinction per km.
-    return (extinction * 1000.0f) / p.cloudOptics.x;
+    return (cloudExtinctionPerMeter(p, planetPositionKm) * 1000.0f) / p.cloudOptics.x;
 }
 float2 roots(float3 position, float3 direction, float radius)
 {
@@ -90,24 +114,5 @@ public float transmittance(GPUAtmosphereParameters p, float3 position, float3 di
     float maximumDistance = 1e9, uint samples = 16u)
 {
     return exp(-opticalDepth(p, position, direction, maximumDistance, samples));
-}
-public float phase(float cosine, float g)
-{
-    float square = g * g;
-    return (1.0 - square) / (12.566370614359172 * pow(max(1.0 + square - 2.0 * g * cosine, 1e-4), 1.5));
-}
-public float scatteringPhase(float cosine, float g, float albedo, float sourceTransmittance)
-{
-    // Three higher orders broaden the HG lobe. Their integrated angular
-    // weights form a geometric series in albedo/2, plus the transmitted
-    // direct term. Thus the sum never exceeds one for 0<=albedo<=1: cloud
-    // multiple scattering cannot manufacture incident celestial energy.
-    float result = sourceTransmittance * phase(cosine, g);
-    float orderWeight = 1.0 - sourceTransmittance, orderG = g;
-    for (uint order = 1u; order <= 3u; ++order) {
-        orderWeight *= saturate(albedo) * 0.5; orderG *= g;
-        result += orderWeight * phase(cosine, orderG);
-    }
-    return result;
 }
 } // namespace Metallic.Clouds

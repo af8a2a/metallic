@@ -5,6 +5,8 @@ __exported import AtmosphereTypes;
 import ShaderCore;
 import WorkingColor;
 import Clouds;
+import CloudLightEnvironment;
+import VolumetricCloudLighting;
 
 namespace Metallic.Atmosphere
 {
@@ -208,7 +210,7 @@ public struct UnshadowedAtmosphere : IAtmosphereLightShadow
 public SpectralSegment integrateSpectral<TShadow : IAtmosphereLightShadow>(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
     Texture2D<float4> multiScattering, float3 position, float3 direction, float distance,
     float3 sourceDirection, float3 sourceIrradiance, bool isotropic, bool useMultiple, bool groundBounce, TShadow shadow,
-    bool includeViewCloudMedium = true)
+    bool includeViewCloudMedium = true, uint sourceSlot = 0u)
 {
     SpectralSegment result;
     result.radiance = float3(0.0); result.transmittance = float3(1.0); result.scatteringResponse = float3(0.0);
@@ -219,6 +221,13 @@ public SpectralSegment integrateSpectral<TShadow : IAtmosphereLightShadow>(GPUAt
     // The static isotropic LUT deliberately excludes dynamic cloud fields.
     bool cloud = !isotropic && useMultiple && Metallic.Clouds::enabled(p);
     float4 cloudRanges = cloud && includeViewCloudMedium ? Metallic.Clouds::intervals(p, position, direction, end) : float4(-1.0);
+    float3 cloudPhase = 0.0, cloudIlluminance = 0.0, cloudAmbient = 0.0;
+    if (cloudRanges.x >= 0.0) {
+        cloudPhase = Metallic.Clouds::cloudPhaseOrders(dot(direction, sourceDirection), p.cloudOptics.z);
+        cloudIlluminance = cloudAtmosphereLightIlluminanceOnGround(p, sourceSlot);
+        // Solar and lunar radiance are integrated separately. The distant sky illuminates order zero once per ray.
+        if (sourceSlot == 0u) { cloudAmbient = cloudDistantSkyLuminance(p) * Metallic.Clouds::kCloudMaterialAmbientOcclusion; }
+    }
     float boundaries[6] = {begin, end, end, end, end, end};
     uint regions = 1u;
     if (cloudRanges.x >= begin && cloudRanges.y > cloudRanges.x) {
@@ -241,25 +250,46 @@ public SpectralSegment integrateSpectral<TShadow : IAtmosphereLightShadow>(GPUAt
             float rayDistanceKm = 0.5 * (t0 + t1);
             float3 point = position + direction * rayDistanceKm;
             Medium medium = sampleMedium(p, point);
-            float cloudExtinction = cloud && includeViewCloudMedium ? Metallic.Clouds::density(p, point) * p.cloudOptics.x : 0.0;
-            float cloudScattering = cloudExtinction * p.cloudOptics.y;
-            medium.extinction += cloudExtinction;
-            float3 integral = scatteringIntegral(medium.extinction, t1 - t0);
+            float cloudExtinctionPerMeter = 0.0;
+            if (cloudRegion) { cloudExtinctionPerMeter = Metallic.Clouds::cloudExtinctionPerMeter(p, point); }
+            float cloudExtinctionPerKm = cloudExtinctionPerMeter * 1000.0;
+            float cloudScattering = cloudExtinctionPerKm * p.cloudOptics.y;
+            float3 totalExtinction = medium.extinction + cloudExtinctionPerKm;
+            float3 integral = scatteringIntegral(totalExtinction, t1 - t0);
             float3 scattered = medium.rayleigh + medium.mie;
             float cloudLightT = cloud && any(sourceIrradiance > 0.0) ?
                 Metallic.Clouds::transmittance(p, point, sourceDirection, 1e9, 8u) : 1.0;
             float3 source = transmittanceToSource(p, transmittance, point, sourceDirection) *
                 cloudLightT * (medium.rayleigh * rayPhase + medium.mie * aerosolPhase);
-            if (cloudScattering > 0.0) {
-                source += transmittanceToSource(p, transmittance, point, sourceDirection) * cloudScattering *
-                    Metallic.Clouds::scatteringPhase(dot(direction, sourceDirection), p.cloudOptics.z, p.cloudOptics.y, cloudLightT);
-            }
             // SkyAtmosphere.usf applies opaque geometry visibility to the light's single scattering.
-            source *= shadow.visibility(rayDistanceKm);
+            float visibility = shadow.visibility(rayDistanceKm);
+            source *= visibility;
             if (useMultiple) { source += sampleMulti(p, multiScattering, point, sourceDirection) * scattered * cloudLightT; }
-            result.radiance += result.transmittance * integral * source * sourceIrradiance;
             result.scatteringResponse += result.transmittance * integral * (scattered + cloudScattering);
-            result.transmittance *= exp(-min(medium.extinction * (t1 - t0), float3(80.0)));
+            if (cloudExtinctionPerMeter > 0.0) {
+                float3 cloudDirect = cloudIlluminance * visibility;
+                float3 shadowT = cloudScattering > 0.0 && any(cloudDirect > 0.0) ?
+                    Metallic.Clouds::cloudShadowTransmittanceOrders(p, point, sourceDirection, Metallic.Clouds::kCloudShadowSampleCount) : 0.0;
+                float3 extinctionOrders = Metallic.Clouds::cloudExtinctionOrders(cloudExtinctionPerMeter);
+                float3 scatteringOrders = Metallic.Clouds::cloudScatteringOrders(p.cloudOptics.y, cloudExtinctionPerMeter);
+                // Both media occupy this segment. Integrate each cloud order through gas plus its own
+                // extinction. Order zero also carries the gas source and advances view transmittance.
+                [unroll]
+                for (int ms = 2; ms >= 0; --ms) {
+                    float3 incident = shadowT[ms] * cloudDirect * cloudPhase[ms];
+                    if (ms == 0) { incident += cloudAmbient; }
+                    float3 inScattering = incident * scatteringOrders[ms];
+                    if (ms == 0) { inScattering += source * sourceIrradiance * 0.001; }
+                    float3 stepT;
+                    float3 luminance = Metallic.Clouds::integrateCloudScattering(medium.extinction * 0.001 + extinctionOrders[ms],
+                        inScattering, (t1 - t0) * 1000.0, stepT);
+                    result.radiance += result.transmittance * luminance;
+                    if (ms == 0) { result.transmittance *= stepT; }
+                }
+            } else {
+                result.radiance += result.transmittance * integral * source * sourceIrradiance;
+                result.transmittance *= exp(-min(medium.extinction * (t1 - t0), float3(80.0)));
+            }
         }
     }
     if (ground && groundBounce) {
@@ -288,7 +318,7 @@ public SpectralSegment integrateEnvironment<TShadow : IAtmosphereLightShadow>(GP
         if (slot == 1u && (irr.w <= 0.0 || all(irr.xyz <= 0.0))) { break; }
         shadow.selectLight(slot, direction, startDepthKm);
         SpectralSegment seg = integrateSpectral(p, transmittance, multiScattering, position, direction, distance,
-            dir.xyz, irr.xyz * irr.w, false, true, groundBounce, shadow, includeViewCloudMedium);
+            dir.xyz, irr.xyz * irr.w, false, true, groundBounce, shadow, includeViewCloudMedium, slot);
         if (slot == 0u) { result = seg; }
         else { result.radiance += seg.radiance; }
     }
