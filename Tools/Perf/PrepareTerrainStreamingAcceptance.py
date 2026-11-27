@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare fixed-camera and continuous-flight VSM acceptance cases for the 4x4 terrain sample."""
+"""Prepare fixed-camera and continuous-flight VSM acceptance cases for tiled terrain."""
 
 import argparse
 import json
@@ -9,10 +9,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SCENE = ROOT / "Asset/MeshletCache/TerrainBlocks4x4/terrain_blocks_4x4.gltf"
+SCENE_8X8 = ROOT / "Asset/MeshletCache/TerrainBlocks8x8/terrain_blocks_8x8.gltf"
 GRAPH = ROOT / "Pipelines/Samples/gpu_driven_terrain_vsm.metallic_graph.json"
 MOVING_STEPS = 84
 SETTLING_FRAMES = 20
 TOTAL_FRAMES = MOVING_STEPS + 1 + SETTLING_FRAMES
+
+# Aim at the authored seam surface from both sides while preserving the streaming state.
+DIRECTED_TARGETS = (
+    (((0, 2), (0, 3)), (-103.0, 20.58487038176328, 63.785953521728516),
+     ((-17, 42, 15), (11, 32, 17), (18, 41, -14))),
+    (((1, 2), (1, 3)), (-36.0, 25.895427040027965, 63.785953521728516),
+     ((-19, 46, -17), (13, 36, -12), (-9, 39, 18))),
+    (((1, 3), (2, 3)), (-0.42809364199638367, 11.01667852658886, 93.0),
+     ((-18, 47, -16), (-12, 36, 13), (16, 38, 14))),
+    (((0, 0), (1, 0)), (-64.64214324951172, 6.660304326949838, -102.0),
+     ((-21, 44, 11), (-13, 31, -14), (20, 39, -14))),
+)
 
 
 def read_json(path):
@@ -63,17 +76,17 @@ def flight_crossings(cameras, terrain):
 
 
 def write_case(output, name, cap, camera, events, width, height, frames, captures, *,
-               warmup=0, pressure=False, trace_streaming=False):
+               warmup=0, pressure=False, trace_streaming=False, scene=SCENE):
     directory = output / name
     graph = read_json(GRAPH)
     nodes = {node["name"]: node for node in graph["nodes"]}
-    nodes["VBuffer"]["properties"].update(path=SCENE.as_posix(), streamAssetPath=SCENE.as_posix() + ".meshstream.bin",
+    nodes["VBuffer"]["properties"].update(path=scene.as_posix(), streamAssetPath=scene.as_posix() + ".meshstream.bin",
                                            maxResidentPages=cap, visualization="lod", shadedDebugColors=False)
-    nodes["Deferred"]["properties"]["path"] = SCENE.as_posix()
+    nodes["Deferred"]["properties"]["path"] = scene.as_posix()
     graph_path = directory / "Terrain.metallic_graph.json"
     write_json(graph_path, graph)
 
-    case = dict(id=name, graph=graph_path.name, scene=SCENE.as_posix(), width=width, height=height,
+    case = dict(id=name, graph=graph_path.name, scene=scene.as_posix(), width=width, height=height,
                 frames=frames, camera=camera, warmupFrames=warmup, captureFrames=captures, events=events,
                 temporalJitter=False, requireShadow=True, metadataOnly=True, output="VBuffer.color")
     if pressure:
@@ -83,21 +96,79 @@ def write_case(output, name, cap, camera, events, width, height, frames, capture
     write_json(directory / "Cases.json", dict(version=1, mode="diagnostic", cases=[case]))
 
 
+def write_directed_case(output, cap, flight, first_crossing):
+    name = "motion-directed-tight"
+    crossing = first_crossing["frame"]
+    opening = crossing + 5
+    crossing_frames = [crossing - 1, crossing, crossing + 1]
+    # Let the south tile refine first, then bring both sides into view before crossing.
+    south_aim = [-101.0, 19.0, 104.0]
+    seam_aim = [-94.0, 13.35969996728095, DIRECTED_TARGETS[0][1][2]]
+    approach_frames = 3
+    approach_start = crossing_frames[0] - approach_frames
+    cameras = []
+    for frame, camera in enumerate(flight[:opening]):
+        t = min(1.0, max(0.0, (frame - approach_start) / approach_frames))
+        blend = t * t * (3 - 2 * t)
+        center = [(1 - blend) * near + blend * seam for near, seam in zip(south_aim, seam_aim)]
+        fov = (1 - blend) * 24.0 + blend * camera["fovDegrees"]
+        cameras.append({**camera, "center": center, "fovDegrees": fov})
+    captures = {0, 6, 10, *crossing_frames, opening - 1}
+    observations = []
+    for tiles, aim, offsets in DIRECTED_TARGETS:
+        for view, offset in enumerate(offsets):
+            end_pose = dict(eye=[coordinate + delta for coordinate, delta in zip(aim, offset)], center=aim)
+            start = cameras[-1]
+            travel = 12 if view == 0 and observations else 8
+            for step in range(1, travel + 1):
+                t = step / travel
+                blend = t * t * (3 - 2 * t)
+                pose = {
+                    key: [(1 - blend) * a + blend * b for a, b in zip(start[key], end)]
+                    for key, end in end_pose.items()
+                }
+                cameras.append({**start, **pose})
+            arrival = len(cameras) - 1
+            cameras.extend([cameras[-1]] * (17 if view == 0 else 11))
+            final_frame = len(cameras) - 1
+            captures.update((arrival - 2, final_frame))
+            observations.append(dict(tiles=tiles, arrivalFrame=arrival, finalFrame=final_frame))
+
+    # The northwest seam remains in view briefly on departure from the second southwest pose.
+    departure = observations[1]["finalFrame"]
+    captures.update((departure + 1, departure + 2))
+    events = [dict(frame=frame, camera=camera) for frame, camera in enumerate(cameras)
+              if frame and camera != cameras[frame - 1]]
+    write_case(output, name, cap, cameras[0], events, 640, 360, len(cameras), sorted(captures),
+               pressure=True, trace_streaming=True)
+    crossing_target = {**first_crossing, "tiles": DIRECTED_TARGETS[0][0], "captureFrames": crossing_frames,
+                       "mixedLODFrame": crossing}
+    write_json(output / name / "Targets.json", dict(firstCrossing=crossing_target, observations=observations))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=ROOT / "build/terrain-vsm/scale")
+    parser.add_argument("--tiles-per-axis", type=int, choices=(4, 8), default=4)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    if not SCENE.is_file() or not Path(SCENE.as_posix() + ".meshstream.bin").is_file():
-        parser.error("Bake the scene with the MetallicTerrainBlocks4x4VSMSample CMake target first")
+    tiles = args.tiles_per_axis
+    scene, folder = (SCENE, "scale") if tiles == 4 else (SCENE_8X8, "scale-8x8")
+    output = args.output or ROOT / "build/terrain-vsm" / folder
+    stream = Path(str(scene) + ".meshstream.bin")
+    if not scene.is_file() or not stream.is_file():
+        parser.error(f"Bake the scene with the MetallicTerrainBlocks{tiles}x{tiles}VSMSample CMake target first")
 
     graph = read_json(GRAPH)
     overview = graph["view"]["camera"]
     views = fixed_views(overview)
     cameras = [flight_camera(overview, frame) for frame in range(TOTAL_FRAMES)]
-    terrain = read_json(SCENE)["extras"]["metallicTerrainTiles"]
+    terrain = read_json(scene)["extras"]["metallicTerrainTiles"]
+    if terrain["tilesPerAxis"] != tiles:
+        parser.error(f"Expected {tiles}x{tiles} terrain tiles")
     crossings = flight_crossings(cameras[:MOVING_STEPS + 1], terrain)
-    if len({crossing["frame"] for crossing in crossings}) != 6 or len(crossings) != 6:
-        parser.error("The 4x4 flight should cross all six tile planes at distinct frames")
+    expected_crossings = 2 * (tiles - 1)
+    if len({crossing["frame"] for crossing in crossings}) != expected_crossings or len(crossings) != expected_crossings:
+        parser.error(f"The {tiles}x{tiles} flight should cross all {expected_crossings} tile planes at distinct frames")
     if min(camera["eye"][1] for camera in cameras) <= terrain["worldHeightMax"]:
         parser.error("The flight should remain above the terrain's maximum height")
 
@@ -106,20 +177,23 @@ def main():
     flight_events = [dict(frame=frame, camera=cameras[frame]) for frame in range(1, MOVING_STEPS + 1)]
     fixed_frames = sorted(view[key] for view in views for key in ("frame", "earlyFrame"))
     fixed_events = [dict(frame=view["earlyFrame"], camera=view["camera"], cameraCut=True) for view in views[1:]]
-    tight_cap = 32
-    ample_cap = next(node for node in graph["nodes"] if node["name"] == "VBuffer")["properties"]["maxResidentPages"]
+    default_cap = next(node for node in graph["nodes"] if node["name"] == "VBuffer")["properties"]["maxResidentPages"]
+    # Both tight fixtures have room for 15 detail pages above their terminal cut.
+    tight_cap, ample_cap = (32, default_cap) if tiles == 4 else (80, 512)
     for suffix, cap in (("tight", tight_cap), ("ample", ample_cap)):
-        write_case(args.output, f"fixed-{suffix}", cap, overview, fixed_events, 960, 540, 60, fixed_frames,
-                   warmup=16, pressure=suffix == "tight")
-        write_case(args.output, f"motion-{suffix}", cap, cameras[0], flight_events, 640, 360, TOTAL_FRAMES,
-                   sorted(flight_frames), pressure=suffix == "tight", trace_streaming=True)
+        write_case(output, f"fixed-{suffix}", cap, overview, fixed_events, 960, 540, 60, fixed_frames,
+                   warmup=16, pressure=suffix == "tight", scene=scene)
+        write_case(output, f"motion-{suffix}", cap, cameras[0], flight_events, 640, 360, TOTAL_FRAMES,
+                   sorted(flight_frames), pressure=suffix == "tight", trace_streaming=True, scene=scene)
     for view in views:
-        write_case(args.output, f"cold-{view['name']}", tight_cap, view["camera"], [], 960, 540, 1, [0])
-    write_json(args.output / "Route.json", dict(scene=SCENE.as_posix(), stream=SCENE.as_posix() + ".meshstream.bin",
+        write_case(output, f"cold-{view['name']}", tight_cap, view["camera"], [], 960, 540, 1, [0], scene=scene)
+    if tiles == 4:
+        write_directed_case(output, tight_cap, cameras, crossings[0])
+    write_json(output / "Route.json", dict(scene=scene.as_posix(), stream=stream.as_posix(),
                                                 fixedViews=views, cameras=cameras, crossings=crossings,
                                                 captureFrames=sorted(flight_frames), movingFrames=MOVING_STEPS + 1,
                                                 totalFrames=TOTAL_FRAMES, tightBudget=tight_cap, ampleBudget=ample_cap))
-    print(f"Wrote terrain acceptance cases to {args.output.resolve()}")
+    print(f"Wrote terrain acceptance cases to {output.resolve()}")
 
 
 if __name__ == "__main__":

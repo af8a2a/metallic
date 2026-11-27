@@ -161,6 +161,13 @@ if(Python3_Interpreter_FOUND)
     add_metallic_terrain_vsm_sample(MetallicTerrainBlocks4x4VSMSample MetallicTerrainBlocks4x4VSMSmoke
         gpu-driven-terrain-blocks-4x4-vsm "${METALLIC_TERRAIN_BLOCKS_4X4_HEIGHT}"
         "${METALLIC_TERRAIN_BLOCKS_4X4_DIRECTORY}/terrain_blocks_4x4")
+
+    set(METALLIC_TERRAIN_BLOCKS_8X8_DIRECTORY "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainBlocks8x8")
+    set(METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT "${METALLIC_TERRAIN_BLOCKS_8X8_DIRECTORY}/terrain_blocks_8x8_height")
+    add_metallic_terrain_block_height("${METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT}" 8)
+    add_metallic_terrain_vsm_sample(MetallicTerrainBlocks8x8VSMSample MetallicTerrainBlocks8x8VSMSmoke
+        gpu-driven-terrain-blocks-8x8-vsm "${METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT}"
+        "${METALLIC_TERRAIN_BLOCKS_8X8_DIRECTORY}/terrain_blocks_8x8")
 else()
     message(STATUS "Python3 was not found; terrain sample build targets are unavailable")
 endif()

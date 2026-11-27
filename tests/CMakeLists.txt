@@ -856,6 +856,22 @@ else()
     find_package(Python3 QUIET COMPONENTS Interpreter)
 endif()
 if(Python3_Interpreter_FOUND)
+    if(TARGET MetallicTerrainBlocks4x4VSMSample)
+        set(_terrain_streaming_regression
+            "${Python3_EXECUTABLE}" -B "${CMAKE_SOURCE_DIR}/Tools/Perf/RunTerrainStreamingRegression.py"
+            --executable "$<TARGET_FILE:MetallicRHITests>"
+            --output "${CMAKE_CURRENT_BINARY_DIR}/terrain-streaming-regression")
+        add_custom_target(MetallicTerrainStreamingRegression
+            COMMAND ${_terrain_streaming_regression}
+            DEPENDS MetallicRHITests MetallicTerrainBlocks4x4VSMSample
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            USES_TERMINAL
+            VERBATIM)
+        add_test(NAME MetallicTerrainStreamingRegression COMMAND ${_terrain_streaming_regression})
+        set_tests_properties(MetallicTerrainStreamingRegression PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "rhi;terrain" RESOURCE_LOCK MetallicGPU TIMEOUT 600)
+        unset(_terrain_streaming_regression)
+    endif()
     add_test(NAME MetallicCIPresetTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestCIPreset.py"
             --build-dir "${CMAKE_BINARY_DIR}")

@@ -87,3 +87,41 @@ $env:METALLIC_VSM_ACCEPTANCE_CASES = Join-Path $terrainRun 'Cases.json'
 | 256 页 | 160 | 143 | 0 | 0 | 24 / 24 |
 
 两档预算均保持 17 个保底页全程就绪。32 页飞行中，首次跨界后有三个细节页记录了从请求到可绘制、再到可见像素的完整链路。256 页飞行在第 4 帧已发布全部 160 页。三个固定机位的冷启动均覆盖解码保底网格的内域。两档飞行的可见性与深度采样覆盖了全部 24 条共享边，参考轮廓共同内域没有漏像素。
+
+#### 32 页定向接缝路线
+
+将复验命令中的用例改为 `motion-directed-tight`，运行 282 帧并采集 33 帧。开场沿用原飞行的眼位，以 24° 视场角朝向南侧地形块 `(0,3)`，使它先获得细节页。镜头随后转向 `(0,2) / (0,3)` 共享边，在第 12 帧恢复 60° 视场角。第 12、13、14 帧分别观察过界前、中、后，第 13 帧检查同一条边两侧实际绘制的 LOD。后续镜头围绕这条边及 `(1,2) / (1,3)`、`(1,3) / (2,3)` 和 `(0,0) / (1,0)` 移动。用例目录的 `Targets.json` 记录首次过界、混合 LOD 验收帧和各观察段。原三个固定机位仍通过 `fixed-tight` 和 `fixed-ample` 运行。
+
+定向路线在相机移动且 32 个页槽均占用的帧中补齐了四条边的混合 LOD 证据。合并两条 32 页飞行的捕获，共 24 条共享边实际出现跨块混合 LOD。第一次过界的第 12、13、14 帧分别测得 280、269、281 对跨边相邻像素，三帧均为北侧 LOD5、南侧 LOD1。定向路线 282 帧中保底页全程 17/17 就绪，采样的参考轮廓共同内域无漏像素。
+
+#### 自动回归
+
+安装 `Tools/requirements-terrain.txt` 中的依赖后，可在启用了测试的构建目录执行专用目标。它构建验收程序和 4×4 烘焙资产，然后运行 Vulkan 验证。
+
+```powershell
+cmake --build build-ci --target MetallicTerrainStreamingRegression
+```
+
+已有验收程序和烘焙资产时，可直接用 CTest 运行同一套回归。
+
+```powershell
+ctest --test-dir build-ci -R '^MetallicTerrainStreamingRegression$' --output-on-failure
+```
+
+每次运行生成独立采集目录，验收开场 15 帧和原三个固定机位的 60 帧。门槛要求流式上限为 32 页，第 13 帧占满 32 个页槽、眼位实际跨过共享边，并在深度和可见性确定的两侧相邻像素上测到不同 LOD。固定机位检查各自的相机参数，六次采集各自至少有 10% 的画面被地表覆盖，且地表上同时有受光和阴影样本。结果写入构建目录的 `tests/terrain-streaming-regression/run-*/TerrainStreamingRegression.json`。
+
+### 8×8 地形块
+
+```powershell
+cmake --build build-relwithdebinfo --target MetallicTerrainBlocks8x8VSMSample
+cmake --build build-relwithdebinfo --target MetallicTerrainBlocks8x8VSMSmoke
+python -B Tools/Perf/PrepareTerrainStreamingAcceptance.py --tiles-per-axis 8
+```
+
+在通用编辑器选择 **GPUDrivenSample / Terrain Blocks 8x8 + VSM**。样例在原高度场和 256×256 世界范围内细分到 64 块，烘焙为 342 页，含 65 个保底页。保底页使用 612,096 字节，与一个最大细节页合计 731,392 字节。112 条共享边的 448 种 LOD 配对和 277 次 DAG 细化替换均通过解码检查。
+
+编辑器样例使用共享图的 256 页上限。8×8 验收清单写入 `build/terrain-vsm/scale-8x8/`，沿用三个固定机位和连续飞行路径，分别用 80 页和 512 页验收。80 页给保底 cut 留出完整覆盖，同时保留 15 个细节页槽。飞行在 14 个不同帧跨过 14 条网格分割线，每档预算采集 54 帧。自动回归显式选择 4×4 清单。
+
+两档飞行均通过 105 帧验收，65 个保底页全程就绪，加载失败、请求溢出和 Vulkan 验证错误均为 0。80 页下有 59 次上传和 44 次淘汰，14 个过界帧都能看到保底页绘出的地表。512 页下第 6 帧全部 342 页可绘制，全程没有淘汰。80 页的原三机位 60 帧验收也通过。
+
+80 页飞行与三个固定机位合计观察到全部 112 条共享边，其中 79 条实测混合 LOD。加入 512 页飞行后，混合 LOD 证据为 105 / 112。两档飞行的 14 个过界窗口中有 13 个出现跨边相邻像素，第 19 帧对应的共享边在整个过界窗口内处于视锥外。第 59 帧的四个轮廓候选与实际绘制页的解码重光栅结果一致，采样中无未解释的缺口。
