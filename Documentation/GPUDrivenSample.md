@@ -156,3 +156,26 @@ python -B Tools/Perf/PrepareTerrainStreamingAcceptance.py --tiles-per-axis 16
 验收清单写入 `build/terrain-vsm/scale-16x16/`。272 页紧预算给保底 cut 留出完整覆盖并保留 15 个细节页槽，2,048 页用于充足预算对照。两档都沿 133 帧的飞行路线验收，在 30 个不同帧跨过全部网格分割线，采集每次过界的前、中、后帧。固定机位沿用原 overview、southwest 和 northeast 相机。
 
 两档飞行的 30 个过界窗口均观察到跨边相邻像素。272 页下，257 个保底页全程就绪，30 个实际过界帧均绘出了保底地表，并记录到 108 次细节页上传和 93 次淘汰。2,048 页下，第 13 帧全部 1,025 页可绘制，全程无淘汰。两档飞行和 272 页的三个固定机位合计观察到 451 条共享边，其中 219 条出现混合 LOD，接缝共同内域无漏画。加载失败、请求溢出、VSM 工作溢出和 Vulkan 验证错误均为 0。本轮报告位于 `build/terrain-vsm/scale-16x16/Terrain16x16RuntimeAcceptance.json`。
+
+### Houdini 岩石和草地权重
+
+```powershell
+cmake --build build-relwithdebinfo --target MetallicTerrainLayers16x16VSMSample
+cmake --build build-relwithdebinfo --target MetallicTerrainLayers16x16VSMSmoke
+python -B Tools/Perf/TerrainLayerAcceptance.py run --executable build-ci/tests/MetallicRHITests.exe
+```
+
+在编辑器选择 **GPUDrivenSample / Terrain Rock and Grass + VSM**。样例使用原 `Asset/simple_terrain_height.exr` 高度图和 `Asset/Terrain/TerrainRockWeight.exr`。权重图的线性 R 通道为岩石比例，草地比例为 `1 - R`。导出自己的权重时沿用高度图的数据窗口和行方向，像素值保持在 `[0, 1]`。`BuildTerrainVSMSample.py --weight-map <EXR>` 将它绑定到地形材质，随高度图应用 `flipZ`，并镜像扩展边缘供 mip 采样。
+
+样例的权重图可用 Houdini 随附的 `hoiiotool` 重建。
+
+```powershell
+python -B Tools/ExportTerrainWeight.py Asset/simple_terrain_height.exr `
+  --output Asset/Terrain/TerrainRockWeight.exr --oiiotool '<Houdini>/bin/hoiiotool.exe'
+```
+
+分块 glTF 的全局 `TEXCOORD_0` 对应高度场的世界 XZ 坐标。材质资源变换将它换算为草地每 2 世界单位、岩石每 6 世界单位的重复坐标。两层底色按线性颜色混合，法线解码后在共同的切线空间混合并归一化，线性粗糙度存于各层法线贴图的 alpha。三个结果进入同一套 OpenPBR 着色。VSM 样例仍与普通网格共用 Visibility Buffer 和光照图。
+
+验收在 `(11,3)` 和 `(11,4)` 的共享边上检查同一条岩石带。近景、远景和 272 页飞行的实际混合 LOD 帧均采集底色、法线、粗糙度和最终着色，结果写入 `build/terrain-layer-acceptance/`。
+
+第 84 帧在 272 页满额时采到 87 对材质带内的 LOD 2/3 跨边像素。近景、远景和混合 LOD 的底色与粗糙度均通过世界坐标参考比较，两层法线均产生了可测的映射结果。另对烘焙页解码，480 条共享边和 768 次 LOD 细化替换的世界位置、法线、UV0 和切线均与源数据一致。

@@ -1057,7 +1057,7 @@ public:
     std::string scenePath() const override { return "Asset/MeshletCache/TerrainBlocks8x8/terrain_blocks_8x8.gltf"; }
 };
 
-class GPUDrivenTerrainBlocks16x16VSMSample final : public GPUDrivenTerrainVSMSample {
+class GPUDrivenTerrainBlocks16x16VSMSample : public GPUDrivenTerrainVSMSample {
 public:
     std::string_view id() const override { return "gpu-driven-terrain-blocks-16x16-vsm"; }
     std::string_view name() const override { return "GPUDrivenSample / Terrain Blocks 16x16 + VSM"; }
@@ -1081,6 +1081,20 @@ public:
         properties["maxResidentPages"] = 512;
         graph.setNodeProperties(visibility->id, std::move(properties));
         return true;
+    }
+};
+
+class GPUDrivenTerrainLayers16x16VSMSample final : public GPUDrivenTerrainBlocks16x16VSMSample {
+public:
+    std::string_view id() const override { return "gpu-driven-terrain-layers-16x16-vsm"; }
+    std::string_view name() const override { return "GPUDrivenSample / Terrain Rock and Grass + VSM"; }
+    std::string_view description() const override
+    {
+        return "OpenPBR rock and grass across 256 terrain blocks, blended with a global Houdini weight map.";
+    }
+    std::string scenePath() const override
+    {
+        return "Asset/MeshletCache/TerrainLayers16x16/terrain_layers_16x16.gltf";
     }
 };
 
@@ -1195,6 +1209,12 @@ const RenderSample& gpuDrivenTerrainBlocks8x8VSMSample()
 const RenderSample& gpuDrivenTerrainBlocks16x16VSMSample()
 {
     static const GPUDrivenTerrainBlocks16x16VSMSample sample;
+    return sample;
+}
+
+const RenderSample& gpuDrivenTerrainLayers16x16VSMSample()
+{
+    static const GPUDrivenTerrainLayers16x16VSMSample sample;
     return sample;
 }
 
@@ -1384,6 +1404,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &gpuDrivenTerrainBlocks4x4VSMSample(),
         &gpuDrivenTerrainBlocks8x8VSMSample(),
         &gpuDrivenTerrainBlocks16x16VSMSample(),
+        &gpuDrivenTerrainLayers16x16VSMSample(),
         &gpuDrivenRtasVisualizationSample(),
     };
     const bool hasBoxDistanceField = std::filesystem::is_regular_file(projectPath(".cache/mesh-distance-field/BoxInstances.meshdf"));

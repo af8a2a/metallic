@@ -9,7 +9,7 @@ import struct
 from pathlib import Path
 from urllib.parse import quote, unquote
 
-from BuildTerrainMesh import write_atomic
+from BuildTerrainMesh import TerrainBuildError, write_atomic
 
 
 def box_geometry():
@@ -60,8 +60,10 @@ def append_camera(document: dict, camera: dict) -> None:
     })
 
 
-def build_sample(terrain_path: Path, scene_path: Path, graph_path: Path, output_path: Path) -> None:
+def build_sample(terrain_path: Path, scene_path: Path, graph_path: Path, output_path: Path,
+                 weight_map: Path | None = None) -> None:
     document = json.loads(terrain_path.read_text(encoding="utf-8"))
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     for buffer in document["buffers"]:
         source = terrain_path.parent / unquote(buffer["uri"])
@@ -113,6 +115,15 @@ def build_sample(terrain_path: Path, scene_path: Path, graph_path: Path, output_
         document["nodes"][0]["name"] = "Houdini Heightfield"
     terrain_material = document["materials"][0]
     terrain_material["name"] = "Terrain Grass"
+    if weight_map is not None:
+        from BuildTerrainLayerTextures import build_layer_material
+
+        extras = document["extras"]
+        terrain_metadata = extras.get("metallicTerrainTiles") or extras["metallicTerrainP0"]
+        binding, metadata = build_layer_material(output_path, weight_map, terrain_metadata)
+        terrain_material["name"] = binding["sourceName"]
+        extras["metallicTerrainLayers"] = metadata
+        scene.setdefault("materials", []).append(binding)
     # Grazing light can reach only the reverse face of an open heightfield.
     terrain_material["doubleSided"] = True
     tower = append_box_mesh("Painted Survey Tower", (0.84, 0.24, 0.06), 0.1, 0.65)
@@ -129,7 +140,6 @@ def build_sample(terrain_path: Path, scene_path: Path, graph_path: Path, output_
     document["asset"]["generator"] = "Metallic Tools/BuildTerrainVSMSample.py"
     append_camera(document, json.loads(graph_path.read_text(encoding="utf-8"))["view"]["camera"])
 
-    scene = json.loads(scene_path.read_text(encoding="utf-8"))
     scene["source"] = output_path.name
     environment = scene["world"]["environment"]
     environment["path"] = relative_path(scene_path.parent / environment["path"], output_path.parent)
@@ -145,5 +155,9 @@ if __name__ == "__main__":
     parser.add_argument("scene", type=Path)
     parser.add_argument("graph", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--weight-map", type=Path, help="Linear R OpenEXR rock weights aligned to the heightfield")
     args = parser.parse_args()
-    build_sample(args.terrain, args.scene, args.graph, args.output)
+    try:
+        build_sample(args.terrain, args.scene, args.graph, args.output, args.weight_map)
+    except TerrainBuildError as error:
+        parser.error(str(error))

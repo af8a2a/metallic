@@ -648,8 +648,9 @@ public:
                 stochasticTextureFiltering.rebuildGraph = true;
                 settings.push_back(stochasticTextureFiltering);
                 settings.push_back(runtimeEnumSetting("debugView", "Surface Debug", "final",
-                    {{"Final", "final"}, {"Base Color", "baseColor"}, {"Geometry Normal", "geometryNormal"},
-                        {"Shading Normal", "shadingNormal"}, {"Tangent", "tangent"}, {"Material ID", "material"}}));
+                    {{"Final", "final"}, {"Base Color", "baseColor"}, {"Roughness", "roughness"},
+                        {"Geometry Normal", "geometryNormal"}, {"Shading Normal", "shadingNormal"},
+                        {"Normal Mapped", "mappedNormal"}, {"Tangent", "tangent"}, {"Material ID", "material"}}));
                 return settings; // Camera is supplied by rasterInfo, not a second editable camera.
             }
             settings.push_back(runtimeFloatSetting("lodPixelError", "LOD Error (display px)", 1.5f, 0.05f, 16.0f));
@@ -699,6 +700,7 @@ public:
                     {"Instance ID", "instance"},
                     {"Triangle ID", "triangle"},
                     {"Base Color", "baseColor"},
+                    {"Roughness", "roughness"},
                     {"Normal Texture", "normalTexture"},
                     {"Shadow Transmittance", "shadowTransmittance"},
                     {"Shading Side", "shadingSide"},
@@ -3386,6 +3388,9 @@ private:
         }
         if (view == "shadingSide") {
             return kScenePathTraceDebugViewShadingSide;
+        }
+        if (view == "roughness") {
+            return kScenePathTraceDebugViewRoughness;
         }
         return kScenePathTraceDebugViewFinal;
     }

@@ -108,6 +108,7 @@ public static const uint kOpenPBRDebugViewBaseColor = 12u;
 public static const uint kOpenPBRDebugViewNormalTexture = 13u;
 public static const uint kOpenPBRDebugViewShadowTransmittance = 14u;
 public static const uint kOpenPBRDebugViewShadingSide = 15u;
+public static const uint kOpenPBRDebugViewRoughness = 16u;
 public static const uint kOpenPBRDebugDisableNormalMap = 1u << 0u;
 public static const uint kOpenPBRDebugForceGeometryNormal = 1u << 1u;
 public static const uint kOpenPBRDebugDisableMaterialTextures = 1u << 2u;
@@ -776,6 +777,9 @@ public float3 openPbrPrimaryDebugColor(
     }
     if (push.debugView == kOpenPBRDebugViewNormalTexture) {
         return normalSample.rgb;
+    }
+    if (push.debugView == kOpenPBRDebugViewRoughness) {
+        return float3(summary.roughness);
     }
     if (push.debugView == kOpenPBRDebugViewShadingSide) {
         return dot(hit.normal, -rayDirection) >= 0.0

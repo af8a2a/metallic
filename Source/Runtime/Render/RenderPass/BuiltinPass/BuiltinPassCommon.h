@@ -203,6 +203,7 @@ inline constexpr uint32_t kScenePathTraceDebugViewBaseColor = 12;
 inline constexpr uint32_t kScenePathTraceDebugViewNormalTexture = 13;
 inline constexpr uint32_t kScenePathTraceDebugViewShadowTransmittance = 14;
 inline constexpr uint32_t kScenePathTraceDebugViewShadingSide = 15;
+inline constexpr uint32_t kScenePathTraceDebugViewRoughness = 16;
 inline constexpr uint32_t kScenePathTraceDebugDisableNormalMap = 1u << 0u;
 inline constexpr uint32_t kScenePathTraceDebugForceGeometryNormal = 1u << 1u;
 inline constexpr uint32_t kScenePathTraceDebugDisableMaterialTextures = 1u << 2u;
