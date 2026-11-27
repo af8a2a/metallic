@@ -527,6 +527,7 @@ public:
     uint64_t resourceIdentity() const { return resourceIdentity_; }
 
 protected:
+    SceneEntity instantiateMesh(SceneEntity prototype, std::string name, const float4x4& worldMatrix);
     mutable LightingSettings lighting_;
     std::optional<RealtimeGISettings> realtimeGI_;
     environment::WorldEnvironment worldEnvironment_;

@@ -179,3 +179,18 @@ python -B Tools/ExportTerrainWeight.py Asset/simple_terrain_height.exr `
 验收在 `(11,3)` 和 `(11,4)` 的共享边上检查同一条岩石带。近景、远景和 272 页飞行的实际混合 LOD 帧均采集底色、法线、粗糙度和最终着色，结果写入 `build/terrain-layer-acceptance/`。
 
 第 84 帧在 272 页满额时采到 87 对材质带内的 LOD 2/3 跨边像素。近景、远景和混合 LOD 的底色与粗糙度均通过世界坐标参考比较，两层法线均产生了可测的映射结果。另对烘焙页解码，480 条共享边和 768 次 LOD 细化替换的世界位置、法线、UV0 和切线均与源数据一致。
+
+### 地表拾取与摆放
+
+```powershell
+cmake --build build-relwithdebinfo --target MetallicTerrainPlacement16x16VSMSample
+python -B tests/editor/RunTerrainPlacementSmoke.py --executable build-relwithdebinfo/Source/Metallic.exe --output build/terrain-placement/editor-smoke
+```
+
+在编辑器选择 **GPUDrivenSample / Terrain Placement + VSM**。在视口的 **Place on Terrain** 菜单选 **Rock** 或 **Vegetation**，然后左键点击地表。物件的 +Y 对齐源法线。按 Esc 返回选择模式，Ctrl+Z 和 Ctrl+Y 撤销及重做。选中已放置物件后，可在 **Terrain Anchor** 调整世界 X/Z，或用平移控件沿 X/Z 贴地移动。
+
+场景文档保存摆放 ID、物件类别和世界 XZ。用 **Save Scene** 保存后，可在同一输出路径重新烘焙高度图并重新打开场景。摆放保留原 XZ，按新高度和法线更新姿态。如果新地形范围缩小，范围外的锚点保留在文档中，待地形重新覆盖该坐标时恢复。
+
+`BuildTerrainMesh.py --height-field-output <path>` 从渲染网格使用的同一组缩放、偏移及翻转后的源样本导出 `.heightfield.bin`。`TerrainHeightField::sample` 提供世界 XZ 处的高度和插值法线，`raycast` 返回最近的世界交点、法线和沿归一化射线的距离。两者使用源网格三角形，独立于流式 LOD 和裙边。后续笔刷、散布或碰撞可直接使用此查询类型。
+
+编辑器 smoke 用视口点击分别放置岩石和植被，再以同一路径重导入整体抬高 3 单位的测试地形。两个摆放 ID 和保存的 XZ 均保持一致，世界 Y 各增加 3，且 +Y 继续与地表法线对齐。重导入后的截图和运行日志保存在 `build/terrain-placement/editor-smoke/run-*/`。

@@ -20,6 +20,7 @@
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Scene/IESProfile.h"
+#include "Runtime/Scene/TerrainHeightField.h"
 #include "Runtime/Task/TaskSystem.h"
 #include "imnodes.h"
 #include "imgui.h"
@@ -2312,7 +2313,9 @@ int EditorApplication::run(
     } taskSystemShutdownGuard;
 
     smokeTest_ = smokeTest;
-    if (gizmoSmokeTest) { gizmoSmokeInput_.emplace(); }
+    const bool terrainPlacementSmokeTest = smokeTest &&
+        environmentFlagEnabled("METALLIC_SMOKE_TEST_TERRAIN_PLACEMENT");
+    if (gizmoSmokeTest || terrainPlacementSmokeTest) { gizmoSmokeInput_.emplace(); }
     streamlineDebugOpen_ = environmentFlagEnabled("METALLIC_STREAMLINE_DEBUG") ||
         (smokeTest && environmentFlagEnabled("METALLIC_SMOKE_TEST_STREAMLINE_DEBUG"));
     waitForGraphicsDebugger_ = waitForGraphicsDebugger && !smokeTest;
@@ -2432,7 +2435,7 @@ int EditorApplication::run(
             shutdown();
             return 1;
         }
-        if (gizmoSmokeInput_) {
+        if (gizmoSmokeTest) {
             const bool passed = runGizmoSmokeTest();
             shutdown();
             return passed ? 0 : 1;
@@ -2464,6 +2467,11 @@ int EditorApplication::run(
         }
         if (resourceInspectorSmokeOutput || environmentFlagEnabled("METALLIC_SMOKE_TEST_RESOURCE_INSPECTOR")) {
             const bool passed = runResourceInspectorSmokeTest(resourceInspectorSmokeOutput);
+            shutdown();
+            return passed ? 0 : 1;
+        }
+        if (terrainPlacementSmokeTest) {
+            const bool passed = runTerrainPlacementSmokeTest();
             shutdown();
             return passed ? 0 : 1;
         }
@@ -3512,6 +3520,7 @@ bool EditorApplication::renderFrame()
         ImGui_ImplSDL3_NewFrame();
         if (gizmoSmokeInput_) {
             gizmoSmokeInput_->center.reset();
+            gizmoSmokeInput_->viewportImage.reset();
             gizmoSmokeInput_->boundsEdges.clear();
             gizmoSmokeInput_->drewGizmo = false;
             if (gizmoSmokeInput_->pointer) {
@@ -5686,14 +5695,18 @@ void EditorApplication::drawSceneNode(scene::SceneEntity entity, std::span<const
     const auto* sourceNode = object.tryGetComponent<scene::SourceNodeComponent>();
     const bool sourceMount = object.hasComponent<scene::SceneSourceComponent>();
     if (sourceNode == nullptr && !sourceMount) { return; }
+    const auto* placement = scene_.terrainPlacementForObject(entity);
+    if (placement && !placement->enabled) { return; }
 
     const auto& name = object.getComponent<scene::TagComponent>().name;
     const auto& relationship = object.getComponent<scene::RelationshipComponent>();
     const auto* mesh = object.tryGetComponent<scene::MeshComponent>();
-    const std::string label = sourceMount ? name : "[" + std::to_string(sourceNode->nodeIndex) + "] " + name;
+    const std::string label = sourceMount || placement ? name : "[" + std::to_string(sourceNode->nodeIndex) + "] " + name;
     std::string tags;
     if (sourceMount) {
         tags = "Source ";
+    } else if (placement) {
+        tags = "Terrain Anchor ";
     }
     if (mesh != nullptr && mesh->meshIndex >= 0) {
         tags += "M";
@@ -5719,7 +5732,7 @@ void EditorApplication::drawSceneNode(scene::SceneEntity entity, std::span<const
 
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth |
         (sourceMount ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_OpenOnArrow);
-    const bool hasPrimitives = mesh != nullptr && !mesh->renderNodeIndices.empty();
+    const bool hasPrimitives = !placement && mesh != nullptr && !mesh->renderNodeIndices.empty();
     const auto attached = attachments.find(entity);
     const bool leaf = relationship.children.empty() && !hasPrimitives && attached == attachments.end();
     if (leaf) {
@@ -6099,7 +6112,7 @@ bool EditorApplication::canAlignSelectedObjectToView() const
     if (selectedDecal() || selectedWorldItem()) { return true; }
     const auto object = selectedSceneObject();
     return object.hasComponent<scene::TransformComponent>() && object.hasComponent<scene::SourceNodeComponent>() &&
-        !object.hasComponent<scene::GeneratedComponent>();
+        !object.hasComponent<scene::GeneratedComponent>() && !scene_.terrainPlacementForObject(object.entity());
 }
 
 void EditorApplication::alignSelectedObjectToView()
@@ -6217,7 +6230,8 @@ bool EditorApplication::setSelectedObjectWorldMatrix(
 
     const uint64_t previousGeometryTransformRevision = scene_.geometryTransformRevision();
     if (!scene_.setObjectWorldMatrix(object.entity(), worldMatrix)) {
-        reason = "The world transform could not be converted through the current parent hierarchy.";
+        reason = scene_.terrainPlacementForObject(object.entity()) ? "The terrain anchor is outside the heightfield." :
+            "The world transform could not be converted through the current parent hierarchy.";
         return false;
     }
     notifySceneTransformChanged(
@@ -6263,6 +6277,10 @@ void EditorApplication::pushSceneEditCommand(
         const auto* afterItem = std::get_if<WorldItemTransformEditValue>(&after);
         valuesEqual = afterItem && beforeItem->item == afterItem->item &&
             editor::worldItemGizmoTransformsEqual(beforeItem->transform, afterItem->transform, beforeItem->operation);
+    } else if (const auto* beforePlacement = std::get_if<TerrainPlacementEditValue>(&before)) {
+        const auto* afterPlacement = std::get_if<TerrainPlacementEditValue>(&after);
+        valuesEqual = afterPlacement && beforePlacement->id == afterPlacement->id &&
+            beforePlacement->enabled == afterPlacement->enabled;
     }
     const auto* beforeMaterial = std::get_if<MaterialEditValue>(&before);
     const auto* afterMaterial = std::get_if<MaterialEditValue>(&after);
@@ -6277,6 +6295,10 @@ void EditorApplication::pushSceneEditCommand(
     } else if (const auto* beforeItem = std::get_if<WorldItemTransformEditValue>(&before)) {
         const auto* afterItem = std::get_if<WorldItemTransformEditValue>(&after);
         validTarget = afterItem && beforeItem->item == afterItem->item && findWorldItemIndex(beforeItem->item);
+    } else if (const auto* beforePlacement = std::get_if<TerrainPlacementEditValue>(&before)) {
+        const auto* afterPlacement = std::get_if<TerrainPlacementEditValue>(&after);
+        validTarget = afterPlacement && afterPlacement->id == beforePlacement->id &&
+            scene_.terrainPlacementObject(beforePlacement->id) != scene::kNullSceneEntity;
     } else {
         validTarget = object != scene::kNullSceneEntity && scene_.sceneGraph().object(object);
     }
@@ -6397,6 +6419,17 @@ bool EditorApplication::applySceneEditValue(
     scene::SceneEntity object,
     const SceneEditValue& value)
 {
+    if (const auto* placement = std::get_if<TerrainPlacementEditValue>(&value)) {
+        const auto previousObject = scene_.terrainPlacementObject(placement->id);
+        std::string error;
+        if (!scene_.setTerrainPlacementEnabled(placement->id, placement->enabled, error)) {
+            sceneStatus_ = std::move(error);
+            return false;
+        }
+        if (!placement->enabled && sceneSelection_.object == previousObject) { sceneSelection_ = {}; }
+        notifyScenePropertiesChanged();
+        return true;
+    }
     if (const auto* transform = std::get_if<WorldItemTransformEditValue>(&value)) {
         const auto current = worldItemTransform(transform->item);
         return current && (editor::worldItemGizmoTransformsEqual(*current, transform->transform, transform->operation) ||
@@ -6550,6 +6583,7 @@ void EditorApplication::redoTransform()
 
 void EditorApplication::resetTransformHistory()
 {
+    terrainPlacementKind_.reset();
     transformCommands_.clear();
     transformCommandCursor_ = 0;
     savedTransformCommandCursor_ = 0;
@@ -6801,7 +6835,8 @@ void EditorApplication::drawSelectedNodeTransformInspector()
         translation[2] = originalLocal.a23;
     }
 
-    ImGui::TextUnformatted("Local Transform");
+    const bool terrainAnchor = scene_.terrainPlacementForObject(object.entity()) != nullptr;
+    ImGui::TextUnformatted(terrainAnchor ? "Terrain Anchor" : "Local Transform");
     if (!finite) {
         ImGui::TextDisabled("Read-only: the local matrix contains non-finite values.");
     } else if (singular) {
@@ -6869,6 +6904,20 @@ void EditorApplication::drawSelectedNodeTransformInspector()
             inspectorEditingSceneLifetime_ = 0;
         }
     };
+
+    if (terrainAnchor) {
+        ImGui::BeginDisabled(!finite);
+        float worldXZ[] = {translation[0], translation[2]};
+        const bool changed = ImGui::DragFloat2("World X / Z", worldXZ, 0.01f);
+        translation[0] = worldXZ[0];
+        translation[2] = worldXZ[1];
+        applyEdit(changed, true);
+        ImGui::EndDisabled();
+        const auto& world = transform->worldMatrix;
+        ImGui::TextDisabled("Height %.3f", world.a13);
+        ImGui::TextDisabled("Surface normal (%.3f, %.3f, %.3f)", world.a01, world.a11, world.a21);
+        return;
+    }
 
     ImGui::BeginDisabled(!finite);
     const bool translationChanged = ImGui::DragFloat3("Position", translation, 0.01f);
@@ -7320,6 +7369,7 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
 {
     viewportGizmoCapturingMouse_ = false;
     const scene::ConstSceneObject object = selectedSceneObject();
+    const bool terrainAnchor = scene_.terrainPlacementForObject(object.entity()) != nullptr;
     const auto* instance = selectedRenderNode();
     const auto* decal = selectedDecal();
     const auto worldItem = selectedWorldItem();
@@ -7459,7 +7509,7 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
     } else if (gizmoOperation == GizmoOperation::Scale) {
         operation = ImGuizmo::SCALE;
     }
-    const ImGuizmo::MODE mode = gizmoOperation == GizmoOperation::Scale || gizmoLocal_
+    const ImGuizmo::MODE mode = !terrainAnchor && (gizmoOperation == GizmoOperation::Scale || gizmoLocal_)
         ? ImGuizmo::LOCAL
         : ImGuizmo::WORLD;
     const bool useSnap = snapEnabled_ || ImGui::GetIO().KeyCtrl;
@@ -7475,7 +7525,7 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
     if (cameraDragging) { ImGuizmo::Enable(false); }
     const bool maskScaleDepth = item && gizmoOperation == GizmoOperation::Scale &&
         !capabilities.scaleDepth;
-    if (maskScaleDepth) { ImGuizmo::SetAxisMask(false, false, true); }
+    if (terrainAnchor || maskScaleDepth) { ImGuizmo::SetAxisMask(false, terrainAnchor, maskScaleDepth); }
     const int firstVertex = drawList->VtxBuffer.Size;
     if (worldItem) {
         ImGuizmo::PushID(worldItemTypeLabel(worldItem->type));
@@ -7495,7 +7545,7 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
         useSnap ? snap : nullptr);
     const bool usingNow = ImGuizmo::IsUsing();
     const bool overNow = !cameraDragging && ImGuizmo::IsOver();
-    if (maskScaleDepth) { ImGuizmo::SetAxisMask(false, false, false); }
+    if (terrainAnchor || maskScaleDepth) { ImGuizmo::SetAxisMask(false, false, false); }
     if (instance) { ImGuizmo::PopID(); }
     ImGuizmo::PopID();
     if (decal || worldItem) { ImGuizmo::PopID(); }
@@ -7699,6 +7749,82 @@ void EditorApplication::drawViewportObjectHandles(const ImVec2& min, const ImVec
     }
 }
 
+std::optional<scene::ScenePickRay> EditorApplication::viewportPickRay(
+    const ImVec2& mouse, const ImVec2& min, const ImVec2& max) const
+{
+    render::RenderGraphProperties properties = viewportCameraProperties();
+    ensureCameraProperties(properties, scene_.bounds());
+    const render::RenderGraphProperties& camera = properties["camera"];
+    const float width = static_cast<float>(viewportView_.renderWidth(viewportTextureWidth_));
+    const float height = static_cast<float>(viewportView_.renderHeight(viewportTextureHeight_));
+    const ViewportCameraMatrices matrices = viewportCameraMatrices(camera, width, height);
+    const float normalizedX = ((mouse.x - min.x) / std::max(max.x - min.x, 1.0f)) * 2.0f - 1.0f;
+    const float normalizedY = 1.0f - ((mouse.y - min.y) / std::max(max.y - min.y, 1.0f)) * 2.0f;
+    const float aspect = width / height;
+    float3 rayOrigin = matrices.frame.eye;
+    float3 rayDirection = matrices.frame.forward;
+    if (matrices.orthographic) {
+        const float orthoHeight = cameraOrthoHeight(camera, matrices.frame.distance);
+        rayOrigin += matrices.frame.right * (normalizedX * orthoHeight * aspect * 0.5f) +
+            matrices.frame.viewUp * (normalizedY * orthoHeight * 0.5f);
+    } else {
+        constexpr float kPi = 3.14159265358979323846f;
+        const float tangent = std::tan(
+            std::clamp(propertyFloatOr(camera, "fovDegrees", 60.0f), 1.0f, 179.0f) *
+            (kPi / 360.0f));
+        rayDirection = normalizedOr(
+            matrices.frame.forward +
+                matrices.frame.right * (normalizedX * tangent * aspect) +
+                matrices.frame.viewUp * (normalizedY * tangent),
+            matrices.frame.forward);
+    }
+    const float viewDepthAtOrigin = dot(rayOrigin - matrices.frame.eye, matrices.frame.forward);
+    const float viewDepthPerDistance = dot(rayDirection, matrices.frame.forward);
+    if (!std::isfinite(viewDepthPerDistance) || viewDepthPerDistance <= 0.000001f) {
+        return std::nullopt;
+    }
+    const float minimumPickDistance = std::max(
+        (matrices.nearPlane - viewDepthAtOrigin) / viewDepthPerDistance, 0.0f);
+    const float maximumPickDistance = (matrices.farPlane - viewDepthAtOrigin) / viewDepthPerDistance;
+    if (!std::isfinite(minimumPickDistance) || !std::isfinite(maximumPickDistance) ||
+        maximumPickDistance < minimumPickDistance) {
+        return std::nullopt;
+    }
+    return scene::ScenePickRay{.origin = rayOrigin, .direction = rayDirection,
+        .minimumDistance = minimumPickDistance, .maximumDistance = maximumPickDistance};
+}
+
+void EditorApplication::placeTerrainObject(scene::TerrainPlacementKind kind, const scene::ScenePickRay& ray)
+{
+    const auto hit = scene_.terrainHeightField()->raycast(ray);
+    if (!hit) {
+        sceneStatus_ = "No terrain surface at the cursor.";
+        return;
+    }
+    scene::ScenePickRay foregroundRay = ray;
+    foregroundRay.maximumDistance = hit->distance - 0.001f;
+    if (scenePicker_.pick(scene_, foregroundRay).hit()) {
+        sceneStatus_ = "A scene object covers the terrain at the cursor.";
+        return;
+    }
+
+    finishActiveTransformTransactions();
+    std::string error;
+    const auto id = scene_.addTerrainPlacement(kind, hit->position.x, hit->position.z, error);
+    if (!id) {
+        sceneStatus_ = std::move(error);
+        return;
+    }
+    const auto object = scene_.terrainPlacementObject(*id);
+    const auto lifetime = scene_.sceneGraph().lifetimeRevision();
+    pushSceneEditCommand(object, lifetime,
+        TerrainPlacementEditValue{*id, false}, TerrainPlacementEditValue{*id, true});
+    sceneSelection_ = SceneSelection{.type = SceneSelectionType::Node, .object = object,
+        .sceneLifetimeRevision = lifetime};
+    notifyScenePropertiesChanged();
+    sceneStatus_ = kind == scene::TerrainPlacementKind::Rock ? "Placed rock on terrain." : "Placed vegetation on terrain.";
+}
+
 void EditorApplication::selectViewportObject(const ImVec2& min, const ImVec2& max)
 {
     if (!viewportInteractionEnabled_ || !viewportHovered_ || !scene_.valid() ||
@@ -7708,6 +7834,11 @@ void EditorApplication::selectViewportObject(const ImVec2& min, const ImVec2& ma
         return;
     }
     const ImVec2 mouse = ImGui::GetIO().MousePos;
+
+    if (terrainPlacementKind_) {
+        if (const auto ray = viewportPickRay(mouse, min, max)) { placeTerrainObject(*terrainPlacementKind_, *ray); }
+        return;
+    }
 
     if (viewportHoveredObject_ != scene::kNullSceneEntity) {
         const scene::ConstSceneObject object =
@@ -7745,61 +7876,13 @@ void EditorApplication::selectViewportObject(const ImVec2& min, const ImVec2& ma
         return;
     }
 
-    render::RenderGraphProperties properties = viewportCameraProperties();
-    ensureCameraProperties(properties, scene_.bounds());
-    const render::RenderGraphProperties& camera = properties["camera"];
-    const ViewportCameraMatrices matrices = viewportCameraMatrices(
-        camera,
-        static_cast<float>(viewportView_.renderWidth(viewportTextureWidth_)),
-        static_cast<float>(viewportView_.renderHeight(viewportTextureHeight_)));
-    const float normalizedX = ((mouse.x - min.x) / std::max(max.x - min.x, 1.0f)) * 2.0f - 1.0f;
-    const float normalizedY = 1.0f - ((mouse.y - min.y) / std::max(max.y - min.y, 1.0f)) * 2.0f;
-    const float aspect = float(viewportView_.renderWidth(viewportTextureWidth_)) /
-        float(viewportView_.renderHeight(viewportTextureHeight_));
-    float3 rayOrigin = matrices.frame.eye;
-    float3 rayDirection = matrices.frame.forward;
-    if (matrices.orthographic) {
-        const float height = cameraOrthoHeight(camera, matrices.frame.distance);
-        rayOrigin += matrices.frame.right * (normalizedX * height * aspect * 0.5f) +
-            matrices.frame.viewUp * (normalizedY * height * 0.5f);
-    } else {
-        constexpr float kPi = 3.14159265358979323846f;
-        const float tangent = std::tan(
-            std::clamp(propertyFloatOr(camera, "fovDegrees", 60.0f), 1.0f, 179.0f) *
-            (kPi / 360.0f));
-        rayDirection = normalizedOr(
-            matrices.frame.forward +
-                matrices.frame.right * (normalizedX * tangent * aspect) +
-                matrices.frame.viewUp * (normalizedY * tangent),
-            matrices.frame.forward);
-    }
-    const float viewDepthAtOrigin = dot(
-        rayOrigin - matrices.frame.eye,
-        matrices.frame.forward);
-    const float viewDepthPerDistance = dot(rayDirection, matrices.frame.forward);
-    if (!std::isfinite(viewDepthPerDistance) || viewDepthPerDistance <= 0.000001f) {
-        sceneSelection_ = SceneSelection{};
-        return;
-    }
-    const float minimumPickDistance = std::max(
-        (matrices.nearPlane - viewDepthAtOrigin) / viewDepthPerDistance,
-        0.0f);
-    const float maximumPickDistance =
-        (matrices.farPlane - viewDepthAtOrigin) / viewDepthPerDistance;
-    if (!std::isfinite(minimumPickDistance) || !std::isfinite(maximumPickDistance) ||
-        maximumPickDistance < minimumPickDistance) {
+    const auto ray = viewportPickRay(mouse, min, max);
+    if (!ray) {
         sceneSelection_ = SceneSelection{};
         return;
     }
 
-    const scene::ScenePickResult pick = scenePicker_.pick(
-        scene_,
-        scene::ScenePickRay{
-            .origin = rayOrigin,
-            .direction = rayDirection,
-            .minimumDistance = minimumPickDistance,
-            .maximumDistance = maximumPickDistance,
-        });
+    const scene::ScenePickResult pick = scenePicker_.pick(scene_, *ray);
     if (!pick.hit()) {
         sceneSelection_ = SceneSelection{};
         return;
@@ -7912,8 +7995,9 @@ void EditorApplication::drawViewportPanel()
     const auto selectedItem = selectedWorldItem();
     const auto item = selectedItem ? worldItemTransform(*selectedItem) : std::nullopt;
     const auto capabilities = item ? editor::worldItemGizmoCapabilities(*item) : editor::WorldItemGizmoCapabilities{};
-    const bool canRotate = !item || capabilities.rotate;
-    const bool canScale = !item || capabilities.scale;
+    const bool terrainAnchor = scene_.terrainPlacementForObject(selectedSceneObject().entity()) != nullptr;
+    const bool canRotate = !terrainAnchor && (!item || capabilities.rotate);
+    const bool canScale = !terrainAnchor && (!item || capabilities.scale);
     if ((!canRotate && gizmoOperation_ == GizmoOperation::Rotate) ||
         (!canScale && gizmoOperation_ == GizmoOperation::Scale)) {
         gizmoOperation_ = GizmoOperation::Translate;
@@ -7923,12 +8007,13 @@ void EditorApplication::drawViewportPanel()
         ImGuizmo::IsUsingAny();
     ImGui::BeginDisabled(gizmoTransactionActive);
     const auto drawToolButton = [this](const char* label, GizmoOperation operation) {
-        const bool selected = gizmoOperation_ == operation;
+        const bool selected = !terrainPlacementKind_ && gizmoOperation_ == operation;
         if (selected) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
         }
         if (ImGui::Button(label)) {
             gizmoOperation_ = operation;
+            terrainPlacementKind_.reset();
         }
         if (selected) {
             ImGui::PopStyleColor();
@@ -7939,20 +8024,22 @@ void EditorApplication::drawViewportPanel()
     ImGui::BeginDisabled(!canRotate);
     drawToolButton("E Rotate", GizmoOperation::Rotate);
     if (!canRotate && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("An omnidirectional point light without an IES profile has no editable orientation.");
+        ImGui::SetTooltip("%s", terrainAnchor ? "Terrain anchors align to the surface normal." :
+            "An omnidirectional point light without an IES profile has no editable orientation.");
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(!canScale);
     drawToolButton("R Scale", GizmoOperation::Scale);
     if (!canScale && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("Set a finite light range in the Inspector to scale its influence.");
+        ImGui::SetTooltip("%s", terrainAnchor ? "Terrain placements use the prototype mesh size." :
+            "Set a finite light range in the Inspector to scale its influence.");
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
     const bool scaling = gizmoOperation_ == GizmoOperation::Scale;
-    ImGui::BeginDisabled(scaling);
-    if (ImGui::Button(scaling || gizmoLocal_ ? "Local" : "World")) {
+    ImGui::BeginDisabled(scaling || terrainAnchor);
+    if (ImGui::Button(!terrainAnchor && (scaling || gizmoLocal_) ? "Local" : "World")) {
         gizmoLocal_ = !gizmoLocal_;
     }
     ImGui::EndDisabled();
@@ -8023,6 +8110,33 @@ void EditorApplication::drawViewportPanel()
     }
     drawLumenDebugViews();
     drawSliderDebugControls();
+    if (scene_.terrainHeightField() != nullptr) {
+        const char* label = !terrainPlacementKind_ ? "Place on Terrain" :
+            *terrainPlacementKind_ == scene::TerrainPlacementKind::Rock ? "Place Rock" : "Place Vegetation";
+        ImGui::SameLine();
+        ImGui::BeginDisabled(gizmoTransactionActive);
+        if (terrainPlacementKind_) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        }
+        if (ImGui::Button(label)) { ImGui::OpenPopup("Terrain Placement"); }
+        if (terrainPlacementKind_) { ImGui::PopStyleColor(); }
+        ImGui::SetItemTooltip("Choose an object, then left-click the terrain. Press Escape to return to selection.");
+        if (ImGui::BeginPopup("Terrain Placement")) {
+            if (ImGui::MenuItem("Select", "Esc", !terrainPlacementKind_)) { terrainPlacementKind_.reset(); }
+            if (ImGui::MenuItem("Rock", nullptr, terrainPlacementKind_ == scene::TerrainPlacementKind::Rock)) {
+                terrainPlacementKind_ = scene::TerrainPlacementKind::Rock;
+            }
+            if (ImGui::MenuItem("Vegetation", nullptr, terrainPlacementKind_ == scene::TerrainPlacementKind::Vegetation)) {
+                terrainPlacementKind_ = scene::TerrainPlacementKind::Vegetation;
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::EndDisabled();
+        if (terrainPlacementKind_ && ImGui::IsWindowFocused() && !ImGui::GetIO().WantTextInput &&
+            !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup) && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            terrainPlacementKind_.reset();
+        }
+    }
     if (viewportCompileFailed_) {
         ImGui::SameLine();
         if (ImGui::Button("Retry scene load")) { renderGraph_.markDirty(); }
@@ -8075,6 +8189,7 @@ void EditorApplication::drawViewportPanel()
         panelMin.x + (panelWidth - imageWidth) * 0.5f,
         panelMin.y + (panelHeight - imageHeight) * 0.5f);
     const ImVec2 max(min.x + imageWidth, min.y + imageHeight);
+    if (gizmoSmokeInput_) { gizmoSmokeInput_->viewportImage = std::array{min.x, min.y, max.x, max.y}; }
     const float width = max.x - min.x;
     const float height = max.y - min.y;
     const auto* sceneStreamer = subsystemHost_.get<render::StreamerSubsystem>();
@@ -8139,9 +8254,17 @@ void EditorApplication::drawViewportPanel()
     if (!sliderCapturingMouse) {
         // Use the same camera for the overlays and the render graph later in this frame.
         handleViewportCameraControls(min, max);
-        drawViewportObjectHandles(min, max);
-        drawViewportGizmo(min, max);
-        drawViewportGizmoBounds(min, max);
+        if (terrainPlacementKind_) {
+            viewportHoveredObject_ = scene::kNullSceneEntity;
+            viewportGizmoCapturingMouse_ = false;
+            if (viewportHovered_ && viewportCameraDragButton_ == kNoViewportCameraDragButton) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            }
+        } else {
+            drawViewportObjectHandles(min, max);
+            drawViewportGizmo(min, max);
+            drawViewportGizmoBounds(min, max);
+        }
     }
 
     if (loadingScene) {
@@ -8192,11 +8315,14 @@ void EditorApplication::drawViewportPanel()
         !cameraGestureActive && !transformEditing) {
         if (ImGui::IsKeyPressed(ImGuiKey_W, false)) {
             gizmoOperation_ = GizmoOperation::Translate;
+            terrainPlacementKind_.reset();
         } else if (canRotate && ImGui::IsKeyPressed(ImGuiKey_E, false)) {
             gizmoOperation_ = GizmoOperation::Rotate;
+            terrainPlacementKind_.reset();
         } else if (canScale && ImGui::IsKeyPressed(ImGuiKey_R, false)) {
             gizmoOperation_ = GizmoOperation::Scale;
-        } else if (!scaling && ImGui::IsKeyPressed(ImGuiKey_X, false)) {
+            terrainPlacementKind_.reset();
+        } else if (!scaling && !terrainAnchor && ImGui::IsKeyPressed(ImGuiKey_X, false)) {
             gizmoLocal_ = !gizmoLocal_;
         }
     }

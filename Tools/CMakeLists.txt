@@ -98,11 +98,16 @@ if(Python3_Interpreter_FOUND)
     )
 
     function(add_metallic_terrain_block_height output tiles_per_axis)
+        cmake_parse_arguments(PARSE_ARGV 2 terrain "" "HEIGHT_FIELD" "")
+        set(terrain_args)
+        if(terrain_HEIGHT_FIELD)
+            set(terrain_args --height-field-output "${terrain_HEIGHT_FIELD}")
+        endif()
         add_custom_command(
-            OUTPUT "${output}.gltf" "${output}.bin"
+            OUTPUT "${output}.gltf" "${output}.bin" ${terrain_HEIGHT_FIELD}
             COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py"
                 "${METALLIC_TERRAIN_P0_SOURCE}" --output "${output}.gltf"
-                ${METALLIC_TERRAIN_HEIGHT_ARGS} --tiles-per-axis ${tiles_per_axis}
+                ${METALLIC_TERRAIN_HEIGHT_ARGS} --tiles-per-axis ${tiles_per_axis} ${terrain_args}
             DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py" "${METALLIC_TERRAIN_P0_SOURCE}"
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
             COMMENT "Converting the Houdini EXR height field to ${tiles_per_axis}x${tiles_per_axis} terrain blocks"
@@ -111,19 +116,23 @@ if(Python3_Interpreter_FOUND)
     endfunction()
 
     function(add_metallic_terrain_vsm_sample bake_target smoke_target sample_id terrain_source output)
-        cmake_parse_arguments(PARSE_ARGV 5 layer "" "WEIGHT_MAP" "")
+        cmake_parse_arguments(PARSE_ARGV 5 terrain "" "WEIGHT_MAP;HEIGHT_FIELD" "")
         set(lighting "${CMAKE_SOURCE_DIR}/Asset/Terrain/TerrainVSM.metallic_scene.json")
         set(graph "${CMAKE_SOURCE_DIR}/Pipelines/Samples/gpu_driven_terrain_vsm.metallic_graph.json")
         set(stream_asset "${output}.gltf.meshstream.bin")
         set(layer_args)
         set(layer_outputs)
         set(layer_dependencies)
-        if(layer_WEIGHT_MAP)
-            set(layer_args --weight-map "${layer_WEIGHT_MAP}")
+        if(terrain_WEIGHT_MAP)
+            set(layer_args --weight-map "${terrain_WEIGHT_MAP}")
             set(layer_outputs "${output}.material" "${output}.materialdef" "${output}_weight.png"
                 "${output}_grass_color.png" "${output}_grass_normal.png"
                 "${output}_rock_color.png" "${output}_rock_normal.png")
-            set(layer_dependencies "${layer_WEIGHT_MAP}" "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainLayerTextures.py")
+            set(layer_dependencies "${terrain_WEIGHT_MAP}" "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainLayerTextures.py")
+        endif()
+        if(terrain_HEIGHT_FIELD)
+            list(APPEND layer_args --height-field "${terrain_HEIGHT_FIELD}")
+            list(APPEND layer_dependencies "${terrain_HEIGHT_FIELD}")
         endif()
         add_custom_command(
             OUTPUT "${output}.gltf" "${output}.bin" "${output}.metallic_scene.json" ${layer_outputs}
@@ -183,7 +192,9 @@ if(Python3_Interpreter_FOUND)
 
     set(METALLIC_TERRAIN_BLOCKS_16X16_DIRECTORY "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainBlocks16x16")
     set(METALLIC_TERRAIN_BLOCKS_16X16_HEIGHT "${METALLIC_TERRAIN_BLOCKS_16X16_DIRECTORY}/terrain_blocks_16x16_height")
-    add_metallic_terrain_block_height("${METALLIC_TERRAIN_BLOCKS_16X16_HEIGHT}" 16)
+    set(METALLIC_TERRAIN_BLOCKS_16X16_QUERY "${METALLIC_TERRAIN_BLOCKS_16X16_HEIGHT}.heightfield.bin")
+    add_metallic_terrain_block_height("${METALLIC_TERRAIN_BLOCKS_16X16_HEIGHT}" 16
+        HEIGHT_FIELD "${METALLIC_TERRAIN_BLOCKS_16X16_QUERY}")
     add_metallic_terrain_vsm_sample(MetallicTerrainBlocks16x16VSMSample MetallicTerrainBlocks16x16VSMSmoke
         gpu-driven-terrain-blocks-16x16-vsm "${METALLIC_TERRAIN_BLOCKS_16X16_HEIGHT}"
         "${METALLIC_TERRAIN_BLOCKS_16X16_DIRECTORY}/terrain_blocks_16x16")
@@ -192,6 +203,12 @@ if(Python3_Interpreter_FOUND)
         gpu-driven-terrain-layers-16x16-vsm "${METALLIC_TERRAIN_BLOCKS_16X16_HEIGHT}"
         "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainLayers16x16/terrain_layers_16x16"
         WEIGHT_MAP "${CMAKE_SOURCE_DIR}/Asset/Terrain/TerrainRockWeight.exr")
+
+    add_metallic_terrain_vsm_sample(MetallicTerrainPlacement16x16VSMSample MetallicTerrainPlacement16x16VSMSmoke
+        gpu-driven-terrain-placement-16x16-vsm "${METALLIC_TERRAIN_BLOCKS_16X16_HEIGHT}"
+        "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainPlacement16x16/terrain_placement_16x16"
+        WEIGHT_MAP "${CMAKE_SOURCE_DIR}/Asset/Terrain/TerrainRockWeight.exr"
+        HEIGHT_FIELD "${METALLIC_TERRAIN_BLOCKS_16X16_QUERY}")
 else()
     message(STATUS "Python3 was not found; terrain sample build targets are unavailable")
 endif()

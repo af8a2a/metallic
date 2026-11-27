@@ -22,6 +22,148 @@
 
 namespace metallic {
 
+bool EditorApplication::runTerrainPlacementSmokeTest()
+{
+    const auto expect = [](bool condition, const char* message) {
+        if (!condition) { spdlog::error("[Smoke Terrain Placement] {}", message); }
+        return condition;
+    };
+    const char* fixture = std::getenv("METALLIC_TERRAIN_PLACEMENT_SMOKE_FIXTURE");
+    if (!expect(fixture && *fixture, "Run the smoke test with its disposable fixture")) { return false; }
+    const std::filesystem::path fixtureRoot(fixture);
+    const auto base = fixtureRoot / "base";
+    const auto source = base / "terrain.gltf";
+    std::error_code error;
+    if (!expect(std::filesystem::equivalent(scene_.sourcePath(), source, error) && !error &&
+            scene_.terrainHeightField() && scene_.terrainPlacements().empty(),
+            "Load the original test EXR height field with no placements")) { return false; }
+
+    auto& input = *gizmoSmokeInput_;
+    const auto render = [&] {
+        auto profileFrame = profiler_.beginFrame();
+        return waitForFrameSlotBeforeInput() && renderFrame();
+    };
+    const auto waitForViewport = [&] {
+        for (int attempt = 0; attempt < 180; ++attempt) {
+            if (!render()) { return false; }
+            if (viewportPreviewValid_ && viewportInteractionEnabled_ && input.viewportImage) { return true; }
+        }
+        return expect(false, "The terrain viewport became interactive");
+    };
+    const auto clickGround = [&](float worldX, float worldZ) {
+        auto camera = viewportView_.camera();
+        camera.eye = {worldX, 28.0f, worldZ};
+        camera.center = {worldX, 0.0f, worldZ};
+        camera.up = {0.0f, 0.0f, -1.0f};
+        if (!viewportView_.setCamera(camera) || !waitForViewport()) { return false; }
+        const auto [left, top, right, bottom] = *input.viewportImage;
+        input.pointer = std::array{(left + right) * 0.5f, (top + bottom) * 0.5f};
+        if (!render() || !expect(viewportHovered_, "Inject the pointer into the rendered terrain viewport")) {
+            return false;
+        }
+        input.mouseDown = true;
+        const bool pressed = render();
+        input.mouseDown = false;
+        return pressed && render();
+    };
+
+    struct Sample {
+        scene::TerrainPlacementKind kind;
+        float3 position;
+    };
+    const std::array samples{
+        Sample{scene::TerrainPlacementKind::Rock, float3(-3.0f, 1.0f, -2.0f)},
+        Sample{scene::TerrainPlacementKind::Vegetation, float3(3.0f, 2.875f, 1.0f)},
+    };
+    const auto expectedNormal = normalize(float3(-0.25f, 1.0f, -0.125f));
+    const auto checkPlacement = [&](uint64_t id, const Sample& sample, float heightDelta) {
+        const auto& placements = scene_.terrainPlacements();
+        const auto placement = std::ranges::find(placements, id, &scene::TerrainPlacement::id);
+        // ImGui floors the pointer to a pixel. Check the target neighborhood,
+        // then verify the exact height at the resulting world-space anchor.
+        if (placement == placements.end() || !placement->enabled || placement->kind != sample.kind ||
+            std::abs(placement->worldX - sample.position.x) > 0.08f ||
+            std::abs(placement->worldZ - sample.position.z) > 0.08f) {
+            return false;
+        }
+        const auto object = scene_.sceneGraph().object(scene_.terrainPlacementObject(id));
+        if (!object || !object.hasComponent<scene::TransformComponent>() ||
+            !object.getComponent<scene::VisibilityComponent>().worldVisible) { return false; }
+        const auto& world = object.getComponent<scene::TransformComponent>().worldMatrix;
+        const auto position = float3(world.a03, world.a13, world.a23);
+        const auto up = normalize(float3(world.a01, world.a11, world.a21));
+        const float height = sample.position.y + heightDelta +
+            (placement->worldX - sample.position.x) * 0.25f + (placement->worldZ - sample.position.z) * 0.125f;
+        return length(position - float3(placement->worldX, height, placement->worldZ)) < 0.001f &&
+            length(up - expectedNormal) < 0.001f;
+    };
+
+    std::array<uint64_t, samples.size()> ids{};
+    std::array<float2, samples.size()> anchors{};
+    for (size_t i = 0; i < samples.size(); ++i) {
+        const auto& sample = samples[i];
+        terrainPlacementKind_ = sample.kind;
+        if (!clickGround(sample.position.x, sample.position.z) ||
+            !expect(scene_.terrainPlacements().size() == i + 1, "Create exactly one placement per click")) {
+            return false;
+        }
+        const auto& placed = scene_.terrainPlacements().back();
+        ids[i] = placed.id;
+        anchors[i] = float2(placed.worldX, placed.worldZ);
+        if (!expect(checkPlacement(ids[i], sample, 0.0f),
+                "Place at the exact source height and align local +Y to the terrain normal")) { return false; }
+    }
+    terrainPlacementKind_.reset();
+    undoTransform();
+    const auto undone = scene_.sceneGraph().object(scene_.terrainPlacementObject(ids.back()));
+    if (!expect(!scene_.terrainPlacements().back().enabled && undone &&
+            !undone.getComponent<scene::VisibilityComponent>().worldVisible,
+            "Undo hides the last placed object and disables its anchor")) { return false; }
+    redoTransform();
+    if (!expect(checkPlacement(ids.back(), samples.back(), 0.0f), "Redo restores the same terrain anchor")) {
+        return false;
+    }
+    if (!clickGround(samples.front().position.x, samples.front().position.z) ||
+        !expect(scene_.terrainPlacements().size() == samples.size(), "Selection mode does not place objects")) {
+        return false;
+    }
+    saveScene();
+    if (!expect(!scene_.dirty(), "Save the two world-space anchors")) { return false; }
+
+    // Leave the saved document and mapped stream asset in place. The regular
+    // scene reload detects the changed source and cooks its replacement stream.
+    const auto raised = fixtureRoot / "raised";
+    for (const char* name : {"height.exr", "terrain.mthf", "terrain_height.bin", "terrain.gltf"}) {
+        error.clear();
+        if (!std::filesystem::copy_file(raised / name, base / name,
+                std::filesystem::copy_options::overwrite_existing, error)) {
+            spdlog::error("[Smoke Terrain Placement] Cannot replace fixture source '{}': {}", name, error.message());
+            return false;
+        }
+    }
+    loadDroppedScene(source);
+    if (!waitForPendingSceneLoad(30000) || !waitForViewport() ||
+        !expect(scene_.terrainPlacements().size() == samples.size(), "Reload both saved terrain anchors")) {
+        return false;
+    }
+    for (size_t i = 0; i < samples.size(); ++i) {
+        const auto placement = std::ranges::find(scene_.terrainPlacements(), ids[i], &scene::TerrainPlacement::id);
+        if (!expect(checkPlacement(ids[i], samples[i], 3.0f) &&
+                placement->worldX == anchors[i].x && placement->worldZ == anchors[i].y,
+                "Keep the same ID and world XZ after reimport and recompute height and alignment")) { return false; }
+    }
+    auto overview = viewportView_.camera();
+    overview.eye = {10.0f, 16.0f, 15.0f};
+    overview.center = {0.0f, 4.5f, 0.0f};
+    overview.up = {0.0f, 1.0f, 0.0f};
+    if (!viewportView_.setCamera(overview) || !waitForViewport() ||
+        !expect(exportSmokeMainViewport(fixtureRoot / "reimported.ppm"), "Capture the placed terrain objects")) {
+        return false;
+    }
+    spdlog::info("[Smoke Terrain Placement] Passed viewport Rock/Vegetation clicks, source height/normal, undo/redo, and same-path +3 height reimport");
+    return true;
+}
+
 bool EditorApplication::runExitSmokeTest()
 {
     const auto render = [&] {

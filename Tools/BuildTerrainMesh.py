@@ -14,6 +14,7 @@ import json
 import math
 import os
 from pathlib import Path
+import struct
 import sys
 from typing import Any
 from urllib.parse import quote
@@ -285,6 +286,16 @@ def write_atomic(path: Path, data: bytes) -> None:
     os.replace(temporary_path, path)
 
 
+def write_height_field(path: Path, positions: Any, metadata: dict, horizontal_size: float) -> None:
+    columns, rows = metadata["sourceResolution"]
+    half_size = horizontal_size * 0.5
+    header = struct.pack("<4sIII4f", b"MTHF", 1, columns, rows, -half_size, -half_size, half_size, half_size)
+    # Positions start with the world-aligned source grid, followed by render skirts.
+    world_heights = positions[:columns * rows, 1].astype("<f4", copy=False)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_atomic(path, header + world_heights.tobytes())
+
+
 def split_terrain_tiles(indices: Any, columns: int, rows: int, tiles_per_axis: int):
     import numpy as np
 
@@ -542,6 +553,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("heightmap", type=Path, help="source OpenEXR height field")
     parser.add_argument("--output", type=Path, help="output .gltf path")
     parser.add_argument("--binary-output", type=Path, help="output glTF .bin path")
+    parser.add_argument("--height-field-output", type=Path, help="output the world-space source height grid for CPU queries")
     parser.add_argument("--channel", help="OpenEXR channel name (auto-selected by default)")
     parser.add_argument(
         "--tiles-per-axis", type=int, default=1,
@@ -624,6 +636,8 @@ def main() -> int:
             arguments.flip_z,
             arguments.tiles_per_axis,
         )
+        if arguments.height_field_output is not None:
+            write_height_field(arguments.height_field_output, positions, metadata, arguments.horizontal_size)
     except (OSError, TerrainBuildError, ValueError) as error:
         print(f"Terrain build failed: {error}", file=sys.stderr)
         return 1

@@ -1098,6 +1098,20 @@ public:
     }
 };
 
+class GPUDrivenTerrainPlacement16x16VSMSample final : public GPUDrivenTerrainBlocks16x16VSMSample {
+public:
+    std::string_view id() const override { return "gpu-driven-terrain-placement-16x16-vsm"; }
+    std::string_view name() const override { return "GPUDrivenSample / Terrain Placement + VSM"; }
+    std::string_view description() const override
+    {
+        return "Place rocks and vegetation on the source heightfield with editable world-space anchors.";
+    }
+    std::string scenePath() const override
+    {
+        return "Asset/MeshletCache/TerrainPlacement16x16/terrain_placement_16x16.gltf";
+    }
+};
+
 const RenderSample& pathTracingMeetMatSample()
 {
     static const PathTracingMeetMatSample sample;
@@ -1215,6 +1229,12 @@ const RenderSample& gpuDrivenTerrainBlocks16x16VSMSample()
 const RenderSample& gpuDrivenTerrainLayers16x16VSMSample()
 {
     static const GPUDrivenTerrainLayers16x16VSMSample sample;
+    return sample;
+}
+
+const RenderSample& gpuDrivenTerrainPlacement16x16VSMSample()
+{
+    static const GPUDrivenTerrainPlacement16x16VSMSample sample;
     return sample;
 }
 
@@ -1405,6 +1425,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &gpuDrivenTerrainBlocks8x8VSMSample(),
         &gpuDrivenTerrainBlocks16x16VSMSample(),
         &gpuDrivenTerrainLayers16x16VSMSample(),
+        &gpuDrivenTerrainPlacement16x16VSMSample(),
         &gpuDrivenRtasVisualizationSample(),
     };
     const bool hasBoxDistanceField = std::filesystem::is_regular_file(projectPath(".cache/mesh-distance-field/BoxInstances.meshdf"));

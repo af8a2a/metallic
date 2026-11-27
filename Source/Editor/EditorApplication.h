@@ -67,6 +67,7 @@ private:
     bool runMultiViewportSmokeTest();
     bool runSliderDebugSmokeTest();
     bool runGizmoSmokeTest();
+    bool runTerrainPlacementSmokeTest();
     bool exportSmokeMainViewport(const std::filesystem::path& path);
     bool runSceneSwitchSmokeTest();
     bool runExitSmokeTest();
@@ -131,7 +132,10 @@ private:
     void drawViewportObjectHandles(const ImVec2& min, const ImVec2& max);
     void drawViewportGizmo(const ImVec2& min, const ImVec2& max);
     void drawViewportGizmoBounds(const ImVec2& min, const ImVec2& max);
+    std::optional<scene::ScenePickRay> viewportPickRay(
+        const ImVec2& mouse, const ImVec2& min, const ImVec2& max) const;
     void selectViewportObject(const ImVec2& min, const ImVec2& max);
+    void placeTerrainObject(scene::TerrainPlacementKind kind, const scene::ScenePickRay& ray);
     void drawSelectedNodeTransformInspector();
     void drawSelectedCameraComponentInspector();
     void drawSelectedLightComponentInspector();
@@ -175,6 +179,10 @@ private:
         editor::WorldItemGizmoTransform transform;
         GizmoOperation operation;
     };
+    struct TerrainPlacementEditValue {
+        uint64_t id;
+        bool enabled;
+    };
     using SceneEditValue = std::variant<
         float4x4,
         scene::CameraProperties,
@@ -182,7 +190,8 @@ private:
         MaterialEditValue,
         PrimitiveTransformEditValue,
         DecalTransformEditValue,
-        WorldItemTransformEditValue>;
+        WorldItemTransformEditValue,
+        TerrainPlacementEditValue>;
     void pushSceneEditCommand(
         scene::SceneEntity object,
         uint64_t sceneLifetimeRevision,
@@ -394,6 +403,7 @@ private:
     struct GizmoSmokeInput {
         std::optional<std::array<float, 2>> pointer;
         std::optional<std::array<float, 2>> center;
+        std::optional<std::array<float, 4>> viewportImage;
         float gizmoExtent = 0.0f;
         std::vector<std::array<float, 4>> boundsEdges;
         bool mouseDown = false;
@@ -447,6 +457,7 @@ private:
         NsightGraphicsCaptureFramePhase::Idle;
     int viewportCameraDragButton_ = -1;
     GizmoOperation gizmoOperation_ = GizmoOperation::Translate;
+    std::optional<scene::TerrainPlacementKind> terrainPlacementKind_;
     float translateSnap_ = 0.5f;
     float rotateSnap_ = 15.0f;
     float scaleSnap_ = 0.1f;

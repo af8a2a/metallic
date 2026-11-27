@@ -5441,6 +5441,38 @@ bool Scene::setObjectWorldMatrix(SceneEntity object, const float4x4& worldMatrix
     return true;
 }
 
+SceneEntity Scene::instantiateMesh(SceneEntity prototype, std::string name, const float4x4& worldMatrix)
+{
+    const auto source = std::as_const(sceneGraph_).object(prototype);
+    const auto* mesh = source.tryGetComponent<MeshComponent>();
+    if (!valid() || mesh == nullptr || mesh->renderNodeIndices.empty() ||
+        nodes_.size() >= INT32_MAX || renderNodes_.size() + mesh->renderNodeIndices.size() >= INT32_MAX) {
+        return kNullSceneEntity;
+    }
+    const int32_t nodeIndex = static_cast<int32_t>(nodes_.size());
+    const auto sourceRenderNodes = mesh->renderNodeIndices;
+    MeshComponent instance{.meshIndex = mesh->meshIndex};
+    auto object = sceneGraph_.createObject(std::move(name), nodeIndex, worldMatrix, true);
+    if (!object) {
+        return kNullSceneEntity;
+    }
+    instance.renderNodeIndices.reserve(sourceRenderNodes.size());
+    for (const int32_t index : sourceRenderNodes) {
+        RenderNode renderNode = renderNodes_[static_cast<size_t>(index)];
+        renderNode.object = object.entity();
+        renderNode.nodeIndex = nodeIndex;
+        renderNode.visible = true;
+        renderNode.localTransform = float4x4::Identity();
+        renderNode.localOffset = float3(0.0f);
+        stats_.triangleCount += renderPrimitives_[static_cast<size_t>(renderNode.renderPrimitiveIndex)].triangleCount;
+        instance.renderNodeIndices.push_back(static_cast<int32_t>(renderNodes_.size()));
+        renderNodes_.push_back(renderNode);
+    }
+    object.addOrReplaceComponent<MeshComponent>(std::move(instance));
+    refreshTransforms();
+    return object.entity();
+}
+
 bool Scene::setRenderNodeLocalTransform(int32_t renderNodeIndex, const float4x4& localTransform)
 {
     if (!validIndex(renderNodeIndex, renderNodes_.size()) ||

@@ -3,6 +3,7 @@
 #include "Runtime/Scene/SceneEnvironment.h"
 #include "Runtime/Scene/SceneLighting.h"
 #include "Runtime/Scene/Scene.h"
+#include "Runtime/Scene/TerrainHeightField.h"
 
 #include <filesystem>
 #include <string>
@@ -18,6 +19,17 @@ struct WorldItemId {
     WorldItemType type;
     uint64_t id;
     bool operator==(const WorldItemId&) const = default;
+};
+
+enum class TerrainPlacementKind : uint8_t { Rock, Vegetation };
+
+struct TerrainPlacement {
+    uint64_t id = 0;
+    TerrainPlacementKind kind = TerrainPlacementKind::Rock;
+    float worldX = 0.0f;
+    float worldZ = 0.0f;
+    bool enabled = true;
+    SceneEntity object = kNullSceneEntity;
 };
 
 class SceneDocument : public Scene {
@@ -61,6 +73,14 @@ public:
     bool setLighting(LightingSettings lighting);
     const LightingSettings& lighting() const;
 
+    const TerrainHeightField* terrainHeightField() const { return heightField_ ? &*heightField_ : nullptr; }
+    const std::vector<TerrainPlacement>& terrainPlacements() const { return terrainPlacements_; }
+    const TerrainPlacement* terrainPlacementForObject(SceneEntity object) const;
+    SceneEntity terrainPlacementObject(uint64_t id) const;
+    std::optional<uint64_t> addTerrainPlacement(TerrainPlacementKind kind, float worldX, float worldZ,
+        std::string& error);
+    bool setTerrainPlacementEnabled(uint64_t id, bool enabled, std::string& error);
+
     bool dirty() const { return dirty_; }
     void setDirty(bool dirty) { dirty_ = dirty; }
     const std::filesystem::path& sourcePath() const { return sourcePath_; }
@@ -82,11 +102,21 @@ private:
         const SceneLoadProgressCallback& progressCallback,
         bool deferMeshletBuild, bool streamMetadata);
     bool applySidecar(const std::filesystem::path& path);
+    bool loadTerrain(const std::filesystem::path& heightField, std::array<std::string, 2> prototypes,
+        std::vector<TerrainPlacement> placements);
+    SceneEntity instantiateTerrainPlacement(const TerrainPlacement& placement, const TerrainSurfaceSample& surface);
+    TerrainPlacement* findTerrainPlacement(SceneEntity object);
     void importVirtualLights();
     void pruneWorldItemPresentations();
 
     std::filesystem::path sourcePath_;
     std::filesystem::path documentPath_;
+    std::filesystem::path heightFieldPath_;
+    std::optional<TerrainHeightField> heightField_;
+    std::array<std::string, 2> terrainPrototypeNames_;
+    std::array<SceneEntity, 2> terrainPrototypes_{kNullSceneEntity, kNullSceneEntity};
+    std::vector<TerrainPlacement> terrainPlacements_;
+    size_t terrainSourceNodeCount_ = 0;
     std::string documentWarning_;
     EnvironmentSettings environment_;
     // Remembers imported nodes even after their native light is deleted, so a

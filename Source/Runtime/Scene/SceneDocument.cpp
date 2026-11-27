@@ -30,6 +30,53 @@ constexpr int kSingleSourceSceneDocumentVersion = 3;
 constexpr int kOldestSceneDocumentVersion = 1;
 constexpr std::string_view kSceneDocumentSuffix = ".metallic_scene.json";
 
+constexpr std::array kTerrainPrototypeKeys{"rockPrototype", "vegetationPrototype"};
+constexpr std::array<std::string_view, 2> kTerrainKindNames{"rock", "vegetation"};
+constexpr std::array kTerrainObjectNames{"Terrain Rock", "Terrain Vegetation"};
+
+bool readTerrainPlacements(const nlohmann::json& values, std::vector<TerrainPlacement>& placements)
+{
+    if (!values.is_array()) {
+        return false;
+    }
+    std::unordered_set<uint64_t> ids;
+    for (const auto& value : values) {
+        if (!value.is_object() || !value.contains("id") || !value["id"].is_number_unsigned() ||
+            !value.contains("kind") || !value["kind"].is_string() || !value.contains("xz")) {
+            return false;
+        }
+        const auto kind = std::ranges::find(kTerrainKindNames, std::string_view(value["kind"].get_ref<const std::string&>()));
+        const auto& xz = value["xz"];
+        const uint64_t id = value["id"].get<uint64_t>();
+        if (kind == kTerrainKindNames.end() || !xz.is_array() || xz.size() != 2 ||
+            !xz[0].is_number() || !xz[1].is_number() || id == 0 || !ids.insert(id).second) {
+            return false;
+        }
+        const float worldX = xz[0].get<float>();
+        const float worldZ = xz[1].get<float>();
+        if (!std::isfinite(worldX) || !std::isfinite(worldZ)) {
+            return false;
+        }
+        placements.push_back({id, static_cast<TerrainPlacementKind>(kind - kTerrainKindNames.begin()), worldX, worldZ});
+    }
+    return true;
+}
+
+float4x4 terrainPlacementTransform(const TerrainSurfaceSample& surface)
+{
+    const float3 up = surface.normal;
+    const float3 reference = std::abs(up.z) < 0.95f ? float3(0, 0, 1) : float3(1, 0, 0);
+    const float3 right = normalize(cross(up, reference));
+    const float3 forward = cross(right, up);
+    const auto& p = surface.position;
+    float4x4 result = float4x4::Identity();
+    result.a00 = right.x; result.a10 = right.y; result.a20 = right.z;
+    result.a01 = up.x; result.a11 = up.y; result.a21 = up.z;
+    result.a02 = forward.x; result.a12 = forward.y; result.a22 = forward.z;
+    result.a03 = p.x; result.a13 = p.y; result.a23 = p.z;
+    return result;
+}
+
 template <typename Item>
 void normalizeWorldItemIdentities(std::vector<Item>& items)
 {
@@ -1473,6 +1520,12 @@ void SceneDocument::clear()
     Scene::clear();
     sourcePath_.clear();
     documentPath_.clear();
+    heightFieldPath_.clear();
+    heightField_.reset();
+    terrainPrototypeNames_ = {};
+    terrainPrototypes_.fill(kNullSceneEntity);
+    terrainPlacements_.clear();
+    terrainSourceNodeCount_ = 0;
     documentWarning_.clear();
     environment_ = EnvironmentSettings{};
     lighting_ = LightingSettings{};
@@ -1489,15 +1542,16 @@ void SceneDocument::clear()
 
 bool SceneDocument::setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix)
 {
-    if (!Scene::setNodeLocalMatrix(nodeIndex, localMatrix)) {
-        return false;
-    }
-    dirty_ = true;
-    return true;
+    const auto object = objectForNode(nodeIndex);
+    return object && setObjectLocalMatrix(object.entity(), localMatrix);
 }
 
 bool SceneDocument::setObjectLocalMatrix(SceneEntity object, const float4x4& localMatrix)
 {
+    if (findTerrainPlacement(object)) {
+        // Anchors are scene roots, so their local and world translations coincide.
+        return setObjectWorldMatrix(object, localMatrix);
+    }
     const ConstSceneObject sceneObject = sceneGraph().object(object);
     if (!sceneObject || !sceneObject.hasComponent<SourceNodeComponent>() ||
         !Scene::setObjectLocalMatrix(object, localMatrix)) {
@@ -1509,11 +1563,93 @@ bool SceneDocument::setObjectLocalMatrix(SceneEntity object, const float4x4& loc
 
 bool SceneDocument::setObjectWorldMatrix(SceneEntity object, const float4x4& worldMatrix)
 {
+    if (auto* placement = findTerrainPlacement(object)) {
+        const auto surface = heightField_->sample(worldMatrix.a03, worldMatrix.a23);
+        if (!surface || !Scene::setObjectWorldMatrix(object, terrainPlacementTransform(*surface))) {
+            return false;
+        }
+        placement->worldX = surface->position.x;
+        placement->worldZ = surface->position.z;
+        dirty_ = true;
+        return true;
+    }
     const ConstSceneObject sceneObject = sceneGraph().object(object);
     if (!sceneObject || !sceneObject.hasComponent<SourceNodeComponent>() ||
         !Scene::setObjectWorldMatrix(object, worldMatrix)) {
         return false;
     }
+    dirty_ = true;
+    return true;
+}
+
+TerrainPlacement* SceneDocument::findTerrainPlacement(SceneEntity object)
+{
+    return const_cast<TerrainPlacement*>(terrainPlacementForObject(object));
+}
+
+const TerrainPlacement* SceneDocument::terrainPlacementForObject(SceneEntity object) const
+{
+    if (object == kNullSceneEntity) { return nullptr; }
+    const auto found = std::ranges::find(terrainPlacements_, object, &TerrainPlacement::object);
+    return found != terrainPlacements_.end() ? &*found : nullptr;
+}
+
+SceneEntity SceneDocument::terrainPlacementObject(uint64_t id) const
+{
+    const auto found = std::ranges::find(terrainPlacements_, id, &TerrainPlacement::id);
+    return found != terrainPlacements_.end() ? found->object : kNullSceneEntity;
+}
+
+SceneEntity SceneDocument::instantiateTerrainPlacement(const TerrainPlacement& placement, const TerrainSurfaceSample& surface)
+{
+    const size_t kind = static_cast<size_t>(placement.kind);
+    return instantiateMesh(terrainPrototypes_[kind],
+        std::string(kTerrainObjectNames[kind]) + " " + std::to_string(placement.id), terrainPlacementTransform(surface));
+}
+
+std::optional<uint64_t> SceneDocument::addTerrainPlacement(TerrainPlacementKind kind, float worldX, float worldZ,
+    std::string& error)
+{
+    error.clear();
+    if (!heightField_ || static_cast<size_t>(kind) >= terrainPrototypes_.size()) {
+        error = "The scene has no terrain placement prototype for this kind.";
+        return std::nullopt;
+    }
+    const auto surface = heightField_->sample(worldX, worldZ);
+    if (!surface) {
+        error = "Terrain placement is outside the source heightfield.";
+        return std::nullopt;
+    }
+    const auto last = std::ranges::max_element(terrainPlacements_, {}, &TerrainPlacement::id);
+    const uint64_t lastId = last != terrainPlacements_.end() ? last->id : 0;
+    if (lastId == UINT64_MAX) {
+        error = "Terrain placement IDs are exhausted.";
+        return std::nullopt;
+    }
+    TerrainPlacement placement{lastId + 1u, kind, worldX, worldZ};
+    placement.object = instantiateTerrainPlacement(placement, *surface);
+    if (placement.object == kNullSceneEntity) {
+        error = "Could not instantiate the terrain placement mesh.";
+        return std::nullopt;
+    }
+    terrainPlacements_.push_back(placement);
+    dirty_ = true;
+    return placement.id;
+}
+
+bool SceneDocument::setTerrainPlacementEnabled(uint64_t id, bool enabled, std::string& error)
+{
+    error.clear();
+    const auto found = std::ranges::find(terrainPlacements_, id, &TerrainPlacement::id);
+    if (found == terrainPlacements_.end()) {
+        error = "Terrain placement no longer exists.";
+        return false;
+    }
+    if (found->enabled != enabled && found->object != kNullSceneEntity && !setObjectVisible(found->object, enabled)) {
+        error = "Could not update terrain placement visibility.";
+        return false;
+    }
+    found->enabled = enabled;
     dirty_ = true;
     return true;
 }
@@ -2606,7 +2742,80 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
         documentWarning_ = "Invalid world.environment: active physical clouds must fit inside the atmosphere shell.";
         return false;
     }
+    if (document.contains("terrain") || document.contains("terrainPlacements")) {
+        const auto terrain = document.find("terrain");
+        if (compositionDocument_ || terrain == document.end() || !terrain->is_object() ||
+            !terrain->contains("heightField") || !terrain->at("heightField").is_string() ||
+            terrain->at("heightField").get_ref<const std::string&>().empty()) {
+            documentWarning_ = "Terrain placements require a world-aligned heightfield in a single-source scene.";
+            return false;
+        }
+        std::array<std::string, 2> prototypes;
+        for (size_t kind = 0; kind < prototypes.size(); ++kind) {
+            const auto name = terrain->find(kTerrainPrototypeKeys[kind]);
+            if (name == terrain->end() || !name->is_string() || name->get_ref<const std::string&>().empty()) {
+                documentWarning_ = std::string("Missing terrain prototype name: ") + kTerrainPrototypeKeys[kind];
+                return false;
+            }
+            prototypes[kind] = name->get<std::string>();
+        }
+        std::vector<TerrainPlacement> placements;
+        if (const auto values = document.find("terrainPlacements"); values != document.end() &&
+            !readTerrainPlacements(*values, placements)) {
+            documentWarning_ = "Invalid terrain placement IDs, kinds, or world XZ anchors.";
+            return false;
+        }
+        const auto heightPath = path.parent_path() / terrain->at("heightField").get<std::string>();
+        if (!loadTerrain(heightPath, std::move(prototypes), std::move(placements))) {
+            return false;
+        }
+    }
     sidecarLoaded_ = true;
+    return true;
+}
+
+bool SceneDocument::loadTerrain(const std::filesystem::path& heightField, std::array<std::string, 2> prototypes,
+    std::vector<TerrainPlacement> placements)
+{
+    heightFieldPath_ = normalizedPath(heightField);
+    std::string error;
+    heightField_ = TerrainHeightField::load(heightFieldPath_, error);
+    if (!heightField_) {
+        documentWarning_ = "Could not load terrain heightfield: " + error;
+        return false;
+    }
+    terrainSourceNodeCount_ = nodes().size();
+    for (size_t kind = 0; kind < terrainPrototypes_.size(); ++kind) {
+        for (size_t index = 0; index < terrainSourceNodeCount_; ++index) {
+            if (nodes()[index].name != prototypes[kind]) { continue; }
+            const auto object = objectForNode(static_cast<int32_t>(index));
+            const auto* mesh = object.tryGetComponent<MeshComponent>();
+            if (terrainPrototypes_[kind] != kNullSceneEntity || nodes()[index].visible ||
+                mesh == nullptr || mesh->renderNodeIndices.empty()) {
+                documentWarning_ = "Invalid or ambiguous terrain prototype: " + prototypes[kind];
+                return false;
+            }
+            terrainPrototypes_[kind] = object.entity();
+        }
+        if (terrainPrototypes_[kind] == kNullSceneEntity) {
+            documentWarning_ = "Missing terrain prototype: " + prototypes[kind];
+            return false;
+        }
+    }
+    terrainPrototypeNames_ = std::move(prototypes);
+    for (auto& placement : placements) {
+        const auto surface = heightField_->sample(placement.worldX, placement.worldZ);
+        if (!surface) {
+            appendWarning(documentWarning_, "Terrain placement " + std::to_string(placement.id) + " is outside the imported heightfield.");
+            continue;
+        }
+        placement.object = instantiateTerrainPlacement(placement, *surface);
+        if (placement.object == kNullSceneEntity) {
+            documentWarning_ = "Could not restore terrain placement " + std::to_string(placement.id) + '.';
+            return false;
+        }
+    }
+    terrainPlacements_ = std::move(placements);
     return true;
 }
 
@@ -2642,7 +2851,8 @@ bool SceneDocument::save(std::string& message)
     }
 
     nlohmann::json nodeOverrides = nlohmann::json::array();
-    for (size_t nodeIndex = 0; nodeIndex < nodes().size(); ++nodeIndex) {
+    const size_t authoredNodeCount = heightField_ ? terrainSourceNodeCount_ : nodes().size();
+    for (size_t nodeIndex = 0; nodeIndex < authoredNodeCount; ++nodeIndex) {
         const SceneNode& node = nodes()[nodeIndex];
         nlohmann::json nodeOverride;
         bool hasOverride = false;
@@ -2891,6 +3101,21 @@ bool SceneDocument::save(std::string& message)
     }
     if (realtimeGI_) {
         document["world"]["realtimeGI"] = serializeRealtimeGI(*realtimeGI_, documentPath_.parent_path());
+    }
+    if (heightField_) {
+        std::error_code relativeError;
+        const auto relativeHeightPath = std::filesystem::relative(heightFieldPath_, documentPath_.parent_path(), relativeError);
+        document["terrain"]["heightField"] = (relativeError || relativeHeightPath.empty() ? heightFieldPath_ : relativeHeightPath).generic_string();
+        for (size_t kind = 0; kind < terrainPrototypeNames_.size(); ++kind) {
+            document["terrain"][kTerrainPrototypeKeys[kind]] = terrainPrototypeNames_[kind];
+        }
+        auto placements = nlohmann::json::array();
+        for (const auto& placement : terrainPlacements_) {
+            if (!placement.enabled) { continue; }
+            placements.push_back({{"id", placement.id}, {"kind", kTerrainKindNames[static_cast<size_t>(placement.kind)]},
+                {"xz", {placement.worldX, placement.worldZ}}});
+        }
+        document["terrainPlacements"] = std::move(placements);
     }
     if (!writeAtomically(documentPath_, document.dump(2) + '\n', message)) {
         return false;

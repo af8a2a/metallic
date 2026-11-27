@@ -338,6 +338,7 @@ add_library(MetallicRuntimeScene STATIC
     Runtime/Scene/SceneGraph.cpp
     Runtime/Scene/SceneLoader.cpp
     Runtime/Scene/ScenePicker.cpp
+    Runtime/Scene/TerrainHeightField.cpp
     Runtime/Scene/TinyGLTFImpl.cpp
 )
 if(METALLIC_ENABLE_OPENUSD)

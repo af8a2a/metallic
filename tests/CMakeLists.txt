@@ -363,6 +363,7 @@ add_executable(MetallicSceneTests
     scene/Main.cpp
     scene/AstronomyTests.cpp
     scene/SceneGraphTests.cpp
+    scene/TerrainHeightFieldTests.cpp
 )
 
 target_include_directories(MetallicSceneTests PRIVATE
@@ -879,6 +880,14 @@ if(Python3_Interpreter_FOUND)
         MetallicTerrainBlocks4x4VSMSample terrain-streaming-regression 600)
     add_metallic_terrain_streaming_regression(MetallicTerrain8x8StreamingRegression 8
         MetallicTerrainBlocks8x8VSMSample terrain-streaming-regression-8x8 1200)
+    if(TARGET MetallicTerrainPlacement16x16VSMSample)
+        add_test(NAME MetallicTerrainPlacementEditorSmoke
+            COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunTerrainPlacementSmoke.py"
+                --executable "$<TARGET_FILE:Metallic>" --output "${CMAKE_CURRENT_BINARY_DIR}/terrain-placement-editor")
+        set_tests_properties(MetallicTerrainPlacementEditorSmoke PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "editor;rhi;terrain"
+            RESOURCE_LOCK MetallicEditor TIMEOUT 1200)
+    endif()
     add_test(NAME MetallicCIPresetTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestCIPreset.py"
             --build-dir "${CMAKE_BINARY_DIR}")
