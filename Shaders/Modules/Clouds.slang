@@ -27,7 +27,8 @@ public float4 cloudConservativeDensity(GPUAtmosphereParameters p, float3 cameraR
 {
     float3 worldKm = cameraRelativeKm + p.observerWorldTop.xyz * 0.001f;
     float periodKm = p.cloudAdvection.y;
-    float3 skyTexScale = float3(worldKm.xz / periodKm + 0.5f, worldKm.y / 256.0f);
+    float3 skyTexScale = float3((worldKm.xz - p.cloudShapeTransform.xy) / periodKm + 0.5f,
+        worldKm.y / p.cloudShapeTransform.z);
     // Seed zero preserves the reference placement. Other seeds translate the same field.
     uint seed = hash(asuint(p.cloudAdvection.w));
     skyTexScale.xy += float2(seed & 0xffffu, seed >> 16u) * (1.0f / 65536.0f);

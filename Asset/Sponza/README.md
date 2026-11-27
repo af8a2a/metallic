@@ -6,6 +6,8 @@ In **Open Render Graph Editor**, choose **Built-in Sample → Sponza / Technolog
 
 Under **Scene Browser → Scene List → Cameras**, select **Courtyard Cloud Shadows** to recall the opening view, or choose **Overview**, **Floor Decals**, or **Fog & Rect Lights**. Click **Use as Viewport Camera** in the inspector. Toggle **Volumetric clouds** in **Environment** to compare the sunlit paving at the same exposure. The wind speed starts at zero to hold the cloud edge in place.
 
+Open **Runtime Settings → CloudView → Scene cloud settings** to tune the clouds while viewing the courtyard. Click **Match horizontal size** to try a 1.28 km vertical noise scale in place of the scene's 256 km default. This changes both the cloud silhouette and the ground shadow. Drag **Cloud position offset X/Z (km)** to place the shadow edge on the paving. Save the scene to keep these edits. **Maximum view ray samples** and **Cloud self-shadow ray samples** control rendering quality on the CloudView graph node.
+
 For the other comparisons, toggle the decals in the scene browser, the fog in **Environment**, or **Warm floor wash** and **Cool arcade wash** in the lighting controls.
 
 ## Screenshot

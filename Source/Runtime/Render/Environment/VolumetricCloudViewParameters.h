@@ -58,16 +58,19 @@ struct VolumetricCloudViewParams {
     CloudViewColorOut writeFar, writeNear, writeDepth;
     CloudViewDepthPairIn currentRepresentativeDepth, previousRepresentativeDepth;
     CloudViewDepthPairOut writeRepresentativeDepth;
+    CloudViewUInt viewRaySampleMaxCount, shadowViewRaySampleMaxCount;
 };
 
 #ifdef __cplusplus
-inline constexpr uint64_t kVolumetricCloudViewABI = 0x56434c4400000003ull;
+inline constexpr uint64_t kVolumetricCloudViewABI = 0x56434c4400000004ull;
 static_assert(offsetof(VolumetricCloudViewParams, sceneColor) == 88);
 static_assert(offsetof(VolumetricCloudViewParams, cloudDepth) == 136);
 static_assert(offsetof(VolumetricCloudViewParams, previousCamera) == 144);
 static_assert(offsetof(VolumetricCloudViewParams, invDistanceToSampleCountMax) == 236);
 static_assert(offsetof(VolumetricCloudViewParams, writeFar) == 264);
 static_assert(offsetof(VolumetricCloudViewParams, writeRepresentativeDepth) == 284);
-static_assert(sizeof(VolumetricCloudViewParams) == 288);
+static_assert(offsetof(VolumetricCloudViewParams, viewRaySampleMaxCount) == 288);
+static_assert(offsetof(VolumetricCloudViewParams, shadowViewRaySampleMaxCount) == 292);
+static_assert(sizeof(VolumetricCloudViewParams) == 304);
 #endif
 } // namespace metallic::render (C++) / Metallic (Slang)

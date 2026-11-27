@@ -34,16 +34,17 @@ void main()
     output[19] = parameters.moonPhase;
     output[20] = asfloat(parameters.cloudShapeResources);
     output[21] = parameters.cloudShadowMoonAnchor;
+    output[22] = parameters.cloudShapeTransform;
     uint width, height;
     resolveUniform(environment.transmittance).GetDimensions(width, height);
-    output[22] = float4(width, height, 0.0, 0.0);
-    resolveUniform(environment.multiScattering).GetDimensions(width, height);
     output[23] = float4(width, height, 0.0, 0.0);
-    resolveUniform(environment.skyView).GetDimensions(width, height);
+    resolveUniform(environment.multiScattering).GetDimensions(width, height);
     output[24] = float4(width, height, 0.0, 0.0);
-    resolveUniform(environment.cloudShadow).GetDimensions(width, height);
+    resolveUniform(environment.skyView).GetDimensions(width, height);
     output[25] = float4(width, height, 0.0, 0.0);
+    resolveUniform(environment.cloudShadow).GetDimensions(width, height);
+    output[26] = float4(width, height, 0.0, 0.0);
     let aerial = resolveBuffer<StructuredBuffer<float4>>(environment.aerialPerspective);
-    output[26] = aerial[0];
-    output[27] = aerial[1];
+    output[27] = aerial[0];
+    output[28] = aerial[1];
 }

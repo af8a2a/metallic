@@ -28,7 +28,7 @@ void store(uint index, float3 value)
 void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
 {
     if (any(id != 0u)) { return; }
-    for (uint index = 0u; index < 64u; ++index) { store(index, float3(0.0)); }
+    for (uint index = 0u; index < 65u; ++index) { store(index, float3(0.0)); }
     GPUAtmosphereParameters p = loadParameters(gProbe.resources.parameters);
     let trans = resolveUniform(gProbe.resources.transmittance);
     let multi = resolveUniform(gProbe.resources.multiScattering);
@@ -218,6 +218,7 @@ void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
         shape.cloudLayer = float4(1.5, 4.0, 0.5, 1.0);
         shape.cloudOptics.x = 8.0;
         shape.cloudAdvection = float4(0, 256, 0, 0);
+        shape.cloudShapeTransform = float4(0, 0, 256, 0);
         float3 a = worldToAtmosphereKm(shape, float3(-13000, 3000, 16000));
         float3 b = worldToAtmosphereKm(shape, float3(4000, 3750, 18000));
         float3 c = worldToAtmosphereKm(shape, float3(6000, 2500, 3000));
@@ -235,5 +236,18 @@ void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
         shape.observerPlanetBottom.xyz = a;
         shape.observerWorldTop.xyz = float3(-13000, 3000, 16000);
         store(50, float3(halfFade, Metallic.Clouds::density(shape, a), 0));
+
+        // Follow an occupied material sample through a horizontal translation, then a vertical rescale.
+        shape.observerWorldTop.xyz = float3(0);
+        float3 point = float3(-13, 3, 16);
+        float4 original = Metallic.Clouds::cloudConservativeDensity(shape, point, 0.6f);
+        shape.cloudShapeTransform.xy = float2(2, -4);
+        point.xz += shape.cloudShapeTransform.xy;
+        float4 translated = Metallic.Clouds::cloudConservativeDensity(shape, point, 0.6f);
+        shape.cloudShapeTransform.z *= 0.5f;
+        point.y *= 0.5f;
+        float4 rescaled = Metallic.Clouds::cloudConservativeDensity(shape, point, 0.6f);
+        store(64, float3(original.x, dot(abs(translated - original), float4(1)),
+            dot(abs(rescaled - translated), float4(1))));
     }
 }

@@ -1154,6 +1154,54 @@ bool clipViewportEdge(float4& start, float4& end)
     return start.w > 0.0f && end.w > 0.0f;
 }
 
+bool drawCloudControls(environment::WeatherState& weather, const environment::AtmosphereState& atmosphere)
+{
+    bool changed = false;
+    changed |= ImGui::Checkbox("Volumetric clouds", &weather.cloudEnabled);
+    const float maximumCloudAltitude = atmosphere.topRadiusKm - atmosphere.bottomRadiusKm;
+    const float maximumCloudBase = std::nextafter(maximumCloudAltitude, 0.0f);
+    changed |= ImGui::SliderFloat("Coverage", &weather.cloudCoverage, 0.0f, 1.0f, "%.3f");
+    changed |= ImGui::DragFloat("Cloud density", &weather.cloudDensity, 0.01f,
+        0.0f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::DragFloat("Cloud base (km)", &weather.cloudBaseAltitudeKm,
+            0.01f, 0.0f, maximumCloudBase, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
+        weather.cloudTopAltitudeKm = std::clamp(weather.cloudTopAltitudeKm,
+            std::nextafter(weather.cloudBaseAltitudeKm, maximumCloudAltitude), maximumCloudAltitude);
+        changed = true;
+    }
+    const float minimumCloudTop = std::nextafter(
+        std::clamp(weather.cloudBaseAltitudeKm, 0.0f, maximumCloudBase), maximumCloudAltitude);
+    changed |= ImGui::DragFloat("Cloud top (km)", &weather.cloudTopAltitudeKm,
+        0.01f, minimumCloudTop, maximumCloudAltitude,
+        "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::Text("Atmosphere height: %.3f km; active clouds must fit inside it.", maximumCloudAltitude);
+    changed |= ImGui::DragFloat("Cloud extinction (km^-1)", &weather.cloudExtinctionPerKm,
+        0.1f, 0.0f, 1000.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::DragFloat("Horizontal cloud pattern size (km)", &weather.cloudPatternWorldSizeKm,
+        0.01f, environment::kMinCloudLayoutKm, environment::kMaxCloudLayoutKm, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::DragFloat("Vertical cloud noise size (km)", &weather.cloudVerticalNoiseWorldSizeKm,
+        std::max(0.001f, weather.cloudVerticalNoiseWorldSizeKm * 0.005f),
+        environment::kMinCloudLayoutKm, environment::kMaxCloudLayoutKm, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::SmallButton("Match horizontal size")) {
+        weather.cloudVerticalNoiseWorldSizeKm = weather.cloudPatternWorldSizeKm;
+        changed = true;
+    }
+    changed |= ImGui::DragFloat2("Cloud position offset X/Z (km)", &weather.cloudPatternOffsetKm.x,
+        0.001f, -environment::kMaxCloudLayoutKm, environment::kMaxCloudLayoutKm, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::DragFloat("Cloud shadow half-width (km)", &weather.cloudShadowExtentKm,
+        0.01f, environment::kMinCloudLayoutKm, environment::kMaxCloudLayoutKm, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::DragFloat("Wind (m/real second)", &weather.windSpeed,
+        0.1f, 0.0f, 1000.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    float windDirection[] = {weather.windDirection.x, weather.windDirection.y};
+    if (ImGui::DragFloat2("Wind direction (east/north)", windDirection, 0.01f)) {
+        weather.windDirection = float2(windDirection[0], windDirection[1]);
+        changed = true;
+    }
+    changed |= ImGui::InputScalar("Cloud noise seed", ImGuiDataType_U32, &weather.noiseSeed);
+    ImGui::TextUnformatted("Clock pause freezes astronomy; zero wind freezes cloud drift.");
+    return changed;
+}
+
 bool drawFogVolumeProperties(environment::LocalFogVolume& volume)
 {
     bool changed = false;
@@ -4864,6 +4912,18 @@ bool EditorApplication::drawRuntimeSettingsForNode(
         }
         ImGui::PopID();
     }
+    if (node.type == "VolumetricCloudViewPass" && scene_.valid() &&
+        scene_.worldEnvironment().source == environment::EnvironmentSource::PhysicalAtmosphere &&
+        ImGui::TreeNodeEx("Scene cloud settings", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const auto& current = scene_.worldEnvironment();
+        auto weather = current.weather;
+        if (drawCloudControls(weather, current.atmosphere)) {
+            auto world = current;
+            world.weather = weather;
+            applyWorldEnvironmentEdit(std::move(world));
+        }
+        ImGui::TreePop();
+    }
     ImGui::PopID();
 
     if (changed) {
@@ -4988,6 +5048,23 @@ void EditorApplication::drawCameraControls()
 
     if (changed) {
         applyViewportCameraProperties(std::move(properties), "Updated render camera");
+    }
+}
+
+void EditorApplication::applyWorldEnvironmentEdit(environment::WorldEnvironment world)
+{
+    const bool removedVolume = world.volumetricFog.localVolumes.size() <
+        scene_.worldEnvironment().volumetricFog.localVolumes.size();
+    if (!environment::validWorldEnvironment(world)) {
+        renderGraphStatus_ = "World environment edit rejected: invalid clock, location, medium or weather; "
+            "active clouds must fit inside the atmosphere. Previous values were preserved.";
+    } else if (scene_.setWorldEnvironment(std::move(world))) {
+        if (removedVolume) { discardRemovedWorldItemEdits(); }
+        renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
+        sceneNonTransformDirty_ = true;
+        updateSceneDirtyState();
+        viewportPreviewNeedsRender_ = true;
+        renderGraphStatus_ = "Updated world environment";
     }
 }
 
@@ -5136,44 +5213,11 @@ void EditorApplication::drawEnvironmentControls()
     }
     if (physicalAtmosphere && ImGui::TreeNode("Weather and clouds")) {
         auto& weather = celestialEnvironment.weather;
-        celestialChanged |= ImGui::Checkbox("Volumetric clouds", &weather.cloudEnabled);
-        const float maximumCloudAltitude = celestialEnvironment.atmosphere.topRadiusKm -
-            celestialEnvironment.atmosphere.bottomRadiusKm;
-        const float maximumCloudBase = std::nextafter(maximumCloudAltitude, 0.0f);
-        celestialChanged |= ImGui::SliderFloat("Coverage", &weather.cloudCoverage, 0.0f, 1.0f, "%.3f");
-        celestialChanged |= ImGui::DragFloat("Cloud density", &weather.cloudDensity, 0.01f,
-            0.0f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-        if (ImGui::DragFloat("Cloud base (km)", &weather.cloudBaseAltitudeKm,
-                0.01f, 0.0f, maximumCloudBase, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
-            weather.cloudTopAltitudeKm = std::clamp(weather.cloudTopAltitudeKm,
-                std::nextafter(weather.cloudBaseAltitudeKm, maximumCloudAltitude), maximumCloudAltitude);
-            celestialChanged = true;
-        }
-        const float minimumCloudTop = std::nextafter(
-            std::clamp(weather.cloudBaseAltitudeKm, 0.0f, maximumCloudBase), maximumCloudAltitude);
-        celestialChanged |= ImGui::DragFloat("Cloud top (km)", &weather.cloudTopAltitudeKm,
-            0.01f, minimumCloudTop, maximumCloudAltitude,
-            "%.3f", ImGuiSliderFlags_AlwaysClamp);
-        ImGui::Text("Atmosphere height: %.3f km; active clouds must fit inside it.", maximumCloudAltitude);
-        celestialChanged |= ImGui::DragFloat("Cloud extinction (km^-1)", &weather.cloudExtinctionPerKm,
-            0.1f, 0.0f, 1000.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-        celestialChanged |= ImGui::DragFloat("Horizontal cloud pattern size (km)", &weather.cloudPatternWorldSizeKm,
-            0.01f, environment::kMinCloudLayoutKm, environment::kMaxCloudLayoutKm, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-        celestialChanged |= ImGui::DragFloat("Cloud shadow half-width (km)", &weather.cloudShadowExtentKm,
-            0.01f, environment::kMinCloudLayoutKm, environment::kMaxCloudLayoutKm, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        celestialChanged |= drawCloudControls(celestialEnvironment.weather, celestialEnvironment.atmosphere);
         celestialChanged |= ImGui::DragFloat("Aerosol density", &weather.aerosolDensity,
             0.01f, 0.0f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
         celestialChanged |= ImGui::SliderFloat("Humidity", &weather.humidity, 0.0f, 1.0f, "%.3f");
         celestialChanged |= ImGui::SliderFloat("Precipitation state", &weather.precipitation, 0.0f, 1.0f, "%.3f");
-        celestialChanged |= ImGui::DragFloat("Wind (m/real second)", &weather.windSpeed,
-            0.1f, 0.0f, 1000.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-        float windDirection[] = {weather.windDirection.x, weather.windDirection.y};
-        if (ImGui::DragFloat2("Wind direction (east/north)", windDirection, 0.01f)) {
-            weather.windDirection = float2(windDirection[0], windDirection[1]);
-            celestialChanged = true;
-        }
-        celestialChanged |= ImGui::InputScalar("Cloud noise seed", ImGuiDataType_U32, &weather.noiseSeed);
-        ImGui::TextUnformatted("Clock pause freezes astronomy; zero wind freezes cloud drift.");
         ImGui::TreePop();
     }
     if (ImGui::TreeNode("Volumetric fog")) {
@@ -5266,21 +5310,7 @@ void EditorApplication::drawEnvironmentControls()
         }
         ImGui::TreePop();
     }
-    if (celestialChanged) {
-        const bool removedVolume = celestialEnvironment.volumetricFog.localVolumes.size() <
-            scene_.worldEnvironment().volumetricFog.localVolumes.size();
-        if (!environment::validWorldEnvironment(celestialEnvironment)) {
-            renderGraphStatus_ = "World environment edit rejected: invalid clock, location, medium or weather; "
-                "active clouds must fit inside the atmosphere. Previous values were preserved.";
-        } else if (scene_.setWorldEnvironment(celestialEnvironment)) {
-            if (removedVolume) { discardRemovedWorldItemEdits(); }
-            renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
-            sceneNonTransformDirty_ = true;
-            updateSceneDirtyState();
-            viewportPreviewNeedsRender_ = true;
-            renderGraphStatus_ = "Updated world environment";
-        }
-    }
+    if (celestialChanged) { applyWorldEnvironmentEdit(std::move(celestialEnvironment)); }
     if (renderGraphStatus_.starts_with("World environment edit rejected:")) {
         ImGui::TextWrapped("%s", renderGraphStatus_.c_str());
     }

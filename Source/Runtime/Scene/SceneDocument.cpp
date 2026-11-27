@@ -697,7 +697,8 @@ nlohmann::json serializeWeather(const environment::WeatherState& weather)
     return {{"cloudEnabled", weather.cloudEnabled}, {"cloudCoverage", weather.cloudCoverage},
         {"cloudDensity", weather.cloudDensity}, {"cloudBaseAltitudeKm", weather.cloudBaseAltitudeKm},
         {"cloudTopAltitudeKm", weather.cloudTopAltitudeKm}, {"cloudExtinctionPerKm", weather.cloudExtinctionPerKm},
-        {"cloudPatternWorldSizeKm", weather.cloudPatternWorldSizeKm}, {"cloudShadowExtentKm", weather.cloudShadowExtentKm},
+        {"cloudPatternWorldSizeKm", weather.cloudPatternWorldSizeKm}, {"cloudVerticalNoiseWorldSizeKm", weather.cloudVerticalNoiseWorldSizeKm},
+        {"cloudPatternOffsetKm", {weather.cloudPatternOffsetKm.x, weather.cloudPatternOffsetKm.y}}, {"cloudShadowExtentKm", weather.cloudShadowExtentKm},
         {"aerosolDensity", weather.aerosolDensity}, {"humidity", weather.humidity},
         {"precipitation", weather.precipitation}, {"windSpeed", weather.windSpeed},
         {"windDirection", {weather.windDirection.x, weather.windDirection.y}}, {"noiseSeed", weather.noiseSeed}};
@@ -714,6 +715,7 @@ bool parseWeather(const nlohmann::json& value, environment::WeatherState& weathe
         {"cloudCoverage", &weather.cloudCoverage}, {"cloudDensity", &weather.cloudDensity},
         {"cloudBaseAltitudeKm", &weather.cloudBaseAltitudeKm}, {"cloudTopAltitudeKm", &weather.cloudTopAltitudeKm},
         {"cloudPatternWorldSizeKm", &weather.cloudPatternWorldSizeKm}, {"cloudShadowExtentKm", &weather.cloudShadowExtentKm},
+        {"cloudVerticalNoiseWorldSizeKm", &weather.cloudVerticalNoiseWorldSizeKm},
         {"cloudExtinctionPerKm", &weather.cloudExtinctionPerKm}, {"aerosolDensity", &weather.aerosolDensity},
         {"humidity", &weather.humidity}, {"precipitation", &weather.precipitation}, {"windSpeed", &weather.windSpeed},
     };
@@ -722,13 +724,17 @@ bool parseWeather(const nlohmann::json& value, environment::WeatherState& weathe
         if (!readOptionalFiniteNumber(value, name, number, reason)) { return false; }
         *destination = static_cast<float>(number);
     }
-    if (value.contains("windDirection")) {
-        const auto& wind = value["windDirection"];
-        if (!wind.is_array() || wind.size() != 2 || !wind[0].is_number() || !wind[1].is_number()) {
-            reason = "windDirection must be a finite two-number array in horizontal ENU X/Z";
+    const std::pair<const char*, float2*> horizontalVectors[] = {
+        {"windDirection", &weather.windDirection}, {"cloudPatternOffsetKm", &weather.cloudPatternOffsetKm},
+    };
+    for (const auto& [name, destination] : horizontalVectors) {
+        const auto v = value.find(name);
+        if (v == value.end()) { continue; }
+        if (!v->is_array() || v->size() != 2 || !(*v)[0].is_number() || !(*v)[1].is_number()) {
+            reason = std::string(name) + " must be a finite two-number array in horizontal ENU X/Z";
             return false;
         }
-        weather.windDirection = float2(wind[0].get<float>(), wind[1].get<float>());
+        *destination = float2((*v)[0].get<float>(), (*v)[1].get<float>());
     }
     if (value.contains("noiseSeed")) {
         const auto& seed = value["noiseSeed"];
@@ -740,7 +746,7 @@ bool parseWeather(const nlohmann::json& value, environment::WeatherState& weathe
         weather.noiseSeed = seed.get<uint32_t>();
     }
     if (!environment::validWeatherState(weather)) {
-        reason = "invalid cloud layer, pattern size, shadow extent, coverage/density, aerosol/humidity, precipitation or wind";
+        reason = "invalid cloud layer, pattern scale or offset, shadow extent, coverage/density, aerosol/humidity, precipitation or wind";
         return false;
     }
     return true;

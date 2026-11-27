@@ -6502,7 +6502,8 @@ TEST(WorldEnvironment, DynamicDocumentRoundTripRejectsInvalidStateAndPreservesLe
         .longitudeDegrees = -122.345678901, .moonAlbedo = 0.18f};
     world.weather = {.cloudEnabled = true, .cloudCoverage = 0.75f, .cloudDensity = 2.5f,
         .cloudBaseAltitudeKm = 2.0f, .cloudTopAltitudeKm = 6.0f, .cloudExtinctionPerKm = 12.0f,
-        .cloudPatternWorldSizeKm = 2.0f, .cloudShadowExtentKm = 0.5f,
+        .cloudPatternWorldSizeKm = 2.0f, .cloudVerticalNoiseWorldSizeKm = 1.25f,
+        .cloudPatternOffsetKm = float2(-0.02f, 0.06f), .cloudShadowExtentKm = 0.5f,
         .aerosolDensity = 3.0f, .humidity = 0.8f, .precipitation = 0.6f, .windSpeed = 15.5f,
         .windDirection = float2(-2.0f, 1.0f), .noiseSeed = UINT32_MAX};
     ASSERT_TRUE(document.setWorldEnvironment(world));
@@ -6525,7 +6526,7 @@ TEST(WorldEnvironment, DynamicDocumentRoundTripRejectsInvalidStateAndPreservesLe
     EXPECT_EQ(document.worldEnvironment(), world);
     EXPECT_FALSE(document.dirty());
     const auto identity = restored.resourceIdentity();
-    const std::array<nlohmann::json, 18> invalidSettings{
+    const std::array<nlohmann::json, 21> invalidSettings{
         nlohmann::json{{"time", false}}, nlohmann::json{{"time", {{"julianDateUTC", 0.0}}}},
         nlohmann::json{{"time", {{"paused", "false"}}}}, nlohmann::json{{"time", {{"timeScale", 1e10}}}},
         nlohmann::json{{"astronomy", {{"mode", "ephemeris"}}}}, nlohmann::json{{"astronomy", {{"mode", 2}}}},
@@ -6534,6 +6535,9 @@ TEST(WorldEnvironment, DynamicDocumentRoundTripRejectsInvalidStateAndPreservesLe
         nlohmann::json{{"weather", {{"cloudEnabled", 1}}}},
         nlohmann::json{{"weather", {{"cloudBaseAltitudeKm", 10.0}, {"cloudTopAltitudeKm", 2.0}}}},
         nlohmann::json{{"weather", {{"cloudPatternWorldSizeKm", 0.0}}}},
+        nlohmann::json{{"weather", {{"cloudVerticalNoiseWorldSizeKm", 0.0}}}},
+        nlohmann::json{{"weather", {{"cloudPatternOffsetKm", {0.0, 100001.0}}}}},
+        nlohmann::json{{"weather", {{"cloudPatternOffsetKm", {1.0, 2.0, 3.0}}}}},
         nlohmann::json{{"weather", {{"cloudShadowExtentKm", -1.0}}}},
         nlohmann::json{{"weather", {{"windDirection", {0.0, 0.0}}}}},
         nlohmann::json{{"weather", {{"windDirection", {1.0, 2.0, 3.0}}}}},
@@ -6585,6 +6589,15 @@ TEST(WorldEnvironment, DynamicDocumentRoundTripRejectsInvalidStateAndPreservesLe
         EXPECT_FLOAT_EQ(restored.worldEnvironment().weather.cloudTopAltitudeKm, 1000.0f);
     }
     auto legacy = saved;
+    auto& legacyWeather = legacy["world"]["environment"]["weather"];
+    legacyWeather.erase("cloudVerticalNoiseWorldSizeKm");
+    legacyWeather.erase("cloudPatternOffsetKm");
+    writeTextFile(document.documentPath(), legacy.dump(2));
+    ASSERT_TRUE(restored.load(document.documentPath())) << restored.documentWarning();
+    EXPECT_FLOAT_EQ(restored.worldEnvironment().weather.cloudPatternWorldSizeKm, 2.0f);
+    EXPECT_FLOAT_EQ(restored.worldEnvironment().weather.cloudVerticalNoiseWorldSizeKm, 256.0f);
+    EXPECT_FLOAT_EQ(restored.worldEnvironment().weather.cloudPatternOffsetKm.x, 0.0f);
+    EXPECT_FLOAT_EQ(restored.worldEnvironment().weather.cloudPatternOffsetKm.y, 0.0f);
     for (const auto* name : {"time", "astronomy", "weather"}) { legacy["world"]["environment"].erase(name); }
     writeTextFile(document.documentPath(), legacy.dump(2));
     ASSERT_TRUE(restored.load(document.documentPath())) << restored.documentWarning();

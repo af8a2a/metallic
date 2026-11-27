@@ -93,6 +93,7 @@ private:
     void drawStreamlineDebugPanel();
     void drawCameraControls();
     void drawEnvironmentControls();
+    void applyWorldEnvironmentEdit(environment::WorldEnvironment world);
     void drawLightingControls();
     bool drawIESProfileControls(scene::PunctualLight& light);
     void drawDecalControls();

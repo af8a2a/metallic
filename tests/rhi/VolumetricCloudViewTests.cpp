@@ -33,10 +33,11 @@ struct CloudPixel {
     float transmittance, cloudDepthMeters, sceneDepth;
 };
 
-CloudPixel capture(RHITestContext& context, RenderGraphExecutor& executor, HistoryResourceManager& history, Buffer& readback)
+CloudPixel capture(RHITestContext& context, RenderGraphExecutor& executor, HistoryResourceManager& history, Buffer& readback,
+    std::string_view name)
 {
     checked(executor.execute({.graphicsQueue = &context.graphicsQueue, .historyResources = &history}), "render cloud view");
-    checked(executor.waitForSubmittedWork(), "wait for cloud view");
+    checked(executor.waitForSubmittedWork(), std::string("wait for cloud view ") + std::string(name));
     bench::GPUCommands copy(context.graphicsQueue);
     checked(copy.initialize(context.device), "begin cloud readback");
     std::array<std::array<float, 4>, kOutputs.size()> pixel{};
@@ -126,7 +127,7 @@ public:
                 .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}), "cloud readback");
             nlohmann::json cases;
             const auto measure = [&](const std::string& name, std::string_view expectedStage = {}) {
-                const auto sample = capture(context, executor, history, *readback);
+                const auto sample = capture(context, executor, history, *readback, name);
                 auto frames = checked(executor.collectCompletedGpuExecutionStats(), "read cloud reconstruction stages");
                 if (!expectedStage.empty()) {
                     bool found = false;
@@ -165,6 +166,25 @@ public:
             if (!scene.setObjectVisible(scene.objectForNode(1).entity(), false)) { return RHITestResult::fail("Could not open roof"); }
             world.notifySceneChanged(RenderChangeBits::Geometry);
             const auto open = measure("open-orthographic");
+            const uint32_t cloudId = graph.findNode("Cloud")->id;
+            const auto setSampleCount = [&](const char* key, uint32_t count) {
+                if (!graph.setNodeRuntimeProperty(cloudId, key, count) || !executor.syncRuntimeProperties(graph)) {
+                    throw std::runtime_error(std::string("Could not update live cloud setting ") + key);
+                }
+            };
+            // Orthographic tracing uses a fixed noise phase, so all three samples use the same ray.
+            setSampleCount("shadowViewRaySampleMaxCount", 2);
+            const auto lowShadow = measure("orthographic-two-shadow-samples");
+            setSampleCount("viewRaySampleMaxCount", 2);
+            const auto lowView = measure("orthographic-two-view-samples");
+            if (open.transmittance != lowShadow.transmittance ||
+                std::abs(open.scattering[1] - lowShadow.scattering[1]) <= 1e-5f ||
+                std::abs(lowView.transmittance - lowShadow.transmittance) <= 1e-5f) {
+                throw std::runtime_error("Cloud view or self-shadow samples did not affect the expected integral: " + cases.dump());
+            }
+            if (!graph.setNodeRuntimeProperties(cloudId, RenderGraphProperties::object()) || !executor.syncRuntimeProperties(graph)) {
+                return RHITestResult::fail("Could not restore default cloud sampling");
+            }
             camera.orthographic = false;
             camera.eye[1] = 1800.0f;
             camera.center[1] = 1801.0f;
@@ -220,6 +240,13 @@ public:
             view.setRenderResolution(kWidth + 2, kHeight + 2);
             checked(executor.compile(context.device, graph, kWidth + 2, kHeight + 2, log), "resize cloud targets");
             measure("resized", spatial);
+            measure("resized-history", temporal);
+            setSampleCount("viewRaySampleMaxCount", 64);
+            measure("view-samples-edited", spatial);
+            measure("view-samples-steady", temporal);
+            setSampleCount("shadowViewRaySampleMaxCount", 4);
+            measure("shadow-samples-edited", spatial);
+            measure("shadow-samples-steady", temporal);
             std::ofstream(context.outputDirectory / "VolumetricCloudView.json") << cases.dump(2);
             const auto identity = [](const CloudPixel& p) {
                 return p.transmittance == 1 && p.cloudDepthMeters == 0 && p.scattering == std::array<float, 4>{} && p.color == p.background;

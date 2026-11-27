@@ -54,6 +54,7 @@ public struct GPUAtmosphereParameters {
     ATMOSPHERE_PUBLIC AtmosphereFloat4 moonPhase;            // Phase angle; illuminated fraction; Lambert flux.
     ATMOSPHERE_PUBLIC AtmosphereUInt4 cloudShapeResources;   // Pattern 2D, profile 2D, noise 3D, linear wrap sampler.
     ATMOSPHERE_PUBLIC AtmosphereFloat4 cloudShadowMoonAnchor; // Snapped Moon anchor, planet km; shadow atlas index (asuint).
+    ATMOSPHERE_PUBLIC AtmosphereFloat4 cloudShapeTransform;   // X/Z translation km; vertical noise scale km; reserved.
 };
 
 #ifdef __cplusplus
@@ -81,9 +82,10 @@ public static const uint kAtmosphereSeparateViewClouds = 4u;
 
 #ifdef __cplusplus
 inline constexpr uint64_t kAtmospherePrecomputeABI = 0x41544d4f53500001ull;
-static_assert(sizeof(GPUAtmosphereParameters) == 352 && alignof(GPUAtmosphereParameters) == 16);
+static_assert(sizeof(GPUAtmosphereParameters) == 368 && alignof(GPUAtmosphereParameters) == 16);
 static_assert(offsetof(GPUAtmosphereParameters, cloudLayer) == 192 && offsetof(GPUAtmosphereParameters, moonPhase) == 304);
 static_assert(offsetof(GPUAtmosphereParameters, cloudShapeResources) == 320);
+static_assert(offsetof(GPUAtmosphereParameters, cloudShapeTransform) == 352);
 static_assert(sizeof(AtmospherePrecomputeParams) == 64 && offsetof(AtmospherePrecomputeParams, dimensions) == 48);
 #endif
 #undef ATMOSPHERE_PUBLIC

@@ -27,6 +27,9 @@ struct CloudChannel {
 };
 using CloudParams = VolumetricCloudViewParams;
 constexpr float kDefaultDistanceToSampleMaxCountKm = 15.0f;
+// UE 5.7.4 VolumetricCloudComponent.h base samples and VolumetricCloudRendering.cpp Scalability caps.
+constexpr int32_t kDefaultViewRaySamples = 96, kMaxViewRaySamples = 768;
+constexpr int32_t kDefaultShadowViewRaySamples = 10, kMaxShadowViewRaySamples = 80;
 constexpr std::array<CloudChannel, 4> kCloudChannels{{
     {"traceFar", "currentFar", "previousFar", Format::RGBA32Sfloat, {0, 0, 0, 1},
         &CloudParams::currentFar, &CloudParams::previousFar, &CloudParams::writeFar},
@@ -42,6 +45,7 @@ struct CloudHistoryContent {
     uint64_t scene, discontinuity, atmosphereRevision, rasterSettings;
     uint32_t viewIndex, viewGeneration, cutSerial, width, height, skyVisible;
     float invDistanceToSampleCountMax;
+    uint32_t viewRaySampleMaxCount, shadowViewRaySampleMaxCount;
     environment::WeatherState weather;
     std::array<environment::CelestialLight, environment::kCelestialLightCount> authoredLights;
     environment::EnvironmentTimeState authoredTime;
@@ -57,8 +61,12 @@ public:
     {
         auto setting = runtimeBoolSetting("temporalReconstruction", "Temporal cloud reconstruction", true, true);
         setting.rebuildGraph = true;
-        return {std::move(setting), runtimeFloatSetting("distanceToSampleMaxCountKm", "Distance to maximum sample count (km)",
-            kDefaultDistanceToSampleMaxCountKm, 0.0f, 350.0f, true)};
+        return {std::move(setting),
+            runtimeIntSetting("viewRaySampleMaxCount", "Maximum view ray samples", kDefaultViewRaySamples, 2, kMaxViewRaySamples, true),
+            runtimeFloatSetting("distanceToSampleMaxCountKm", "Distance to maximum sample count (km)",
+                kDefaultDistanceToSampleMaxCountKm, 0.0f, 350.0f, true),
+            runtimeIntSetting("shadowViewRaySampleMaxCount", "Cloud self-shadow ray samples",
+                kDefaultShadowViewRaySamples, 2, kMaxShadowViewRaySamples, true)};
     }
 
     RenderGraphSceneDependency sceneDependency() const override
@@ -147,6 +155,8 @@ public:
             log = "VolumetricCloudViewPass distanceToSampleMaxCountKm must be a finite non-negative distance";
             return makeError(Error::InvalidArgument);
         }
+        CloudParams sampling{};
+        if (!readSampleCounts(sampling, log)) { return makeError(Error::InvalidArgument); }
         device_ = context.device;
         const auto compileKernel = [&](const char* entry, ComputeKernel& kernel) {
             return ShaderRegistry::instance().getComputeKernel(*device_,
@@ -209,6 +219,11 @@ public:
         p.cloudDepth = writer.storageImageHandle(context.outputTexture("cloudDepth").view());
         const auto* set = context.resources<EnvironmentResourceSet>();
         if (set) {
+            std::string log;
+            if (!readSampleCounts(p, log)) {
+                spdlog::error("{}", log);
+                return makeError(Error::InvalidArgument);
+            }
             // UE 5.7.4 VolumetricCloudRendering.cpp clamps the denominator to one centimetre.
             const float distanceKm = properties().value("distanceToSampleMaxCountKm", kDefaultDistanceToSampleMaxCountKm);
             p.invDistanceToSampleCountMax = 1.0f / std::max(0.01f, 1000.0f * distanceKm);
@@ -259,6 +274,25 @@ public:
     }
 
 private:
+    bool readSampleCounts(CloudParams& p, std::string& log) const
+    {
+        const auto read = [&](const char* key, int32_t defaultValue, int32_t maxValue, uint32_t& count) {
+            const auto it = properties().find(key);
+            if (it == properties().end()) {
+                count = defaultValue;
+                return true;
+            }
+            if (!it->is_number_integer() || *it < 2 || *it > maxValue) {
+                log = fmt::format("VolumetricCloudViewPass {} must be an integer in [2, {}]", key, maxValue);
+                return false;
+            }
+            count = it->get<uint32_t>();
+            return true;
+        };
+        return read("viewRaySampleMaxCount", kDefaultViewRaySamples, kMaxViewRaySamples, p.viewRaySampleMaxCount) &&
+            read("shadowViewRaySampleMaxCount", kDefaultShadowViewRaySamples, kMaxShadowViewRaySamples, p.shadowViewRaySampleMaxCount);
+    }
+
     bool temporalEnabled() const
     {
         const auto value = properties().find("temporalReconstruction");
@@ -290,6 +324,7 @@ Result<> VolumetricCloudViewPass::executeTemporal(RenderGraphExecutionContext& c
         (shared ? *shared : context.graphHistoryResources()).geometryReprojectionInvalidationRevision(),
         environment.atmosphereRevision, raster.rasterSettingsRevision, raster.lightGridViewIndex, raster.lightGridViewGeneration,
         view ? view->frame[3] : 0u, raster.width, raster.height, p.skyVisible, p.invDistanceToSampleCountMax,
+        p.viewRaySampleMaxCount, p.shadowViewRaySampleMaxCount,
         environment.weather, environment.authoredCelestial,
         environment.time, environment.astronomy};
     history_.beginFrame(context.frameIndex());

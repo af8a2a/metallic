@@ -75,7 +75,7 @@ void cloudTraceTemporalMain(uint3 id : SV_DispatchThreadID)
     float noise = lumenProbeBlueNoiseScalar(resolveUniform(p.blueNoise), id.xy * 4u + 2u, p.noiseFrameIndex);
     CloudViewIntegral nearCloud;
     float noCloudDepthKm;
-    CloudViewIntegral farCloud = traceViewCloud(a, originKm, direction, farKm, p.invDistanceToSampleCountMax, noise, shadow,
+    CloudViewIntegral farCloud = traceViewCloud(p, a, originKm, direction, farKm, noise, shadow,
         nearKm * 1000.0f, nearCloud, noCloudDepthKm);
     CloudTargetSample s;
     s.farRGBT = cloudViewRGBT(p, a, farCloud, originMeters, originKm, direction, shadow);

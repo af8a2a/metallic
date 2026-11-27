@@ -148,7 +148,12 @@ layer to the default UE 5.7.4 NvRTX `m_SimpleVolumetricCloud_Inst` shape.
 Its [material evaluation](../Shaders/Modules/SimpleVolumetricCloud.slang)
 samples the RGB stratocumulus, altostratus and cirrostratus layout on a
 horizontal tile of `cloudPatternWorldSizeKm` kilometres (UE default 256).
-The vertical noise coordinate retains the reference scale. Each channel
+`cloudVerticalNoiseWorldSizeKm` controls the vertical scale of the 3D noise
+independently and defaults to the reference value of 256 km. Matching it to
+the horizontal size gives the noise equal world-space scales on all three
+axes. `cloudPatternOffsetKm` translates the layout and its 3D noise together
+along world X/Z in kilometres. Its default is (0, 0). The main view and the
+ground shadow sample the same translated density field. Each channel
 selects a separate height profile. The red channel
 of the Perlin–Worley volume distorts the coordinates of the green channel,
 which breaks up the cloud body. The material uses the maximum layout weight
@@ -260,6 +265,10 @@ spherical atmosphere, reversed Z and a zero empty-depth marker.
 view march reaches its maximum sample count, matching UE's
 `r.VolumetricCloud.DistanceToSampleMaxCount`. Both view paths default to
 15 km. The Sponza showcase uses 0.6 km for its 80 m thick cloud layer.
+`viewRaySampleMaxCount` caps the main view march (default 96, range 2–768).
+`shadowViewRaySampleMaxCount` sets the sample budget for self-shadowing
+inside the visible clouds (default 10, range 2–80). Both controls apply
+to the full-resolution and temporal paths and refresh cloud history on edit.
 For perspective views, `temporalReconstruction` defaults to true.
 The [UE Mode 0 reconstruction](../Shaders/Features/Environment/VolumetricCloudViewTemporal.slang)
 traces one ray per 4×4 block of render pixels, recording both the near- and

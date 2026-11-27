@@ -56,6 +56,7 @@ public GPUAtmosphereParameters loadParameters(RWBufferSpan<float4> data)
     p.moonToSun = data[18]; p.moonPhase = data[19];
     p.cloudShapeResources = asuint(data[20]);
     p.cloudShadowMoonAnchor = data[21];
+    p.cloudShapeTransform = data[22];
     return p;
 }
 public float3 worldToAtmosphereKm(GPUAtmosphereParameters p, float3 worldPosition)

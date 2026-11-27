@@ -15,7 +15,7 @@
 namespace metallic::tests {
 namespace {
 
-using CloudReadback = std::array<std::array<float, 4>, 64>;
+using CloudReadback = std::array<std::array<float, 4>, 65>;
 struct alignas(16) CloudsProbeParams {
     render::AtmospherePrecomputeParams resources;
     render::GPUBufferSpan inputAerial;
@@ -199,6 +199,9 @@ public:
         if (!cloudClose(denseValues[49], {0.14059f, 0.10986f, 0.0f, 1.0f}, 0.0f, 0.004f) ||
             std::abs(denseValues[50][0] - denseValues[49][0] * 0.5f) > 0.0001f || denseValues[50][1] != 0.0f) {
             return RHITestResult::fail("UE texture-driven cloud shape or camera-distance fade differs from the reference");
+        }
+        if (denseValues[64][0] <= 0.0f || denseValues[64][1] > 1e-5f || denseValues[64][2] > 1e-5f) {
+            return RHITestResult::fail("Cloud placement and vertical noise period failed to transform the complete material sample");
         }
         if (denseValues[26][0] != 1.0f || denseValues[26][1] != sizeof(GPUAtmosphereParameters) || denseValues[26][2] != 0.75f ||
             denseValues[30][0] != 48.0f || denseValues[30][1] != 0.0f || denseValues[30][2] != 1.0f ||

@@ -151,6 +151,7 @@ GPUAtmosphereParameters buildGPUAtmosphereParameters(const environment::Environm
     p.cloudLayer = {weather.cloudBaseAltitudeKm, weather.cloudTopAltitudeKm,
         weather.cloudCoverage, weather.cloudDensity * (1.0f + 0.5f * weather.precipitation)};
     p.cloudOptics = {weather.cloudExtinctionPerKm, 0.98f, 0.8f, weather.cloudEnabled ? 1.0f : 0.0f};
+    p.cloudShapeTransform = {weather.cloudPatternOffsetKm.x, weather.cloudPatternOffsetKm.y, weather.cloudVerticalNoiseWorldSizeKm, 0.0f};
     const auto wind = environment::normalizedWeatherWindDirection(weather);
     // The two material noise layers move by integer UV periods when the wind
     // displacement wraps by eight layouts. Reduce before narrowing.
