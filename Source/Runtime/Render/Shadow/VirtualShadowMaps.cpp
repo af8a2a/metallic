@@ -3739,7 +3739,8 @@ VirtualShadowMapWorldFace VirtualShadowMaps::publishWorldFace(RenderFrameContext
     if (!push.enabled) { return {}; }
     frame.retain(state_);
     return {push.atlas, push.pages, push.projections, push.statistics, push.physicalPagesX,
-        push.clipmapCount, push.pageSize, state_->resources->physicalPoolStorage ? push.physicalPagesY : 0u};
+        push.clipmapCount, push.pageSize, state_->resources->physicalPoolStorage ? push.physicalPagesY : 0u,
+        state_->programs->receiverMask ? push.totalPages * 32u : 0u};
 }
 
 Result<> VirtualShadowMaps::preparePointFaces(CommandBuffer& commands,

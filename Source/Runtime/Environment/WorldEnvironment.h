@@ -32,6 +32,7 @@ struct CelestialLight {
     // Spectral irradiance at the top of the atmosphere, sampled at 680, 550
     // and 440 nm, in W/m^2/nm. Used by the physical provider; HDRI keeps lux.
     float3 topOfAtmosphereIrradiance{1.474f, 1.8504f, 1.91198f};
+    bool castShadowsOnAtmosphere = false;
 
     bool operator==(const CelestialLight& other) const
     {
@@ -39,7 +40,7 @@ struct CelestialLight {
             direction.z == other.direction.z && color.x == other.color.x &&
             color.y == other.color.y && color.z == other.color.z &&
             illuminance == other.illuminance && angularRadius == other.angularRadius &&
-            enabled == other.enabled &&
+            enabled == other.enabled && castShadowsOnAtmosphere == other.castShadowsOnAtmosphere &&
             topOfAtmosphereIrradiance.x == other.topOfAtmosphereIrradiance.x &&
             topOfAtmosphereIrradiance.y == other.topOfAtmosphereIrradiance.y &&
             topOfAtmosphereIrradiance.z == other.topOfAtmosphereIrradiance.z;

@@ -163,13 +163,15 @@ public:
             static_assert(sizeof(Projection) == 112);
             constexpr uint64_t abi = 0x56534d50524f5031ull;
             constexpr uint32_t levels = 12, pageSize = 4, physicalPagesX = 4, count = 6, maxPages = levels * 64 + 1;
-            std::array<ComputeKernel, 2> kernels;
+            std::array<ComputeKernel, 3> kernels;
+            const std::array entryPoints{"propagatedMappingBuildProbeMain", "propagatedMappingLookupProbeMain",
+                "directionalWorldReceiverProbeMain"};
             std::string log;
             const std::array capabilities{"spvMeshShadingEXT"};
             for (uint32_t index = 0; index < kernels.size(); ++index) {
                 const std::array macros{SlangMacroDefine{"VSM_PROPAGATED_MAPPING_PROBE", "1"}};
                 auto shader = compileSlangShaderToSpirv({.moduleName = "Features/VirtualShadowMaps/VirtualShadowMaps",
-                    .entryPointName = index == 0 ? "propagatedMappingBuildProbeMain" : "propagatedMappingLookupProbeMain",
+                    .entryPointName = entryPoints[index],
                     .searchPath = PROJECT_SOURCE_DIR "/Shaders", .capabilities = capabilities,
                     .macroDefines = macros}, log);
                 check(shader, "Fallback probe compile: " + log);
@@ -182,11 +184,11 @@ public:
                 check(result, "Fallback buffer");
                 return std::move(*result);
             };
-            auto pages = buffer(maxPages * 2u * 16u, 16, MemoryLocation::HostUpload);
+            auto pages = buffer(maxPages * 32u + ((maxPages + 1u) / 2u) * 16u, 16, MemoryLocation::HostUpload);
             auto projections = buffer((levels + 1u) * sizeof(Projection), sizeof(Projection), MemoryLocation::HostUpload);
             auto statistics = buffer(32u * 4u, 4, MemoryLocation::HostUpload);
             auto positions = buffer(count * 16u, 16, MemoryLocation::HostUpload);
-            auto output = buffer(count * 128u, 16, MemoryLocation::HostReadback);
+            auto output = buffer(count * 128u + 16u, 16, MemoryLocation::HostReadback);
             const auto upload = [&](Buffer& destination, const void* data, size_t bytes) {
                 void* mapped = destination.map(); check(mapped != nullptr, "Fallback upload map");
                 std::memcpy(mapped, data, bytes); destination.flush(); destination.unmap();
@@ -300,6 +302,16 @@ public:
                 }
                 std::array<uint32_t, 32> stats{}; stats[5] = fixture.overflow;
                 upload(*pages, entries.data(), entries.size() * sizeof(entries[0]));
+                const bool checkWorldCoverage = std::string_view(fixture.name) == "physical-address-remap";
+                if (checkWorldCoverage) {
+                    auto* data = static_cast<std::byte*>(pages->map());
+                    check(data != nullptr, "World-space receiver coverage map");
+                    auto* masks = reinterpret_cast<uint32_t*>(data + totalPages * 32u);
+                    // Bits 0 and 32 are the only valid subtiles in each fine page.
+                    std::fill_n(masks, totalPages * 2u, 1u);
+                    pages->flush();
+                    pages->unmap();
+                }
                 upload(*projections, transforms.data(), sizeof(transforms));
                 upload(*statistics, stats.data(), sizeof(stats)); upload(*positions, samples.data(), sizeof(samples));
                 gpu.begin();
@@ -321,6 +333,13 @@ public:
                     .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
                 check(gpu.commands->synchronize({.buffers = {&ready, 1}}), "Fallback metadata ready");
                 check(kernels[1].dispatch(*gpu.commands, *encoded, 1), "Fallback lookup");
+                if (checkWorldCoverage) {
+                    const BufferBarrierDesc append{.buffer = output.get(),
+                        .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                        .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}};
+                    check(gpu.commands->synchronize({.buffers = {&append, 1}}), "World receiver output ready");
+                    check(kernels[2].dispatch(*gpu.commands, *encoded, 1), "Directional world receiver lookup");
+                }
                 const std::array hostReady{
                     BufferBarrierDesc{.buffer = output.get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
                         .after = {PipelineStageBits::Host, AccessBits::HostRead}},
@@ -339,7 +358,13 @@ public:
                 std::array<std::array<uint32_t, 32>, count> results{};
                 output->invalidate(); const void* mapped = output->map();
                 check(mapped != nullptr, "Fallback readback map");
-                std::memcpy(results.data(), mapped, sizeof(results)); output->unmap();
+                std::memcpy(results.data(), mapped, sizeof(results));
+                if (checkWorldCoverage) {
+                    std::array<uint32_t, 4> visibility{};
+                    std::memcpy(visibility.data(), static_cast<const std::byte*>(mapped) + sizeof(results), sizeof(visibility));
+                    check(visibility == std::array{0u, 0u, 1u, 1u}, "Directional world receiver valid-mask/coarse lookup");
+                }
+                output->unmap();
                 const auto resident = [](const auto& entry) {
                     return entry[0] != UINT32_MAX && (entry[1] & 2u) != 0u && (entry[3] & 1u) != 0u;
                 };

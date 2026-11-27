@@ -18,6 +18,8 @@ import OpenPBRClosure;
 import OpenPBRMaterialParameters;
 import SurfaceLighting;
 import VirtualShadowMapCommon;
+import VirtualShadowMapWorld;
+import AtmosphereVirtualShadowMap;
 import ClusteredSurfaceLighting;
 #include "../../Source/Runtime/Render/Shadow/VirtualShadowMapLights.h"
 using Metallic.SceneOpenPBR;
@@ -350,6 +352,12 @@ internal float3 shadeSceneVisibilitySurfaceRadiance<TProgram : ISceneSurfaceMate
     return radiance;
 }
 
+public Metallic.Atmosphere::DirectionalAtmosphereShadow deferredAtmosphereShadow(float3 rayOriginMeters)
+{
+    let faces = getSceneResourceParameterField<Metallic.Shadow::WorldShadowFaces>(kSceneAtmosphereWorldShadowFacesOffset);
+    return Metallic.Atmosphere::DirectionalAtmosphereShadow::forRay(faces.index, 3u, rayOriginMeters);
+}
+
 [ForceInline]
 public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgram>(inout Material<TProgram> program, Ray ray, HitInfo hit, float2 samplePixel,
     ScenePathTracePush push, inout uint seed, inout DeferredLumenReceiver receiver, int fixedMetalness,
@@ -358,16 +366,19 @@ public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgra
     bool applyAerial;
     float3 radiance = shadeSceneVisibilitySurfaceRadiance(program, ray, hit, samplePixel, push, seed,
         fixedMetalness, opaquePrimary, applyAerial, receiver, useRectLights);
-    if (kExportLumenReceivers && applyAerial) {
+    if (applyAerial) {
         let resources = getSceneResourceParameterField<EnvironmentResourceParameters>(kSceneEnvironmentOffset);
-        let segment = physicalAerialSegment(resources, hit.position, ray.origin);
-        receiver.diffuse *= segment.transmittance;
+        let shadow = deferredAtmosphereShadow(ray.origin);
+        let segment = physicalAerialSegment(resources, hit.position, ray.origin, shadow);
+        if (kExportLumenReceivers) {
+            receiver.diffuse *= segment.transmittance;
 #if METALLIC_DEFERRED_LUMEN_SPECULAR
-        receiver.specularAndRoughness.rgb *= segment.transmittance;
+            receiver.specularAndRoughness.rgb *= segment.transmittance;
 #endif
+        }
         return segment.transmittance * radiance + segment.radiance;
     }
-    return applyAerial ? applyPrimaryAerialPerspective(radiance, hit.position, ray.origin) : radiance;
+    return radiance;
 }
 
 

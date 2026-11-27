@@ -425,7 +425,8 @@ public:
             movingLodBias < 0 || movingLodBias > 11) {
             return makeError(Error::InvalidArgument);
         }
-        const auto celestials = buildCelestialLightRecords(resolveWorldEnvironment(scene, context.world()));
+        const auto environment = resolveWorldEnvironment(scene, context.world());
+        const auto celestials = buildCelestialLightRecords(environment);
         cpuPhase.next("Light admission and cache pruning");
         const auto lighting = resolveSceneLighting(scene, context.world());
         std::vector<ManagedLight> lights(sources.size() + 2);
@@ -802,7 +803,8 @@ public:
                     for (uint32_t face = 0; face < item.entry.faceCount; ++face) {
                         const auto* shadow = &(*sharedResults)[resultIndex++];
                         pointResults[face] = *shadow;
-                        if (worldShadowFaces.valid() && index >= 2 && sources[index - 2].source.castVolumetricShadow) {
+                        if (worldShadowFaces.valid() && (index < 2 ? environment.celestial[index].castShadowsOnAtmosphere :
+                            sources[index - 2].source.castVolumetricShadow)) {
                             worldFaces[index * 6 + face] = faces[face]->publishWorldFace(*RenderFrameContext::from(commands));
                         }
                         if (receiverCoverage_) {

@@ -396,7 +396,7 @@ nlohmann::json serializeCelestialLight(const environment::CelestialLight& light)
 {
     return {{"enabled", light.enabled}, {"direction", {light.direction.x, light.direction.y, light.direction.z}},
         {"color", {light.color.x, light.color.y, light.color.z}}, {"illuminance", light.illuminance},
-        {"angularRadius", light.angularRadius},
+        {"angularRadius", light.angularRadius}, {"castShadowsOnAtmosphere", light.castShadowsOnAtmosphere},
         {"topOfAtmosphereIrradiance", {light.topOfAtmosphereIrradiance.x,
             light.topOfAtmosphereIrradiance.y, light.topOfAtmosphereIrradiance.z}}};
 }
@@ -450,6 +450,10 @@ bool parseCelestialLight(const nlohmann::json& value, environment::CelestialLigh
         reason = "celestial light must be an object with a boolean enabled field";
         return false;
     }
+    if (value.contains("castShadowsOnAtmosphere") && !value["castShadowsOnAtmosphere"].is_boolean()) {
+        reason = "castShadowsOnAtmosphere must be a boolean";
+        return false;
+    }
     if (!readOptionalColor(value, light.color, reason) ||
         !readOptionalSpectrum(value, "direction", light.direction, reason) ||
         !readOptionalSpectrum(value, "topOfAtmosphereIrradiance", light.topOfAtmosphereIrradiance, reason)) {
@@ -464,6 +468,7 @@ bool parseCelestialLight(const nlohmann::json& value, environment::CelestialLigh
     light.illuminance = static_cast<float>(illuminance);
     light.angularRadius = static_cast<float>(angularRadius);
     light.enabled = value.value("enabled", light.enabled);
+    light.castShadowsOnAtmosphere = value.value("castShadowsOnAtmosphere", light.castShadowsOnAtmosphere);
     if (!environment::validCelestialLight(light)) {
         reason = "invalid celestial color, direction, lux, angular radius or TOA irradiance";
         return false;

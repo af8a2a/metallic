@@ -8,6 +8,7 @@ import OpenPBRMaterialParameters;
 import RTXCRMaterialParameters;
 import MaterialProgram;
 import Lighting;
+import Atmosphere;
 import RTXCRHair;
 import ScenePathTypes;
 import ScenePathMath;
@@ -361,7 +362,8 @@ public float3 environmentIndirectRadiance(float3 direction, ScenePathTracePush p
     return radiance * max(push.environmentIntensity, 0.0);
 }
 
-public float3 environmentRadiance(float3 direction, ScenePathTracePush push, bool primaryMiss, float3 primaryWorldOrigin)
+public float3 environmentRadiance<TShadow : Metallic.Atmosphere::IAtmosphereLightShadow>(
+    float3 direction, ScenePathTracePush push, bool primaryMiss, float3 primaryWorldOrigin, TShadow shadow)
 {
     if (push.environmentMode == kEnvironmentModeDisabled) {
         return float3(0.0, 0.0, 0.0);
@@ -374,11 +376,16 @@ public float3 environmentRadiance(float3 direction, ScenePathTracePush push, boo
         // background queries the physical sky with disks, avoiding direct-light MIS duplication.
         let physicalResources = getSceneEnvironmentResources();
         if (physicalEnvironmentEnabled(physicalResources)) {
-            return physicalVisibleEnvironment(physicalResources, direction, primaryWorldOrigin) * max(push.environmentIntensity, 0.0);
+            return physicalVisibleEnvironment(physicalResources, direction, primaryWorldOrigin, shadow) * max(push.environmentIntensity, 0.0);
         }
     }
 
     return environmentIndirectRadiance(direction, push);
+}
+
+public float3 environmentRadiance(float3 direction, ScenePathTracePush push, bool primaryMiss, float3 primaryWorldOrigin)
+{
+    return environmentRadiance(direction, push, primaryMiss, primaryWorldOrigin, Metallic.Atmosphere::UnshadowedAtmosphere());
 }
 
 public float3 environmentRadiance(float3 direction, ScenePathTracePush push, bool primaryMiss)

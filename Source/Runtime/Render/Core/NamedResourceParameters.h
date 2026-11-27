@@ -329,10 +329,13 @@ DR_PUBLIC struct SceneRealtimeResourceParameters
     DR_PUBLIC SceneResourceParameters scene;
     DR_PUBLIC RectLightResourceParameters rectLights;
     DR_PUBLIC DecalResourceParameters decals;
+    DR_PUBLIC DR_BUFFER atmosphereWorldShadowFaces;
 };
 #ifdef __cplusplus
 inline constexpr uint32_t kSceneRectLightsOffset = 416;
 inline constexpr uint32_t kSceneDecalsOffset = 428;
+inline constexpr uint32_t kSceneAtmosphereWorldShadowFacesOffset = 452;
+static_assert(offsetof(SceneRealtimeResourceParameters, atmosphereWorldShadowFaces) == kSceneAtmosphereWorldShadowFacesOffset);
 static_assert(offsetof(SceneRealtimeResourceParameters, scene) == 0);
 static_assert(offsetof(SceneRealtimeResourceParameters, rectLights) == kSceneRectLightsOffset);
 static_assert(offsetof(SceneRealtimeResourceParameters, decals) == kSceneDecalsOffset);
@@ -342,6 +345,7 @@ static_assert(sizeof(SceneRealtimeResourceParameters) == 456);
 #else
 public static const uint kSceneRectLightsOffset = 416;
 public static const uint kSceneDecalsOffset = 428;
+public static const uint kSceneAtmosphereWorldShadowFacesOffset = 452;
 #endif
 
 // Experimental primary-guide split extends the packet without changing the

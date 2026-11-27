@@ -88,6 +88,22 @@ fades radiance and opacity over the first centimetre as in
 `SkyAtmosphereCommon.ush`. Zero starts at the actual ray origin, including
 when the raster near plane is farther away.
 
+The deferred view follows Unreal's `SkyAtmosphere.usf` opaque-shadow term for
+each atmosphere light. It samples a directional VSM at each integration point
+with zero ray-start and surface-normal bias, before adding multiple scattering.
+Metallic evaluates the point along the original ray in world metres and uses
+its existing spectral integration, spherical sky and aerial LUTs. Orthographic
+rays and aerial segments beyond the LUT use the same query during direct
+integration. The visible celestial disks and Lambert ground response keep
+their existing transport. The view's shadowed LUTs are separate from IBL.
+
+Metallic selects from its orthographic clipmaps using their projection bounds,
+resident pages and valid receiver subtiles. The scene-wide coarse page supplies
+coverage outside the available fine pages. The reversed-Z depth comparison
+clamps receiver depth at zero beyond the caster range so empty texels still
+transmit light. These page addressing and depth-range conventions adapt
+Unreal's directional world-space VSM sample to the Metallic atlas.
+
 Primary transport carries the actual world-space ray origin through the named
 environment consumer. Perspective rays originating at the published observer
 use the sky/aerial LUTs. Orthographic pixels have distinct parallel-ray origins;

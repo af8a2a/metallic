@@ -339,7 +339,7 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push, CameraRayBasis b
     }
     radiance = (push.debugView != kOpenPBRDebugViewFinal && !hasSurface)
         ? float3(0.0)
-        : environmentRadiance(ray.direction, push, true, ray.origin);
+        : environmentRadiance(ray.direction, push, true, ray.origin, deferredAtmosphereShadow(ray.origin));
 #else
     bool hasSurface = reconstructVisibilitySurface(pixel, ray, push, hit, previousPosition);
     if ((push.deferredSettings & kScenePathTraceExportUpscalerGuides) != 0u) {
@@ -356,7 +356,7 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push, CameraRayBasis b
             // Binned non-background shaders only hit !hasSurface on unready or degenerate hits.
             : environmentIndirectRadiance(ray.direction, push);
 #else
-            : environmentRadiance(ray.direction, push, true, ray.origin);
+            : environmentRadiance(ray.direction, push, true, ray.origin, deferredAtmosphereShadow(ray.origin));
 #endif
     }
     else {

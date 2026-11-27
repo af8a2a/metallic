@@ -12,7 +12,7 @@
             }},
         {"id": 2, "name": "Shadows", "type": "VirtualShadowMapLightsPass", "position": {"x": 370, "y": -140},
             "properties": {
-                "enabled": true, "benchmarkGPUProfile": false, "benchmarkBuildSubstages": false,
+                "enabled": true, "publishWorldShadows": true, "benchmarkGPUProfile": false, "benchmarkBuildSubstages": false,
                 "pageSize": 128, "virtualPagesPerAxis": 128, "clipmapCount": 6, "maxWorkItems": 1048576,
                 "firstClipmapExtent": 1.0, "shadowBias": 0.002, "cacheEnabled": true, "cacheLayering": false,
                 "lightCapacity": 2, "physicalPageBudget": 2048, "nearPlane": 0.001,
@@ -25,7 +25,7 @@
         {"id": 3, "name": "Deferred", "type": "VisibilityBufferDeferredPass", "position": {"x": 680, "y": 140},
             "properties": {
                 "path": "Asset/Sponza/SponzaGIAtmosphere.metallic_scene.json",
-                "sceneRealtimeGI": true, "materialBinning": true, "outputLinear": true, "exportLumenReceivers": true,
+                "sceneRealtimeGI": true, "directionalAtmosphereShadows": true, "materialBinning": true, "outputLinear": true, "exportLumenReceivers": true,
                 "exportLumenPreviousPosition": true, "exportLumenSpecular": true, "exportUpscalerGuides": true
             }},
         {"id": 4, "name": "GlobalDistanceFieldPages", "type": "GlobalDistanceFieldPagesPass",
@@ -67,6 +67,7 @@
             "properties": {"toneCurve": "aces2"}}
     ],
     "edges": [
+        {"id": 84, "src": "Shadows.worldShadowFaces", "dst": "Deferred.worldShadowFaces"},
         {"id": 1, "src": "VBuffer.visibility", "dst": "Deferred.visibility"},
         {"id": 2, "src": "VBuffer.depth", "dst": "Deferred.depth"},
         {"id": 3, "src": "VBuffer.rasterInfo", "dst": "Deferred.rasterInfo"},

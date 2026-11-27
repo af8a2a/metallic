@@ -416,6 +416,42 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(AtmosphereAerialStartDepthTest);
 
+class AtmosphereDirectionalShadowTest final : public RHITest {
+public:
+    AtmosphereDirectionalShadowTest() { name = "atmosphere_directional_shadow_transport"; type = RHITestType::Rendering; }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"environment.atmosphere.directional.shadow"}, bench::Layer::Core, "binding", "binding",
+            {"directional-shadow.tsv"});
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        std::unique_ptr<render::Device> device;
+        render::ComputeKernel kernel;
+        ProbeReadback values;
+        std::string log;
+        if (!createAtmosphereTestDevice(context, device, kernel, log, "atmosphereDirectionalShadowProbeMain", "AtmosphereRayOriginProbe") ||
+            !atmosphereProbe(*device, kernel, physicalNoon(), values, log) || !saveProbe(context, "directional-shadow", values)) {
+            return RHITestResult::fail(log);
+        }
+        if (photometricY(values[6]) <= 0.0 || photometricY(values[8]) <= 0.0 || photometricY(values[9]) <= 0.0) {
+            return RHITestResult::fail("Expected positive multiple scattering and two illuminated directional sources");
+        }
+        for (uint32_t mask = 1; mask < 4; ++mask) {
+            for (uint32_t channel = 0; channel < 3; ++channel) {
+                const float expected = values[0][channel] - ((mask & 1u) ? values[8][channel] : 0.0f)
+                    - ((mask & 2u) ? values[9][channel] : 0.0f);
+                if (std::abs(values[mask * 2][channel] - expected) > 1e-4f * values[0][channel] ||
+                    std::abs(values[mask * 2 + 1][channel] - values[1][channel]) > 1e-6f) {
+                    return RHITestResult::fail("Directional shadow changed extinction or a different scattering term; see directional-shadow.tsv");
+                }
+            }
+        }
+        return RHITestResult::pass("Independent Sun and Moon occlusion removes only the corresponding direct in-scattering");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(AtmosphereDirectionalShadowTest);
+
 class AtmospherePrimaryRayOriginTest final : public RHITest {
 public:
     AtmospherePrimaryRayOriginTest() { name = "atmosphere_actual_primary_ray_origin"; type = RHITestType::Rendering; }

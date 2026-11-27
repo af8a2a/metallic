@@ -22,6 +22,8 @@
 #include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapWorld.h"
+#include "Runtime/Render/Environment/AtmosphereResources.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/RealtimeDecals.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -389,6 +391,33 @@ struct ScenePathTraceCameraSnapshot {
     bool operator==(const ScenePathTraceCameraSnapshot&) const = default;
 };
 
+struct ShadowedAtmosphereView {
+    std::unique_ptr<Buffer> aerial;
+    std::unique_ptr<Texture> sky;
+    std::unique_ptr<TextureView> skyView;
+
+    Result<> initialize(Device& device)
+    {
+        using Atmosphere = AtmosphereResourcesGPU;
+        constexpr uint32_t size = Atmosphere::kAerialSize;
+        auto buffer = device.createBuffer({.size = uint64_t(size) * size * size * 2 * 16,
+            .structureStride = 16, .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::Device});
+        if (!buffer) { return makeError(buffer.error()); }
+        aerial = std::move(*buffer);
+        auto texture = device.createTexture({.type = TextureType::Texture2D,
+            .usage = TextureUsageBits::Storage | TextureUsageBits::Sampled, .format = Format::RGBA32Sfloat,
+            .width = Atmosphere::kSkyViewWidth, .height = Atmosphere::kSkyViewHeight,
+            .depth = 1, .mipCount = 1, .layerCount = 1, .memoryLocation = MemoryLocation::Device});
+        if (!texture) { return makeError(texture.error()); }
+        sky = std::move(*texture);
+        auto view = device.createTextureView(*sky, {.format = Format::RGBA32Sfloat,
+            .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1}});
+        if (!view) { return makeError(view.error()); }
+        skyView = std::move(*view);
+        return {};
+    }
+};
+
 struct DecalViewKey {
     ScenePathTraceCameraSnapshot camera;
     uint64_t sceneIdentity, decalRevision, resourceRevision;
@@ -443,6 +472,13 @@ public:
         return rayPipelineEnabled(properties()) ? RenderGraphPassKind::RayTracing : RenderGraphPassKind::Compute;
     }
 
+    QueueType queueType() const override
+    {
+        // The face table refers to the producer's graphics-queue VSM cache allocations.
+        return visibilityDeferred_ && boolProperty(properties(), "directionalAtmosphereShadows", false)
+            ? QueueType::Graphics : ComputePass::queueType();
+    }
+
     bool supportsFrameOverlap() const override
     {
         return cacheMode_ == kScenePathTraceCacheModeOff;
@@ -488,6 +524,11 @@ public:
             virtualShadows.layerCount = 0;
             reflection.addBufferInput("virtualShadowLights", "Matching VSM source identities, layers and admission")
                 .buffer(0, 0).shaderRead().setOptional();
+            if (boolProperty(properties(), "directionalAtmosphereShadows", false)) {
+                reflection.addBufferInput("worldShadowFaces", "VSM pages for directional atmosphere shadows")
+                    .buffer(0, sizeof(VirtualShadowMapWorldFace)).bufferLayout("VirtualShadowMapWorldFace")
+                    .storageRead().sharedProducerInput = "rasterInfo";
+            }
         }
         auto& color = reflection.addTextureOutput("color", visibilityDeferred_ ? "OpenPBR deferred physical HDR" :
             (realtime_ ? "Real-time physical lighting and SH GI" : "Path-traced glTF scene"))
@@ -727,6 +768,8 @@ public:
     }
     Result<> prepare(const RenderGraphCompileContext& context, std::string& log) override
     {
+        if (visibilityDeferred_ && boolProperty(properties(), "directionalAtmosphereShadows", false) &&
+            !shadowedSkyKernel_.valid()) { return compile(context, log); }
         if (!validateTraversalBackend(properties(), log)) { return makeError(Error::Unsupported); }
         if (!validateInlineComputeRoot(properties(), log)) { return makeError(Error::Unsupported); }
         if (!validateTrustedSceneParameters(properties(), log)) { return makeError(Error::Unsupported); }
@@ -822,6 +865,18 @@ public:
             return makeError(Error::Unsupported);
         }
         device_ = context.device;
+        if (visibilityDeferred_ && boolProperty(properties(), "directionalAtmosphereShadows", false)) {
+            const auto compileShadowKernel = [&](const char* module, const char* entry, ComputeKernel& kernel) {
+                return ShaderRegistry::instance().getComputeKernel(*device_,
+                    {.moduleName = module, .entryPointName = entry, .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+                    {.parameters = parameterAbi<AtmospherePrecomputeParams>(kAtmospherePrecomputeABI, ParameterTransport::InlinePush),
+                        .debugName = entry}, kernel, log);
+            };
+            if (auto r = compileShadowKernel("Features/Environment/AerialPerspective", "shadowedAerialPerspectiveMain",
+                    shadowedAerialKernel_); !r) { return r; }
+            if (auto r = compileShadowKernel("Features/Environment/SkyView", "shadowedSkyViewMain",
+                    shadowedSkyKernel_); !r) { return r; }
+        }
         if (rayPipeline && !context.device->capabilities().rayTracingPipeline) {
             log += "Ray-pipeline path tracing requires the rayTracingPipeline capability\n";
             return makeError(Error::Unsupported);
@@ -1053,6 +1108,7 @@ public:
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, moonShadowParameters), .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, virtualShadows), .kind = ComputeResourceBindingKind::SampledImage, .optional = true});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, virtualShadowLights), .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, atmosphereWorldShadowFaces), .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true});
             // One shader/encoder layout serves both output policies.
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerMotion), .kind = ComputeResourceBindingKind::StorageImage, .optional = true});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerDepth), .kind = ComputeResourceBindingKind::StorageImage, .optional = true});
@@ -1921,7 +1977,7 @@ public:
         profile.next("Prepare dispatch bindings");
         TextureView* const atmosphereTransmittanceViews[]{environment.transmittanceView};
         TextureView* const atmosphereMultiScatteringViews[]{environment.multiScatteringView};
-        TextureView* const atmosphereSkyViews[]{environment.skyView};
+        TextureView* atmosphereSkyViews[]{environment.skyView};
         TextureView* const atmosphereCloudShadowViews[] = {environment.cloudShadowView};
         const auto* prepared = context.preparedScene();
         const auto streamGeometry = diagnosticUsesVisibilityStream() ? diagnosticStream :
@@ -1973,12 +2029,34 @@ public:
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandMip), .buffer = textureFeedback.demandMip});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandHits), .buffer = textureFeedback.demandHits});
         if (!visibilityDeferred_) { appendStreamRayBindings(bindings, streamGeometry, streamGeometry.shadingChangeBuffer); }
+        ShadowedAtmosphereView* shadowedView = nullptr;
+        uint32_t atmosphereShadowMask = 0;
+        Buffer* worldShadowFaces = nullptr;
+        if (environment.atmosphereParametersBuffer != nullptr && visibilityDeferred_ &&
+            boolProperty(context.properties(), "directionalAtmosphereShadows", false)) {
+            const auto world = resolveWorldEnvironment(lightScene, context.world());
+            for (uint32_t slot = 0; slot < world.celestial.size(); ++slot) {
+                if (world.celestial[slot].enabled && world.celestial[slot].castShadowsOnAtmosphere) {
+                    atmosphereShadowMask |= 1u << slot;
+                }
+            }
+            if (atmosphereShadowMask) {
+                worldShadowFaces = context.inputBuffer("worldShadowFaces").buffer();
+                auto view = acquireShadowedAtmosphereView(context.commandBuffer());
+                if (!view) { return makeError(view.error()); }
+                shadowedView = *view;
+                atmosphereSkyViews[0] = shadowedView->skyView.get();
+                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, atmosphereWorldShadowFaces),
+                    .buffer = worldShadowFaces});
+            }
+        }
         if (environment.atmosphereParametersBuffer != nullptr) {
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.atmosphereParameters), .buffer = environment.atmosphereParametersBuffer});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.transmittance), .textureViews = {atmosphereTransmittanceViews, 1}});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.multiScattering), .textureViews = {atmosphereMultiScatteringViews, 1}});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.skyView), .textureViews = {atmosphereSkyViews, 1}});
-            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.aerialPerspective), .buffer = environment.aerialPerspectiveBuffer});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.aerialPerspective),
+                .buffer = shadowedView ? shadowedView->aerial.get() : environment.aerialPerspectiveBuffer});
             if (environment.cloudShadowView != nullptr) {
                 bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.cloudShadow), .textureViews = {atmosphereCloudShadowViews, 1}});
             }
@@ -2326,7 +2404,26 @@ public:
                         : RenderGraphResourceAccess::BufferShaderRead});
                 }
             }
-            const std::array stages{RenderGraphStage{visibilityDeferred_ ? "Deferred shading" : "Path trace shading", resources.uses,
+            using Access = RenderGraphResourceAccess;
+            const RenderGraphStageUse skyUses[]{{"worldShadowFaces", Access::BufferStorageRead}, {"cameraSky", Access::TextureStorageWrite}};
+            const RenderGraphStageUse aerialUses[]{{"worldShadowFaces", Access::BufferStorageRead}, {"cameraAerial", Access::BufferStorageWrite}};
+            std::array<RenderGraphStage, 3> stages{};
+            if (shadowedView) {
+                result = importBuffer(resources, "cameraAerial", shadowedView->aerial.get());
+                if (!result) { return result; }
+                // This recording owns the view through GPU completion. Both LUTs overwrite every texel.
+                resources.textures.push_back({"cameraSky", shadowedView->sky.get(), shadowedView->skyView.get()});
+                resources.uses.push_back({"cameraSky", Access::TextureSampleRead});
+                resources.uses.push_back({"cameraAerial", Access::BufferShaderRead});
+                resources.uses.push_back({"worldShadowFaces", Access::BufferStorageRead});
+                stages[0] = {"Shadowed sky view", skyUses, [&](CommandBuffer& commands) {
+                    return dispatchShadowedAtmosphere(commands, environment, *shadowedView, *worldShadowFaces, atmosphereShadowMask, true);
+                }};
+                stages[1] = {"Shadowed aerial perspective", aerialUses, [&](CommandBuffer& commands) {
+                    return dispatchShadowedAtmosphere(commands, environment, *shadowedView, *worldShadowFaces, atmosphereShadowMask, false);
+                }};
+            }
+            stages[2] = {visibilityDeferred_ ? "Deferred shading" : "Path trace shading", resources.uses,
                 [&](CommandBuffer& commands) -> Result<> {
                     if (compiledRayPipeline_) {
                         return dispatchResources(rayProgram_, rayEncoder_, RayTracingDispatchDesc{
@@ -2370,8 +2467,8 @@ public:
                         .groupCountZ = 1,
                         .profiler = profiler,
                     });
-                }, compiledRayPipeline_ ? RenderGraphPassKind::RayTracing : RenderGraphPassKind::Compute}};
-            result = context.executeStages(stages, resources.buffers, resources.textures);
+                }, compiledRayPipeline_ ? RenderGraphPassKind::RayTracing : RenderGraphPassKind::Compute};
+            result = context.executeStages(std::span(stages).subspan(shadowedView ? 0u : 2u), resources.buffers, resources.textures);
             if (!result) { return result; }
         }
 
@@ -2534,6 +2631,47 @@ private:
     }
 
     std::vector<std::shared_ptr<Buffer>> deferredFrameInfoPool_;
+    ComputeKernel shadowedAerialKernel_, shadowedSkyKernel_;
+    std::vector<std::shared_ptr<ShadowedAtmosphereView>> shadowedViews_;
+
+    Result<ShadowedAtmosphereView*> acquireShadowedAtmosphereView(CommandBuffer& commands)
+    {
+        auto free = std::find_if(shadowedViews_.begin(), shadowedViews_.end(),
+            [](const auto& view) { return view.use_count() == 1; });
+        if (free == shadowedViews_.end()) {
+            auto view = std::make_shared<ShadowedAtmosphereView>();
+            if (auto r = view->initialize(*device_); !r) { return makeError(r.error()); }
+            shadowedViews_.push_back(std::move(view));
+            free = std::prev(shadowedViews_.end());
+        }
+        if (auto r = commands.retainResource(*free); !r) { return makeError(r.error()); }
+        return free->get();
+    }
+
+    Result<> dispatchShadowedAtmosphere(CommandBuffer& commands, const EnvironmentLightingSnapshot& environment,
+        const ShadowedAtmosphereView& view, Buffer& faces, uint32_t mask, bool sky)
+    {
+        auto registry = ResourceRegistry::forDevice(*device_);
+        if (!registry) { return makeError(registry.error()); }
+        ParameterWriter writer(*device_, **registry, RenderFrameContext::from(commands));
+        AtmospherePrecomputeParams p{};
+        p.parameters = writer.bufferSpan(environment.atmosphereParametersBuffer, 16, 16);
+        p.transmittance = writer.sampledImage(environment.transmittanceView);
+        p.multiScattering = writer.sampledImage(environment.multiScatteringView);
+        p.worldShadowFaces = writer.buffer(&faces).index;
+        using Atmosphere = AtmosphereResourcesGPU;
+        if (sky) {
+            p.dimensions = {Atmosphere::kSkyViewWidth, Atmosphere::kSkyViewHeight, 1u, mask};
+            p.output = writer.storageImage(view.skyView.get());
+        } else {
+            p.dimensions = {Atmosphere::kAerialSize, Atmosphere::kAerialSize, Atmosphere::kAerialSize, mask};
+            p.aerial = writer.bufferSpan(view.aerial.get(), 16, 16);
+        }
+        auto packet = writer.encode(p, kAtmospherePrecomputeABI, ParameterTransport::InlinePush);
+        if (!packet) { return makeError(packet.error()); }
+        return (sky ? shadowedSkyKernel_ : shadowedAerialKernel_).dispatch(commands, *packet,
+            (p.dimensions[0] + 7u) / 8u, (p.dimensions[1] + 7u) / 8u, p.dimensions[2]);
+    }
 
     struct StageResources {
         std::vector<RenderGraphStageUse> uses;

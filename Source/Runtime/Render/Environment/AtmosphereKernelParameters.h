@@ -66,7 +66,7 @@ public struct AtmospherePrecomputeParams {
     ATMOSPHERE_PUBLIC AtmosphereSampledImage sourceMip;
     ATMOSPHERE_PUBLIC AtmosphereStorageImage output;
     ATMOSPHERE_PUBLIC AtmosphereBuffer aerial;
-    ATMOSPHERE_PUBLIC AtmosphereUInt reserved;
+    ATMOSPHERE_PUBLIC AtmosphereUInt worldShadowFaces; // Directional VSM face table for shadowed view kernels.
     ATMOSPHERE_PUBLIC AtmosphereUInt4 dimensions; // x,y,z; mode (capture=0,mip=1).
 };
 

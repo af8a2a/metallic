@@ -5088,6 +5088,9 @@ void EditorApplication::drawEnvironmentControls()
         auto& light = *entry.second;
         if (ImGui::TreeNode(entry.first)) {
             celestialChanged |= ImGui::Checkbox("Enabled", &light.enabled);
+            if (physicalAtmosphere) {
+                celestialChanged |= ImGui::Checkbox("Cast shadows on atmosphere", &light.castShadowsOnAtmosphere);
+            }
             const bool automaticMoon = automaticCelestial && entry.second == &celestialEnvironment.moon;
             if (automaticMoon) {
                 ImGui::TextUnformatted("Moon spectrum and flux follow solar irradiance, lunar albedo and phase.");

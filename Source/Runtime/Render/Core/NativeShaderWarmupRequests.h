@@ -50,9 +50,9 @@ inline std::optional<uint32_t> userPushDataSize(const ShaderRequest& request)
     }
     if (matches("Features/Environment/Transmittance", {"transmittanceMain"}) ||
         matches("Features/Environment/MultiScattering", {"multiScatteringMain"}) ||
-        matches("Features/Environment/SkyView", {"skyViewMain"}) ||
+        matches("Features/Environment/SkyView", {"skyViewMain", "shadowedSkyViewMain"}) ||
         matches("Features/Environment/EnvironmentCapture", {"environmentCaptureMain"}) ||
-        matches("Features/Environment/AerialPerspective", {"aerialPerspectiveMain"}) ||
+        matches("Features/Environment/AerialPerspective", {"aerialPerspectiveMain", "shadowedAerialPerspectiveMain"}) ||
         matches("Features/Environment/CloudShadow", {"cloudShadowMain"})) { return static_cast<uint32_t>(sizeof(AtmospherePrecomputeParams)); }
     if (matches("Features/Lighting/BuildReGIR", {"buildReGIRMain"})) { return static_cast<uint32_t>(sizeof(BuildReGIRParams)); }
     if (matches("Features/Lighting/ClusterLightGrid", {"clusterLightGridMain"})) { return static_cast<uint32_t>(sizeof(ClusterLightGridBuildParams)); }

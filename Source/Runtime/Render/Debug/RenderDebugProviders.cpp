@@ -81,7 +81,8 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
     add({"VirtualShadowMapWorldFace", sizeof(WorldFace), {
         DEBUG_FIELD(WorldFace, atlas), DEBUG_FIELD(WorldFace, pages), DEBUG_FIELD(WorldFace, projections),
         DEBUG_FIELD(WorldFace, statistics), DEBUG_FIELD(WorldFace, physicalPagesX), DEBUG_FIELD(WorldFace, clipmapCount),
-        DEBUG_FIELD(WorldFace, pageSize), DEBUG_FIELD(WorldFace, physicalPagesY)}});
+        DEBUG_FIELD(WorldFace, pageSize), DEBUG_FIELD(WorldFace, physicalPagesY),
+        DEBUG_FIELD(WorldFace, validReceiverMaskByteOffset)}});
     add({"MeshletLODSelectionHeader", 16, {{"count", "u32", 0}, {"capacity", "u32", 4},
         {"candidateCount", "u32", 8}, {"overflow", "u32", 12}}});
     add({"MeshletLODSelection", sizeof(MeshletLODSelection), {

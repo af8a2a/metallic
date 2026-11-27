@@ -56,9 +56,9 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
     add("Features/Environment/EnvironmentLightingPrecompute", {"environmentLightingPrecomputeMain"});
     add("Features/Environment/Transmittance", {"transmittanceMain"});
     add("Features/Environment/MultiScattering", {"multiScatteringMain"});
-    add("Features/Environment/SkyView", {"skyViewMain"});
+    add("Features/Environment/SkyView", {"skyViewMain", "shadowedSkyViewMain"});
     add("Features/Environment/EnvironmentCapture", {"environmentCaptureMain"});
-    add("Features/Environment/AerialPerspective", {"aerialPerspectiveMain"});
+    add("Features/Environment/AerialPerspective", {"aerialPerspectiveMain", "shadowedAerialPerspectiveMain"});
     add("Features/Environment/CloudShadow", {"cloudShadowMain"});
     add("Features/GPUDriven/GPUDrivenCulling", {"gpuDrivenPreviewResetMain", "gpuDrivenPreviewInstanceCullMain", "gpuDrivenPreviewHzbMain"});
     add("Features/GPUDriven/GPUDrivenStreamWorkload", {"streamWorkloadResetMain", "streamWorkloadMain"});

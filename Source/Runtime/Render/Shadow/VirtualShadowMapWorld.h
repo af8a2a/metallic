@@ -14,10 +14,11 @@ VSM_WORLD_PUBLIC struct VirtualShadowMapWorldFace
 {
     uint32_t atlas, pages, projections, statistics;
     uint32_t physicalPagesX, clipmapCount, pageSize, physicalPagesY;
+    uint32_t validReceiverMaskByteOffset; // Zero for complete pages, otherwise the fine-page 8x8 subtile masks.
 };
 
 #ifdef __cplusplus
-static_assert(sizeof(VirtualShadowMapWorldFace) == 32);
+static_assert(sizeof(VirtualShadowMapWorldFace) == 36);
 } // namespace metallic::render
 #endif
 #undef VSM_WORLD_PUBLIC

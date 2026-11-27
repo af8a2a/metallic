@@ -194,9 +194,19 @@ public float3 sampleMulti(GPUAtmosphereParameters p, Texture2D<float4> lut, floa
     uv = (uv * float2(width - 1u, height - 1u) + 0.5) / float2(width, height);
     return max(sampleLinear(lut, uv).xyz, 0.0);
 }
-public SpectralSegment integrateSpectral(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
+public interface IAtmosphereLightShadow
+{
+    [mutating] public void selectLight(uint slot, float3 direction, float startDepthKm);
+    public float visibility(float rayDistanceKm);
+};
+public struct UnshadowedAtmosphere : IAtmosphereLightShadow
+{
+    [mutating] public void selectLight(uint slot, float3 direction, float startDepthKm) {}
+    public float visibility(float rayDistanceKm) { return 1.0; }
+};
+public SpectralSegment integrateSpectral<TShadow : IAtmosphereLightShadow>(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
     Texture2D<float4> multiScattering, float3 position, float3 direction, float distance,
-    float3 sourceDirection, float3 sourceIrradiance, bool isotropic, bool useMultiple, bool groundBounce)
+    float3 sourceDirection, float3 sourceIrradiance, bool isotropic, bool useMultiple, bool groundBounce, TShadow shadow)
 {
     SpectralSegment result;
     result.radiance = float3(0.0); result.transmittance = float3(1.0); result.scatteringResponse = float3(0.0);
@@ -226,7 +236,8 @@ public SpectralSegment integrateSpectral(GPUAtmosphereParameters p, Texture2D<fl
             float u0 = float(step) / float(steps), u1 = float(step + 1u) / float(steps);
             float t0 = lerp(regionBegin, regionEnd, cloudRegion ? u0 : u0 * u0);
             float t1 = lerp(regionBegin, regionEnd, cloudRegion ? u1 : u1 * u1);
-            float3 point = position + direction * (0.5 * (t0 + t1));
+            float rayDistanceKm = 0.5 * (t0 + t1);
+            float3 point = position + direction * rayDistanceKm;
             Medium medium = sampleMedium(p, point);
             float cloudExtinction = cloud ? Metallic.Clouds::density(p, point) * p.cloudOptics.x : 0.0;
             float cloudScattering = cloudExtinction * p.cloudOptics.y;
@@ -241,6 +252,8 @@ public SpectralSegment integrateSpectral(GPUAtmosphereParameters p, Texture2D<fl
                 source += transmittanceToSource(p, transmittance, point, sourceDirection) * cloudScattering *
                     Metallic.Clouds::scatteringPhase(dot(direction, sourceDirection), p.cloudOptics.z, p.cloudOptics.y, cloudLightT);
             }
+            // SkyAtmosphere.usf applies opaque geometry visibility to the light's single scattering.
+            source *= shadow.visibility(rayDistanceKm);
             if (useMultiple) { source += sampleMulti(p, multiScattering, point, sourceDirection) * scattered * cloudLightT; }
             result.radiance += result.transmittance * integral * source * sourceIrradiance;
             result.scatteringResponse += result.transmittance * integral * (scattered + cloudScattering);
@@ -258,8 +271,8 @@ public SpectralSegment integrateSpectral(GPUAtmosphereParameters p, Texture2D<fl
     }
     return result;
 }
-public SpectralSegment integrateEnvironment(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
-    Texture2D<float4> multiScattering, float3 position, float3 direction, float distance, bool groundBounce)
+public SpectralSegment integrateEnvironment<TShadow : IAtmosphereLightShadow>(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
+    Texture2D<float4> multiScattering, float3 position, float3 direction, float distance, bool groundBounce, TShadow shadow, float startDepthKm)
 {
     SpectralSegment result;
     result.radiance = float3(0.0);
@@ -270,28 +283,39 @@ public SpectralSegment integrateEnvironment(GPUAtmosphereParameters p, Texture2D
         float4 dir = slot == 0u ? p.sunDirectionRadius : p.moonDirectionRadius;
         float4 irr = slot == 0u ? p.sunIrradianceEnabled : p.moonIrradianceEnabled;
         if (slot == 1u && (irr.w <= 0.0 || all(irr.xyz <= 0.0))) { break; }
+        shadow.selectLight(slot, direction, startDepthKm);
         SpectralSegment seg = integrateSpectral(p, transmittance, multiScattering, position, direction, distance,
-            dir.xyz, irr.xyz * irr.w, false, true, groundBounce);
+            dir.xyz, irr.xyz * irr.w, false, true, groundBounce, shadow);
         if (slot == 0u) { result = seg; }
         else { result.radiance += seg.radiance; }
     }
     return result;
 }
-public AtmosphereSegment segmentIntegration(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
-    Texture2D<float4> multiScattering, float3 positionKm, float3 direction, float distanceKm)
+public SpectralSegment integrateEnvironment(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
+    Texture2D<float4> multiScattering, float3 position, float3 direction, float distance, bool groundBounce)
+{
+    return integrateEnvironment(p, transmittance, multiScattering, position, direction, distance, groundBounce, UnshadowedAtmosphere(), 0.0);
+}
+public AtmosphereSegment segmentIntegration<TShadow : IAtmosphereLightShadow>(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
+    Texture2D<float4> multiScattering, float3 positionKm, float3 direction, float distanceKm, TShadow shadow, float startDepthKm)
 {
     SpectralSegment integrated = integrateEnvironment(p, transmittance, multiScattering,
-        positionKm, direction, max(distanceKm, 0.0), false);
+        positionKm, direction, max(distanceKm, 0.0), false, shadow, startDepthKm);
     AtmosphereSegment result;
     result.radiance = spectralToWorking(integrated.radiance);
     result.transmittance = spectralTransmittanceToWorking(integrated.transmittance);
     return result;
 }
-public AtmosphereSegment integrateAerialPerspective(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
-    Texture2D<float4> multiScattering, float3 rayOriginKm, float3 direction, float depthAfterStartKm)
+public AtmosphereSegment segmentIntegration(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
+    Texture2D<float4> multiScattering, float3 positionKm, float3 direction, float distanceKm)
+{
+    return segmentIntegration(p, transmittance, multiScattering, positionKm, direction, distanceKm, UnshadowedAtmosphere(), 0.0);
+}
+public AtmosphereSegment integrateAerialPerspective<TShadow : IAtmosphereLightShadow>(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
+    Texture2D<float4> multiScattering, float3 rayOriginKm, float3 direction, float depthAfterStartKm, TShadow shadow)
 {
     float3 rayStartKm = rayOriginKm + p.settings.z * direction;
-    return segmentIntegration(p, transmittance, multiScattering, rayStartKm, direction, depthAfterStartKm);
+    return segmentIntegration(p, transmittance, multiScattering, rayStartKm, direction, depthAfterStartKm, shadow, p.settings.z);
 }
 public float3 solarIrradiance(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
     float3 positionKm, uint slot, float cloudTransmittance)

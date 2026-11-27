@@ -25,7 +25,7 @@ void multiScatteringMain(uint3 id : SV_DispatchThreadID)
         float3 direction = float3(cos(azimuth) * horizontal, y, sin(azimuth) * horizontal);
         SpectralSegment integrated = integrateSpectral(p, resolveUniform(gParams.transmittance),
             resolveUniform(gParams.transmittance), float3(0.0, radius, 0.0), direction, 1e9,
-            sourceDirection, float3(1.0), true, false, true);
+            sourceDirection, float3(1.0), true, false, true, UnshadowedAtmosphere());
         secondOrder += integrated.radiance / 32.0;
         response += integrated.scatteringResponse / 32.0;
     }

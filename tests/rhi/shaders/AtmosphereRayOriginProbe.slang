@@ -153,3 +153,47 @@ void atmosphereOffsetLimbProbeMain(uint3 id : SV_DispatchThreadID)
     gProbe.resources.aerial.store(8, float4(upperDirection, 1.0));
     gProbe.resources.aerial.store(9, float4(lowerDirection, 1.0));
 }
+
+// Uniform opaque blockers isolate each celestial contribution in the transport equation.
+public struct ProbeAtmosphereShadow : IAtmosphereLightShadow
+{
+    public uint blockedLights;
+    public float factor;
+
+    [mutating] public void selectLight(uint slot, float3 direction, float startDepthKm)
+    {
+        factor = (blockedLights & (1u << slot)) != 0u ? 0.0 : 1.0;
+    }
+    public float visibility(float rayDistanceKm) { return factor; }
+};
+
+[numthreads(1, 1, 1)]
+void atmosphereDirectionalShadowProbeMain(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id != 0u)) { return; }
+    for (uint index = 0u; index < 32u; ++index) { gProbe.resources.aerial.store(index, float4(0, 0, 0, 1)); }
+    GPUAtmosphereParameters p = loadParameters(gProbe.resources.parameters);
+    // Give the Moon a distinct, measurable spectrum for this transport test.
+    p.moonIrradianceEnabled = float4(p.sunIrradianceEnabled.xyz * float3(0.15, 0.3, 0.6), 1.0);
+    p.moonDirectionRadius.xyz = normalize(float3(0.0, 0.6, 0.8));
+    p.settings.z = 0.1;
+    let trans = resolveUniform(gProbe.resources.transmittance);
+    let multi = resolveUniform(gProbe.resources.multiScattering);
+    float3 direction = normalize(float3(0.9, 0.15, 0.2));
+    float depth = 1.0;
+    for (uint mask = 0u; mask < 4u; ++mask) {
+        ProbeAtmosphereShadow shadow = {mask, 1.0};
+        let result = integrateAerialPerspective(p, trans, multi, p.observerPlanetBottom.xyz, direction, depth, shadow);
+        gProbe.resources.aerial.store(2u * mask, float4(result.radiance, 1));
+        gProbe.resources.aerial.store(2u * mask + 1u, float4(result.transmittance, 1));
+    }
+    for (uint slot = 0u; slot < 2u; ++slot) {
+        // Independent direct-only transport. Occluding this source must subtract exactly this term.
+        float3 start = p.observerPlanetBottom.xyz + p.settings.z * direction;
+        let single = integrateSpectral(p, trans, multi, start, direction, depth,
+            slot == 0u ? p.sunDirectionRadius.xyz : p.moonDirectionRadius.xyz,
+            slot == 0u ? p.sunIrradianceEnabled.xyz : p.moonIrradianceEnabled.xyz,
+            false, false, false, UnshadowedAtmosphere());
+        gProbe.resources.aerial.store(8u + slot, float4(spectralToWorking(single.radiance), 1));
+    }
+}

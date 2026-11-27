@@ -8,6 +8,7 @@
             "visible": true,
             "sun": {
                 "enabled": true,
+                "castShadowsOnAtmosphere": true,
                 "direction": [
                     -0.3,
                     -0.94,

@@ -6277,6 +6277,9 @@ TEST(WorldEnvironment, PhysicalAtmosphereDocumentRoundTripAndTransactionalReject
     auto world = document.worldEnvironment();
     world.source = EnvironmentSource::PhysicalAtmosphere;
     world.atmosphere.planetCenter = {123456789012.125, -6360000.0625, -987654321.875};
+    EXPECT_FALSE(world.sun.castShadowsOnAtmosphere);
+    EXPECT_FALSE(world.moon.castShadowsOnAtmosphere);
+    world.sun.castShadowsOnAtmosphere = true;
     world.atmosphere.bottomRadiusKm = 6400.0f;
     world.atmosphere.topRadiusKm = 6550.0f;
     world.atmosphere.rayleighScattering = float3(0.004f, 0.01f, 0.025f);
@@ -6330,7 +6333,8 @@ TEST(WorldEnvironment, PhysicalAtmosphereDocumentRoundTripAndTransactionalReject
     EXPECT_EQ(restored.worldEnvironment(), world);
     const auto identity = restored.resourceIdentity();
     EXPECT_EQ(restored.environmentSnapshot().volumetricFog, fog);
-    const std::array<nlohmann::json, 16> invalidSettings{
+    const std::array<nlohmann::json, 17> invalidSettings{
+        nlohmann::json{{"moon", {{"castShadowsOnAtmosphere", "false"}}}},
         nlohmann::json{{"volumetricFog", {{"localVolumes", "sphere"}}}},
         nlohmann::json{{"volumetricFog", {{"localVolumes", {{{"sortPriority", 1.5}}}}}}},
         nlohmann::json{{"volumetricFog", {{"localVolumes", {{{"radiusMeters", 0.0}}}}}}},

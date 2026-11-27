@@ -1,6 +1,8 @@
 #language slang 2026
 implementing VirtualShadowMaps;
 
+import VirtualShadowMapWorld;
+
 struct PropagatedMappingProbePush
 {
     uint pages, projections, statistics, atlas;
@@ -69,6 +71,23 @@ void propagatedMappingLookupProbeMain(uint3 id : SV_DispatchThreadID)
     output[id.x * 8u + 5u] = sourceAddress;
     output[id.x * 8u + 6u] = targetPosition;
     output[id.x * 8u + 7u] = targetAddress;
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void directionalWorldReceiverProbeMain()
+{
+    ShadowPush push = propagatedMappingProbePush();
+    VirtualShadowMapWorldFace face = {push.atlas, push.pages, push.projections, push.statistics,
+        push.physicalPagesX, push.clipmapCount, push.pageSize, 0u, push.totalPages * 32u};
+    // Level 2's resident page has a blocker, the complete coarse page is lit.
+    // Query both uints of the 8x8 mask and an uncovered tile in that same page.
+    RWStructuredBuffer<uint4> output = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(mappingProbe.output));
+    output[mappingProbe.count * 8u] = uint4(
+        sampleDirectionalVirtualShadowMap(face, float3(0.125, 0.125, 0.0)),
+        sampleDirectionalVirtualShadowMap(face, float3(0.125, 0.625, 0.0)),
+        sampleDirectionalVirtualShadowMap(face, float3(0.625, 0.125, 0.0)),
+        sampleDirectionalVirtualShadowMap(face, float3(100.0, 0.0, 0.0)));
 }
 
 #if VSM_PROJECTED_RAY_PROBE
