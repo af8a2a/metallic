@@ -242,6 +242,8 @@ struct SceneStreamingProfile {
     uint64_t clasTotalBuiltPages = 0;
     uint64_t clasTotalBuiltClusters = 0;
     uint32_t totalPages = 0;
+    uint32_t maxResidentPages = 0;
+    uint32_t activePages = 0;
     uint32_t residentPages = 0;
     uint32_t pendingPages = 0;
     uint32_t gpuLoadRequests = 0; // Latest completed feedback; pair with feedbackFrame, unlike this frame's consumed requests.
@@ -257,6 +259,7 @@ struct SceneStreamingProfile {
     uint32_t evictions = 0;
     uint32_t requestOverflows = 0;
     uint32_t allocationFailures = 0;
+    uint32_t allocationBudgetDeferrals = 0; // Subset of allocationFailures from a full budget with no eligible eviction.
     uint64_t uploadBytes = 0;
     uint64_t totalUploadBytes = 0;
     // Host-staged envelope bytes (includes CPU-only sideband), not PCIe traffic.

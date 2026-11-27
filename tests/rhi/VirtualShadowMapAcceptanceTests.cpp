@@ -527,10 +527,13 @@ Json frameStatistics(RenderGraphPreviewRenderer& preview)
                 debug::debugSha256(stream.diagnosticTextureSemanticIdentity)},
             {"textureSemanticIdentityBytes", stream.diagnosticTextureSemanticIdentity.size()},
             {"originalTopologyHash", stream.originalTopologyHash}, {"primitiveMetadataHash", stream.primitiveMetadataHash},
+            {"maxResidentPages", stream.maxResidentPages}, {"activePages", stream.activePages},
             {"residentPages", stream.residentPages}, {"pendingPages", stream.pendingPages},
+            {"uploads", stream.uploads}, {"evictions", stream.evictions},
             {"geometryUsedBytes", stream.geometryUsedBytes}, {"geometryBudgetBytes", stream.geometryBudgetBytes},
             {"clasUsedBytes", stream.clasUsedBytes}, {"textureResidentBytes", stream.textureResidentBytes},
             {"loadFailures", stream.loadFailures}, {"allocationFailures", stream.allocationFailures},
+            {"allocationBudgetDeferrals", stream.allocationBudgetDeferrals},
             {"requestOverflows", stream.requestOverflows}});
     }
     return result;
@@ -700,6 +703,11 @@ public:
                 auto* raster = graph.findNode("VBuffer");
                 requireAcceptance(raster && raster->type == "VisibilityBufferPass", "Acceptance requires production VBuffer");
                 const uint32_t rasterId = raster->id;
+                const bool allowBudgetDeferral = spec.value("allowResidentBudgetDeferral", false);
+                const uint32_t residentPageLimit = allowBudgetDeferral ? raster->properties.value("maxResidentPages", 0u) : 0u;
+                requireAcceptance(!allowBudgetDeferral || (diagnostic && residentPageLimit != 0),
+                    "Resident budget deferrals require diagnostic mode and an explicit VBuffer page limit");
+                bool observedBudgetDeferral = false;
                 const bool worldBinding = raster->properties.value("sceneBinding", std::string("world")) == "world";
                 if (diagnostic) { graph.setNodeRuntimeProperty(rasterId, "benchmarkCaptureSemanticSource", true); }
                 for (const auto& event : spec.value("events", Json::array())) {
@@ -932,8 +940,18 @@ public:
                         requireAcceptance(frame < warmup || ready.ready, "Required scene pages were not ready after warmup");
                     }
                     for (const auto& stream : row["streaming"]) {
-                        requireAcceptance(stream["loadFailures"] == 0 && stream["allocationFailures"] == 0 &&
-                            stream["requestOverflows"] == 0, "Streaming failed or overflowed during acceptance");
+                        const bool cappedVBuffer = allowBudgetDeferral && stream["passName"] == "VBuffer";
+                        const auto failures = stream["allocationFailures"].get<uint32_t>();
+                        const auto deferrals = stream["allocationBudgetDeferrals"].get<uint32_t>();
+                        const bool budgetValid = !cappedVBuffer || (stream["maxResidentPages"] == residentPageLimit &&
+                            stream["activePages"].get<uint32_t>() <= residentPageLimit);
+                        if (stream["loadFailures"] != 0 || stream["requestOverflows"] != 0 || !budgetValid ||
+                            failures != (cappedVBuffer ? deferrals : 0u)) {
+                            output["frames"].push_back(row);
+                            requireAcceptance(false, "Streaming failed or overflowed at frame " + std::to_string(frame) +
+                                ": " + stream.dump());
+                        }
+                        observedBudgetDeferral |= cappedVBuffer && deferrals != 0;
                     }
                     if (diagnostic) {
                         row["shadow"] = receipt.shadow();
@@ -1035,6 +1053,8 @@ public:
                         [](const Json& value) { return value.at("status") == "passed"; });
                     requireAcceptance(verified, "All cache comparisons were incomparable; no cache equivalence evidence");
                 }
+                requireAcceptance(!allowBudgetDeferral || observedBudgetDeferral,
+                    "VBuffer did not exercise resident budget deferral");
                 requireAcceptance(!validation.failed(), "Vulkan validation failed");
                 save();
             }

@@ -1880,6 +1880,7 @@ bool MeshletStreamResidencyManager::allocatePageStorage(uint32_t pageIndex)
         if (evictPage == UINT32_MAX) {
             budgetAdmissionExhausted_ = true;
             ++stats_.frameAllocationDeferredCount;
+            ++stats_.frameAllocationBudgetDeferralCount;
             if (evictionAgeRejected_) {
                 ++stats_.frameEvictionAgeRejectedCount;
                 ++stats_.totalEvictionAgeRejectedCount;
@@ -2275,6 +2276,7 @@ void MeshletStreamResidencyManager::resetFrameStats()
     stats_.frameEvictedGeometryBytes = 0;
     stats_.frameEvictedPrefetchPages = 0;
     stats_.frameAllocationFailureCount = 0;
+    stats_.frameAllocationBudgetDeferralCount = 0;
     stats_.frameEvictionScanCount = 0;
     stats_.frameEvictionCandidateTests = 0;
     stats_.cpuWork = {};

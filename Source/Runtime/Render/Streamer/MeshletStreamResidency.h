@@ -285,6 +285,7 @@ struct MeshletStreamResidencyStats {
     uint64_t frameEvictedGeometryBytes = 0;
     uint32_t frameEvictedPrefetchPages = 0;
     uint32_t frameAllocationFailureCount = 0;
+    uint32_t frameAllocationBudgetDeferralCount = 0;
     uint32_t frameEvictionScanCount = 0;
     uint32_t frameEvictionCandidateTests = 0;
     uint32_t frameAllocationDeferredCount = 0;

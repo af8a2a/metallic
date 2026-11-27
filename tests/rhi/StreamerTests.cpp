@@ -3406,6 +3406,7 @@ public:
         stats = residency.stats();
         if (stats.frameEvictionScanCount != 1 || stats.frameEvictionCandidateTests != stats.residentPageCount ||
             stats.frameAllocationDeferredCount != 10001 || stats.frameAllocationFailureCount != 1 ||
+            stats.frameAllocationBudgetDeferralCount != 1 ||
             stats.cpuWork.allocationAttempts != 1 || stats.cpuWork.budgetRetrySuppressed != 10000 ||
             stats.trackedPageCount != fallbackPages.size() + 1 || residency.pageAllocated(requestedPage)) {
             return RHITestResult::fail("budget pressure repeated an eviction scan or lost age protection");
@@ -3419,6 +3420,7 @@ public:
         if (residency.pageAllocated(requestedPage) ||
             residency.pageState(residentPage) != render::MeshletStreamPageResidencyState::PendingUnload ||
             stats.frameEvictedPageCount != 1 ||
+            stats.frameAllocationBudgetDeferralCount != 0 ||
             stats.frameScheduledUnloadCount != 1 ||
             stats.queuedUnloadTaskCount != 1 ||
             stats.frameDelayedFreeCount != 0) {

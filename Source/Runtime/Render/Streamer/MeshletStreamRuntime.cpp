@@ -5827,6 +5827,8 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.geometryUsedBytes = stats.usedResidentBytes;
     result.geometryBudgetBytes = stats.maxResidentBytes;
     result.totalPages = stats.pageCount;
+    result.maxResidentPages = stats.maxResidentPages;
+    result.activePages = stats.activePageCount;
     result.residentPages = stats.residentPageCount;
     result.pendingPages = stats.pendingPageCount;
     result.gpuLoadRequests = recentGpuRequestCount_;
@@ -5843,6 +5845,7 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.evictions = stats.frameEvictedPageCount;
     result.requestOverflows = stats.frameGpuRequestOverflowCount;
     result.allocationFailures = stats.frameAllocationFailureCount;
+    result.allocationBudgetDeferrals = stats.frameAllocationBudgetDeferralCount;
     result.uploadBytes = stats.frameUploadBytes;
     result.totalUploadBytes = stats.totalUploadBytes;
     result.storedUploadBytes = stats.frameStoredUploadBytes;
