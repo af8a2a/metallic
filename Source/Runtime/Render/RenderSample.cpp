@@ -1035,6 +1035,17 @@ public:
     std::string scenePath() const override { return "Asset/MeshletCache/TerrainBlocks/terrain_blocks.gltf"; }
 };
 
+class GPUDrivenTerrainBlocks4x4VSMSample final : public GPUDrivenTerrainVSMSample {
+public:
+    std::string_view id() const override { return "gpu-driven-terrain-blocks-4x4-vsm"; }
+    std::string_view name() const override { return "GPUDrivenSample / Terrain Blocks 4x4 + VSM"; }
+    std::string_view description() const override
+    {
+        return "Sixteen independently simplified heightfield blocks sharing boundary samples, with OpenPBR and VSM.";
+    }
+    std::string scenePath() const override { return "Asset/MeshletCache/TerrainBlocks4x4/terrain_blocks_4x4.gltf"; }
+};
+
 const RenderSample& pathTracingMeetMatSample()
 {
     static const PathTracingMeetMatSample sample;
@@ -1128,6 +1139,12 @@ const RenderSample& gpuDrivenTerrainVSMSample()
 const RenderSample& gpuDrivenTerrainBlocksVSMSample()
 {
     static const GPUDrivenTerrainBlocksVSMSample sample;
+    return sample;
+}
+
+const RenderSample& gpuDrivenTerrainBlocks4x4VSMSample()
+{
+    static const GPUDrivenTerrainBlocks4x4VSMSample sample;
     return sample;
 }
 
@@ -1314,6 +1331,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &gpuDrivenTerrainP1UnifiedSample(),
         &gpuDrivenTerrainVSMSample(),
         &gpuDrivenTerrainBlocksVSMSample(),
+        &gpuDrivenTerrainBlocks4x4VSMSample(),
         &gpuDrivenRtasVisualizationSample(),
     };
     const bool hasBoxDistanceField = std::filesystem::is_regular_file(projectPath(".cache/mesh-distance-field/BoxInstances.meshdf"));

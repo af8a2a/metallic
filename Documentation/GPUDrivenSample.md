@@ -60,3 +60,30 @@ cmake --build build-relwithdebinfo --target MetallicTerrainBlocksVSMSmoke
 32 页上限的旧用例在第 1 帧触发断言。当时 32 个页槽全部占用，5 个保底页已经驻留，几何池使用约 2.93 MiB（上限 64 MiB）。唯一一次分配失败计数对应预算退避。启用预算诊断后，原三个机位的 60 帧验收通过。全程保底页 5/5 就绪，活跃页数峰值 32，记录到 59 次预算退避、38 次上传和 11 次淘汰，加载失败、其余分配失败和请求溢出均为 0。
 
 紧预算下，在全景、西南、东北机位分别于第 19、39、59 帧采到 1,208、60、360 对跨块且 LOD 不同的相邻像素。结合首帧和两次切机后的首帧，检查覆盖了四条共享边，参考轮廓共同内域无漏像素。三个机位还分别以 32 页上限冷启动。首帧仅有 5 个保底页驻留，与解码后的保底网格 CPU 光栅结果逐像素对照，三个机位的内域覆盖均无缺失。
+
+### 4×4 地形块和跨块飞行
+
+```powershell
+cmake --build build-relwithdebinfo --target MetallicTerrainBlocks4x4VSMSample
+cmake --build build-relwithdebinfo --target MetallicTerrainBlocks4x4VSMSmoke
+```
+
+在通用编辑器选择 **GPUDrivenSample / Terrain Blocks 4x4 + VSM**。样例在原高度场的 256×256 世界范围内细分到 16 块，沿用 OpenPBR、VSM、桥、塔和三个回归机位。预构建资产包含 160 页，其中保底页 17 个，占 315,648 字节。为最大细节页留出空间后，最低几何池容量为 468,480 字节。烘焙检查逐边对比了解码后的位置和法线，24 条共享边的 96 种 LOD 配对和 143 次 DAG 细化替换全部通过。
+
+验收脚本生成三机位回归、三次独立冷启动和两档预算的连续飞行。飞行持续 105 帧，含终点停留的 20 帧，跨过 X、Z 方向的六条分块边界。两档预算用相同相机、640×360 分辨率和 LOD 设置。每次过界均保留前、中、后三帧，整个路线共采集 36 帧。`streamingEvidenceFrames` 对逐帧 GPU 请求、页表状态以及采集帧实际写入可见性缓冲的页和 LOD 做关联。
+
+```powershell
+python -B Tools/Perf/PrepareTerrainStreamingAcceptance.py
+$terrainRun = 'build/terrain-vsm/scale/motion-tight'
+$env:METALLIC_VSM_ACCEPTANCE_CASES = Join-Path $terrainRun 'Cases.json'
+.\build-ci\tests\MetallicRHITests.exe --filter virtual_shadow_map_acceptance --rhi-bindless --rhi-validation --output-dir "$terrainRun/capture"
+```
+
+每个进程运行一个用例。将命令中的 `motion-tight` 换为 `motion-ample`、`fixed-tight`、`fixed-ample`、`cold-overview`、`cold-southwest` 或 `cold-northeast` 可执行对应验收。
+
+| 飞行预算 | 活跃页峰值 | 上传 | 淘汰 | 预算退避 | 实际混合 LOD 的共享边 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 32 页 | 32 | 40 | 25 | 104 | 20 / 24 |
+| 256 页 | 160 | 143 | 0 | 0 | 24 / 24 |
+
+两档预算均保持 17 个保底页全程就绪。32 页飞行中，首次跨界后有三个细节页记录了从请求到可绘制、再到可见像素的完整链路。256 页飞行在第 4 帧已发布全部 160 页。三个固定机位的冷启动均覆盖解码保底网格的内域。两档飞行的可见性与深度采样覆盖了全部 24 条共享边，参考轮廓共同内域没有漏像素。

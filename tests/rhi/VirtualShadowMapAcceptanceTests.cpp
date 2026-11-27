@@ -4,6 +4,7 @@
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
+#include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
@@ -85,6 +86,7 @@ class VSMAcceptanceReceipt final : public IRenderDebugObserver {
 public:
     bool captureImages = false;
     bool captureHDR = false;
+    bool captureStreamingEvidence = false;
     bool captureReceiverCoverage = false;
     bool receiverCoverageRecords = false;
     std::string hdrOutput, hdrPass;
@@ -129,11 +131,61 @@ public:
                 (binding.id == "Shadows.receiverCoverageSettings" || binding.id == "Shadows.receiverCoverageProjections" ||
                  binding.id == "Shadows.receiverCoveragePages" || binding.id == "Shadows.receiverCoverageMask" ||
                  (receiverCoverageRecords && binding.id == "Shadows.receiverCoverage"));
-            if (!stats && !image && !coverage) { continue; }
+            const bool streaming = captureStreamingEvidence &&
+                (binding.id == "streaming.VBuffer.requestHeader" || binding.id == "streaming.VBuffer.loadRequests" ||
+                 binding.id == "streaming.VBuffer.unloadRequests" || binding.id == "streaming.VBuffer.pageTable" ||
+                 (captureImages && (binding.id == "streaming.VBuffer.activeHeader" || binding.id == "streaming.VBuffer.activeGroups" ||
+                    binding.id == "streaming.VBuffer.visibleClusters")));
+            if (!stats && !image && !coverage && !streaming) { continue; }
             try {
                 copy(commands, binding, image);
             } catch (const std::exception& exception) { error = exception.what(); return; }
         }
+    }
+
+    Json streamingEvidence()
+    {
+        const auto requestHeaders = readElements<StreamRequestBufferHeader>("streaming.VBuffer.requestHeader");
+        requireAcceptance(requestHeaders.size() == 1, "Unexpected stream request header layout");
+        const auto& header = requestHeaders.front();
+        auto loadRequests = readElements<uint32_t>("streaming.VBuffer.loadRequests");
+        auto unloadRequests = readElements<uint32_t>("streaming.VBuffer.unloadRequests");
+        requireAcceptance(header.maxLoadRequests <= loadRequests.size() && header.maxUnloadRequests <= unloadRequests.size(),
+            "Stream request capacities exceed the captured buffers");
+        loadRequests.resize(std::min(header.loadCounter, header.maxLoadRequests));
+        unloadRequests.resize(std::min(header.unloadCounter, header.maxUnloadRequests));
+        std::ranges::sort(loadRequests);
+        std::ranges::sort(unloadRequests);
+        loadRequests.erase(std::unique(loadRequests.begin(), loadRequests.end()), loadRequests.end());
+        unloadRequests.erase(std::unique(unloadRequests.begin(), unloadRequests.end()), unloadRequests.end());
+
+        const auto pageTable = readElements<StreamPageTableEntry>("streaming.VBuffer.pageTable");
+        std::vector<uint32_t> demand, prefetch, resident, lockedFallback, pendingUpload, pendingUnload;
+        for (const auto encoded : loadRequests) {
+            const uint32_t page = encoded & ~kStreamPrefetchPageTag;
+            requireAcceptance(page < pageTable.size(), "Stream load request refers to a missing page");
+            ((encoded & kStreamPrefetchPageTag) != 0 ? prefetch : demand).push_back(page);
+        }
+        for (const auto page : unloadRequests) {
+            requireAcceptance(page < pageTable.size(), "Stream unload request refers to a missing page");
+        }
+        for (uint32_t page = 0; page < pageTable.size(); ++page) {
+            switch (streamPageTableState(pageTable[page])) {
+            case MeshletStreamPageResidencyState::Resident: resident.push_back(page); break;
+            case MeshletStreamPageResidencyState::LockedFallback: lockedFallback.push_back(page); break;
+            case MeshletStreamPageResidencyState::PendingUpload: pendingUpload.push_back(page); break;
+            case MeshletStreamPageResidencyState::PendingUnload: pendingUnload.push_back(page); break;
+            case MeshletStreamPageResidencyState::Unloaded: break;
+            default: requireAcceptance(false, "Invalid GPU stream page state");
+            }
+        }
+        Json evidence{{"gpuFrame", header.frameIndex}, {"demandedPages", demand}, {"prefetchPages", prefetch},
+            {"unloadRequestedPages", unloadRequests}, {"residentPages", resident}, {"lockedFallbackPages", lockedFallback},
+            {"pendingUploadPages", pendingUpload}, {"pendingUnloadPages", pendingUnload}};
+        if (captureImages) {
+            evidence["visiblePages"] = visibleStreamPages(header.frameIndex, pageTable);
+        }
+        return evidence;
     }
     std::vector<std::byte> read(const std::string& name)
     {
@@ -383,6 +435,56 @@ public:
         return result;
     }
 private:
+    template<typename T>
+    std::vector<T> readElements(const std::string& name)
+    {
+        const auto bytes = read(name);
+        requireAcceptance(bytes.size() % sizeof(T) == 0, "Unexpected element layout for " + name);
+        std::vector<T> result(bytes.size() / sizeof(T));
+        if (!bytes.empty()) { std::memcpy(result.data(), bytes.data(), bytes.size()); }
+        return result;
+    }
+
+    Json visibleStreamPages(uint32_t frame, const std::vector<StreamPageTableEntry>& pageTable)
+    {
+        const auto headers = readElements<MeshletStreamGPUActiveHeader>("streaming.VBuffer.activeHeader");
+        requireAcceptance(headers.size() == 1 && headers.front().frameIndex == frame,
+            "Stream active-group header and request buffer refer to different frames");
+        const auto groups = readElements<MeshletStreamGPUActiveGroup>("streaming.VBuffer.activeGroups");
+        const auto records = readElements<CompactStreamVisibleRecord>("streaming.VBuffer.visibleClusters");
+        const auto pixels = readElements<uint32_t>("VBuffer.visibility");
+        const uint32_t groupCount = headers.front().activeGroupCount;
+        requireAcceptance(groupCount <= groups.size(), "Stream active-group count exceeds the captured buffer");
+
+        // VBuffer's stream record base is zero. Read only slots referenced by winning pixels.
+        std::map<std::pair<uint32_t, uint32_t>, uint32_t> pagePixels;
+        for (const auto pixel : pixels) {
+            if (pixel == 0) { continue; }
+            const uint32_t recordIndex = (pixel >> kVisibilityTriangleBits) - 1u;
+            if (recordIndex >= records.size()) {
+                requireAcceptance(false, "Visibility pixel refers to a missing stream record");
+            }
+            const auto record = unpackStreamVisibleRecord(records[recordIndex]);
+            if (record.dataIndex >= groupCount) {
+                requireAcceptance(false, "Visibility stream record refers to a missing active group");
+            }
+            const auto& group = groups[record.dataIndex];
+            if (group.pageIndex >= pageTable.size() || record.clusterIndex >= group.clusterCount) {
+                requireAcceptance(false, "Visibility active group refers to a missing page or cluster");
+            }
+            const auto state = streamPageTableState(pageTable[group.pageIndex]);
+            if (state != MeshletStreamPageResidencyState::Resident && state != MeshletStreamPageResidencyState::LockedFallback) {
+                requireAcceptance(false, "Visibility pixel refers to a page that was not drawable");
+            }
+            ++pagePixels[{group.pageIndex, group.lodLevel}];
+        }
+        Json result = Json::array();
+        for (const auto& [key, count] : pagePixels) {
+            result.push_back({{"page", key.first}, {"lod", key.second}, {"pixels", count}});
+        }
+        return result;
+    }
+
     struct ImageDescription {
         Format format;
         uint32_t width, height, layers, pixelBytes;
@@ -527,9 +629,13 @@ Json frameStatistics(RenderGraphPreviewRenderer& preview)
                 debug::debugSha256(stream.diagnosticTextureSemanticIdentity)},
             {"textureSemanticIdentityBytes", stream.diagnosticTextureSemanticIdentity.size()},
             {"originalTopologyHash", stream.originalTopologyHash}, {"primitiveMetadataHash", stream.primitiveMetadataHash},
-            {"maxResidentPages", stream.maxResidentPages}, {"activePages", stream.activePages},
+            {"frameIndex", stream.frameIndex},
+            {"feedbackFrame", stream.feedbackFrame == UINT64_MAX ? Json(nullptr) : Json(stream.feedbackFrame)},
+            {"totalPages", stream.totalPages}, {"maxResidentPages", stream.maxResidentPages}, {"activePages", stream.activePages},
             {"residentPages", stream.residentPages}, {"pendingPages", stream.pendingPages},
-            {"uploads", stream.uploads}, {"evictions", stream.evictions},
+            {"gpuLoadRequests", stream.gpuLoadRequests}, {"requests", stream.requests},
+            {"ioQueued", stream.ioQueued}, {"ioActive", stream.ioActive}, {"uploadQueued", stream.uploadQueued},
+            {"uploads", stream.uploads}, {"evictions", stream.evictions}, {"geometryPublicationRevision", stream.geometryPublicationRevision},
             {"geometryUsedBytes", stream.geometryUsedBytes}, {"geometryBudgetBytes", stream.geometryBudgetBytes},
             {"clasUsedBytes", stream.clasUsedBytes}, {"textureResidentBytes", stream.textureResidentBytes},
             {"loadFailures", stream.loadFailures}, {"allocationFailures", stream.allocationFailures},
@@ -614,6 +720,7 @@ public:
                 const auto comparisons = spec.value("comparisonFrames", std::vector<uint32_t>{});
                 const auto captures = spec.value("captureFrames", std::vector<uint32_t>{});
                 const auto receiverCoverageFrames = spec.value("receiverCoverageFrames", std::vector<uint32_t>{});
+                const auto streamingEvidenceFrames = spec.value("streamingEvidenceFrames", std::vector<uint32_t>{});
                 const bool enableStreamline = spec.value("enableStreamline", false);
                 const bool requireNoRayCapabilities = spec.value("requireNoRayCapabilities", !enableStreamline);
                 const bool synchronizationValidation = spec.value("synchronizationValidation",
@@ -621,6 +728,9 @@ public:
                 requireAcceptance(!synchronizationValidation || context.enableValidation,
                     "Synchronization validation requires validation to be enabled");
                 requireAcceptance(diagnostic || (comparisons.empty() && captures.empty()), "Timing mode forbids diagnostic captures");
+                requireAcceptance(streamingEvidenceFrames.empty() || (diagnostic && std::is_sorted(streamingEvidenceFrames.begin(), streamingEvidenceFrames.end()) &&
+                    std::adjacent_find(streamingEvidenceFrames.begin(), streamingEvidenceFrames.end()) == streamingEvidenceFrames.end() &&
+                    streamingEvidenceFrames.back() < frames), "Streaming evidence requires diagnostic mode and unique, ordered, in-range frames");
                 requireAcceptance(!nsightTraceFrame || (*nsightTraceFrame >= warmup && *nsightTraceFrame < frames),
                     "Nsight trace frame must follow warmup and be within the run");
                 for (const auto frame : comparisons) { requireAcceptance(frame >= warmup && frame < frames, "Comparison frame outside post-warmup range"); }
@@ -859,6 +969,7 @@ public:
                     validation.phase(id + "/" + std::to_string(frame));
                     const bool capture = std::find(captures.begin(), captures.end(), frame) != captures.end();
                     receipt.captureImages = diagnostic && capture;
+                    receipt.captureStreamingEvidence = std::binary_search(streamingEvidenceFrames.begin(), streamingEvidenceFrames.end(), frame);
                     receipt.captureReceiverCoverage = receiverCoverage &&
                         std::binary_search(receiverCoverageFrames.begin(), receiverCoverageFrames.end(), frame);
                     receipt.captureHDR = diagnostic && capture;
@@ -966,6 +1077,7 @@ public:
                         coverage["frame"] = frame;
                         output["receiverCoverageCaptures"].push_back(std::move(coverage));
                     }
+                    if (receipt.captureStreamingEvidence) { row["streamingEvidence"] = receipt.streamingEvidence(); }
                     output["frames"].push_back(row);
                     noRayTracingAllocations &= row["memory"]["domains"]["RayTracing"]["peakAllocationBytes"] == 0 &&
                         row["memory"]["domains"]["CLAS"]["peakAllocationBytes"] == 0;
@@ -1006,6 +1118,7 @@ public:
                         }
                     }
                     if (std::find(comparisons.begin(), comparisons.end(), frame) != comparisons.end()) {
+                        receipt.captureStreamingEvidence = false;
                         receipt.captureImages = true;
                         requireAcceptance(preview.render(graph, width, height, comparisonOutput, true), preview.lastLog());
                         const auto cachedHDR = preview.readbackBytes();

@@ -97,18 +97,18 @@ if(Python3_Interpreter_FOUND)
         VERBATIM
     )
 
-    set(METALLIC_TERRAIN_BLOCKS_DIRECTORY "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainBlocks")
-    set(METALLIC_TERRAIN_BLOCKS_HEIGHT "${METALLIC_TERRAIN_BLOCKS_DIRECTORY}/terrain_blocks_height")
-    add_custom_command(
-        OUTPUT "${METALLIC_TERRAIN_BLOCKS_HEIGHT}.gltf" "${METALLIC_TERRAIN_BLOCKS_HEIGHT}.bin"
-        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py"
-            "${METALLIC_TERRAIN_P0_SOURCE}" --output "${METALLIC_TERRAIN_BLOCKS_HEIGHT}.gltf"
-            ${METALLIC_TERRAIN_HEIGHT_ARGS} --tiles-per-axis 2
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py" "${METALLIC_TERRAIN_P0_SOURCE}"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        COMMENT "Converting the Houdini EXR height field to four terrain blocks"
-        VERBATIM
-    )
+    function(add_metallic_terrain_block_height output tiles_per_axis)
+        add_custom_command(
+            OUTPUT "${output}.gltf" "${output}.bin"
+            COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py"
+                "${METALLIC_TERRAIN_P0_SOURCE}" --output "${output}.gltf"
+                ${METALLIC_TERRAIN_HEIGHT_ARGS} --tiles-per-axis ${tiles_per_axis}
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py" "${METALLIC_TERRAIN_P0_SOURCE}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            COMMENT "Converting the Houdini EXR height field to ${tiles_per_axis}x${tiles_per_axis} terrain blocks"
+            VERBATIM
+        )
+    endfunction()
 
     function(add_metallic_terrain_vsm_sample bake_target smoke_target sample_id terrain_source output)
         set(lighting "${CMAKE_SOURCE_DIR}/Asset/Terrain/TerrainVSM.metallic_scene.json")
@@ -147,9 +147,20 @@ if(Python3_Interpreter_FOUND)
     add_metallic_terrain_vsm_sample(MetallicTerrainVSMSample MetallicTerrainVSMSmoke
         gpu-driven-terrain-vsm "${METALLIC_TERRAIN_P0_DIRECTORY}/simple_terrain_height"
         "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainVSM/terrain_vsm")
+
+    set(METALLIC_TERRAIN_BLOCKS_DIRECTORY "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainBlocks")
+    set(METALLIC_TERRAIN_BLOCKS_HEIGHT "${METALLIC_TERRAIN_BLOCKS_DIRECTORY}/terrain_blocks_height")
+    add_metallic_terrain_block_height("${METALLIC_TERRAIN_BLOCKS_HEIGHT}" 2)
     add_metallic_terrain_vsm_sample(MetallicTerrainBlocksVSMSample MetallicTerrainBlocksVSMSmoke
         gpu-driven-terrain-blocks-vsm "${METALLIC_TERRAIN_BLOCKS_HEIGHT}"
         "${METALLIC_TERRAIN_BLOCKS_DIRECTORY}/terrain_blocks")
+
+    set(METALLIC_TERRAIN_BLOCKS_4X4_DIRECTORY "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainBlocks4x4")
+    set(METALLIC_TERRAIN_BLOCKS_4X4_HEIGHT "${METALLIC_TERRAIN_BLOCKS_4X4_DIRECTORY}/terrain_blocks_4x4_height")
+    add_metallic_terrain_block_height("${METALLIC_TERRAIN_BLOCKS_4X4_HEIGHT}" 4)
+    add_metallic_terrain_vsm_sample(MetallicTerrainBlocks4x4VSMSample MetallicTerrainBlocks4x4VSMSmoke
+        gpu-driven-terrain-blocks-4x4-vsm "${METALLIC_TERRAIN_BLOCKS_4X4_HEIGHT}"
+        "${METALLIC_TERRAIN_BLOCKS_4X4_DIRECTORY}/terrain_blocks_4x4")
 else()
     message(STATUS "Python3 was not found; terrain sample build targets are unavailable")
 endif()
