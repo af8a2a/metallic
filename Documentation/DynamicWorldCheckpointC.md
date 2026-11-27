@@ -143,13 +143,27 @@ model. Precipitation is a normalized weather state that increases cloud density
 by `1 + 0.5 × precipitation`; rain particles, rainfall accumulation and wet
 surface materials are outside this implementation.
 
-[Clouds.slang](../Shaders/Modules/Clouds.slang) defines a prescribed spherical
-cloud layer from base/top altitudes. Seeded periodic value noise supplies
-8 km and 2 km shape scales and 0.5 km erosion; coverage thresholds that field
-and a vertical profile fades the layer boundaries. It is an advected density
-field, without fluid dynamics or cloud microphysics. Double-precision wind
-displacement is reduced to the common 2048 km period before conversion to GPU
-floats, avoiding an unbounded displacement coordinate during long playback.
+[Clouds.slang](../Shaders/Modules/Clouds.slang) maps the authored spherical
+layer to the default UE 5.7.4 NvRTX `m_SimpleVolumetricCloud_Inst` shape.
+Its [material evaluation](../Shaders/Modules/SimpleVolumetricCloud.slang)
+samples the RGB stratocumulus, altostratus and cirrostratus layout on a
+256 km tile. Each channel selects a separate height profile. The red channel
+of the Perlin–Worley volume distorts the coordinates of the green channel,
+which breaks up the cloud body. The material uses the maximum layout weight
+as its conservative occupancy bound. The active layer spans 2% to 98% of
+the authored thickness. Extinction fades in over 500 m from the camera.
+
+The reference instance has zero storm and global mask contributions and
+disables its third noise sample. Seed zero preserves the reference placement.
+Other seeds translate the texture coordinates deterministically. Metallic
+coverage 0.5 maps to the reference global coverage of -0.2. The authored
+extinction of 8/km at unit density maps to 0.008/m. The two noise scales
+advect with factors 7 and -6 using the scene wind direction and displacement.
+The CPU wraps displacement at 2048 km before conversion to GPU floats.
+Camera, light and environment capture rays all sample this material. The
+[texture pack](../Asset/Atmosphere/CloudShape/README.md) contains the three
+Windows platform mip-zero images and their import instructions. Each device
+uploads the 9 MiB pack on first use by active clouds.
 
 Cloud extinction is grey. The fixed approximation uses scattering albedo 0.98,
 Henyey–Greenstein anisotropy 0.75, a transmitted direct term and three broadened
@@ -209,9 +223,9 @@ integration, representative depth and aerial perspective at that depth.
 Entry is limited to 350 km and the trace to 50 km. The step count scales
 from 2 to 96, reaching 96 at a 15 km interval.
 
-The material and celestial lights use Metallic's existing weather field,
-grey extinction, spectral solar/lunar transport and eight-sample light
-transmittance. The adapters use Y-up world metres, kilometres for the
+The view pass uses the shared UE cloud shape, grey extinction, Metallic's
+spectral solar/lunar transport and eight-sample light transmittance.
+The adapters use Y-up world metres, kilometres for the
 spherical atmosphere, reversed Z and a zero empty-depth marker. The buffer
 formats are full precision. Blue-noise sampling uses a fixed phase because
 this path traces at full resolution without temporal reconstruction.
@@ -219,8 +233,11 @@ this path traces at full resolution without temporal reconstruction.
 The GPU regression `volumetric_cloud_view_depth_and_composite` checks the
 outputs against an opaque ceiling before and within the cloud layer, an open
 orthographic view, an in-cloud perspective view and disabled clouds.
-`cloud_transport_weather_shadow_domains` also checks the ray integrator
-against a homogeneous slab with an analytic Beer–Lambert solution.
+`cloud_transport_weather_shadow_domains` checks the ray integrator against
+a homogeneous slab with an analytic Beer–Lambert solution. It also compares
+world-space density samples against an offline evaluation of the reference
+material and verifies half and zero extinction at camera distances of 250 m
+and 0 m.
 
 ## Celestial shadow scheduling
 

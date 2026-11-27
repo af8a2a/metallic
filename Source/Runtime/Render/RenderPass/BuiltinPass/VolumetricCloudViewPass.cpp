@@ -82,11 +82,15 @@ public:
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         device_ = context.device;
-        auto result = ShaderRegistry::instance().getComputeKernel(*device_,
-            {.moduleName = "Features/Environment/VolumetricCloudView", .entryPointName = "volumetricCloudViewMain",
-                .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
-            {.parameters = parameterAbi<VolumetricCloudViewParams>(kVolumetricCloudViewABI), .debugName = "VolumetricCloudView"},
-            kernel_, log);
+        const auto compileKernel = [&](const char* entry, ComputeKernel& kernel) {
+            return ShaderRegistry::instance().getComputeKernel(*device_,
+                {.moduleName = "Features/Environment/VolumetricCloudView", .entryPointName = entry,
+                    .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+                {.parameters = parameterAbi<VolumetricCloudViewParams>(kVolumetricCloudViewABI), .debugName = entry}, kernel, log);
+        };
+        auto result = compileKernel("volumetricCloudViewMain", kernel_);
+        if (!result) { return result; }
+        result = compileKernel("clearCloudViewMain", clearKernel_);
         if (!result) { return result; }
         auto noise = loadLumenBlueNoise(*device_, *context.graphicsQueue, LumenBlueNoise::Scalar, log);
         if (!noise) { return makeError(noise.error()); }
@@ -122,12 +126,13 @@ public:
         p.jitter[0] = raster.jitter[0];
         p.jitter[1] = raster.jitter[1];
         p.sceneColor = writer.sampledImageHandle(context.inputTexture("sceneColor").view());
-        p.depth = writer.sampledImageHandle(context.inputTexture("depth").view());
         p.color = writer.storageImageHandle(context.outputTexture("color").view());
         p.scattering = writer.storageImageHandle(context.outputTexture("scattering").view());
         p.transmittance = writer.storageImageHandle(context.outputTexture("transmittance").view());
         p.cloudDepth = writer.storageImageHandle(context.outputTexture("cloudDepth").view());
-        if (const auto* set = context.resources<EnvironmentResourceSet>()) {
+        const auto* set = context.resources<EnvironmentResourceSet>();
+        if (set) {
+            p.depth = writer.sampledImageHandle(context.inputTexture("depth").view());
             const auto& lighting = set->lighting;
             p.atmosphereParameters = writer.buffer(lighting.atmosphereParametersBuffer);
             p.transmittanceLut = writer.sampledImageHandle(lighting.transmittanceView);
@@ -149,12 +154,13 @@ public:
         }
         auto packet = writer.encode(p, kVolumetricCloudViewABI);
         if (!packet) { return makeError(packet.error()); }
-        return kernel_.dispatch(commands, *packet, (raster.width + 7u) / 8u, (raster.height + 7u) / 8u, 1u);
+        auto& kernel = set ? kernel_ : clearKernel_;
+        return kernel.dispatch(commands, *packet, (raster.width + 7u) / 8u, (raster.height + 7u) / 8u, 1u);
     }
 
 private:
     Device* device_ = nullptr;
-    ComputeKernel kernel_;
+    ComputeKernel kernel_, clearKernel_;
     std::unique_ptr<TextureView> blueNoise_;
 };
 

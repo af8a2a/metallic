@@ -2,11 +2,10 @@
 module Clouds;
 
 import AtmosphereTypes;
+import SimpleVolumetricCloud;
 
 namespace Metallic.Clouds
 {
-// Original analytic cloud field and bounded scattering approximation. This is
-// a prescribed weather field, not a fluid simulation or droplet Mie solver.
 public bool enabled(GPUAtmosphereParameters p)
 {
     return p.cloudOptics.w > 0.5 && p.cloudLayer.z > 0.0 &&
@@ -18,45 +17,27 @@ uint hash(uint value)
     value ^= value >> 15; value *= 0x846ca68bu;
     return value ^ (value >> 16);
 }
-float lattice(int3 cell, uint seed)
-{
-    uint3 wrapped = uint3(cell) & 255u;
-    return float(hash(wrapped.x ^ hash(wrapped.y ^ hash(wrapped.z ^ seed)))) * (1.0 / 4294967296.0);
-}
-float noise(float3 position, uint seed)
-{
-    int3 cell = int3(floor(position));
-    float3 f = frac(position); f = f * f * (3.0 - 2.0 * f);
-    float lower = lerp(lerp(lattice(cell, seed), lattice(cell + int3(1, 0, 0), seed), f.x),
-        lerp(lattice(cell + int3(0, 1, 0), seed), lattice(cell + int3(1, 1, 0), seed), f.x), f.y);
-    float upper = lerp(lerp(lattice(cell + int3(0, 0, 1), seed), lattice(cell + int3(1, 0, 1), seed), f.x),
-        lerp(lattice(cell + int3(0, 1, 1), seed), lattice(cell + int3(1, 1, 1), seed), f.x), f.y);
-    return lerp(lower, upper, f.z);
-}
 public float density(GPUAtmosphereParameters p, float3 planetPositionKm)
 {
     if (!enabled(p)) { return 0.0; }
     float altitude = length(planetPositionKm) - p.observerPlanetBottom.w;
-    float h = (altitude - p.cloudLayer.x) / max(p.cloudLayer.y - p.cloudLayer.x, 1e-4);
-    if (h <= 0.0 || h >= 1.0) { return 0.0; }
-    // Coordinate subtraction represents continuous field advection. The CPU
-    // wraps its double-precision displacement by the common 2048 km period.
-    float3 position = planetPositionKm - p.cloudAdvection.xyz;
-    uint seed = asuint(p.cloudAdvection.w);
-    static const float3 kOctaveScales = float3(0.125, 0.5, 2.0);
-    static const uint3 kOctaveSeeds = uint3(0u, 17u, 71u);
-    float shape = 0.0;
-    float erosion = 0.0;
-    [loop]
-    for (uint octave = 0u; octave < 3u; ++octave) {
-        float n = noise(position * kOctaveScales[octave], seed + kOctaveSeeds[octave]);
-        if (octave == 0u) { shape += 0.65 * n; }
-        else if (octave == 1u) { shape += 0.35 * n; }
-        else { erosion = n * 0.12; }
-    }
-    float occupancy = smoothstep(1.0 - p.cloudLayer.z, 1.0 - p.cloudLayer.z + 0.2, shape - erosion);
-    float profile = smoothstep(0.0, 0.12, h) * (1.0 - smoothstep(0.72, 1.0, h));
-    return occupancy * (0.35 + 0.65 * shape) * profile * p.cloudLayer.w;
+    float h = (altitude - p.cloudLayer.x) / (p.cloudLayer.y - p.cloudLayer.x);
+    // UE material If_1 uses AEqualsB for abs(h - 0.5) <= EqualsThreshold.
+    if (abs(h - 0.5f) > 0.48f) { return 0.0f; }
+
+    float3 cameraRelativeKm = planetPositionKm - p.observerPlanetBottom.xyz;
+    float3 worldKm = cameraRelativeKm + p.observerWorldTop.xyz * 0.001f;
+    float3 skyTexScale = worldKm.xzy / 256.0f + float3(0.5f, 0.5f, 0.0f);
+    // Seed zero preserves the reference placement. Other seeds translate the same field.
+    uint seed = hash(asuint(p.cloudAdvection.w));
+    skyTexScale.xy += float2(seed & 0xffffu, seed >> 16u) * (1.0f / 65536.0f);
+    float3 wind = -p.cloudAdvection.xzy / 256.0f;
+    float4 conservative = simpleCloudConservativeDensity(p.cloudShapeResources, skyTexScale, h, wind,
+        p.cloudLayer.z - 0.7f);
+    float extinctionPerMetre = p.cloudOptics.x * 0.001f;
+    float extinction = simpleCloudExtinction(conservative, extinctionPerMetre * p.cloudLayer.w, length(cameraRelativeKm));
+    // The transport callers multiply dimensionless density by the authored extinction per km.
+    return (extinction * 1000.0f) / p.cloudOptics.x;
 }
 float2 roots(float3 position, float3 direction, float radius)
 {

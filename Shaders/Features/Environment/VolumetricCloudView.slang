@@ -88,6 +88,18 @@ AtmosphereSegment cloudAerialPerspective(VolumetricCloudViewParams p, GPUAtmosph
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
+void clearCloudViewMain(uint3 id : SV_DispatchThreadID)
+{
+    let p = getParameters<VolumetricCloudViewParams>();
+    if (any(id.xy >= uint2(p.camera.viewport.yz))) { return; }
+    resolveUniform(p.scattering)[id.xy] = 0.0f;
+    resolveUniform(p.transmittance)[id.xy] = 1.0f;
+    resolveUniform(p.cloudDepth)[id.xy] = 0.0f;
+    resolveUniform(p.color)[id.xy] = resolveUniform(p.sceneColor).Load(int3(id.xy, 0));
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
 void volumetricCloudViewMain(uint3 id : SV_DispatchThreadID)
 {
     let p = getParameters<VolumetricCloudViewParams>();
@@ -99,7 +111,7 @@ void volumetricCloudViewMain(uint3 id : SV_DispatchThreadID)
     float3 radiance = 0.0f;
     float transmittance = 1.0f;
     float cloudDepthMeters = 0.0f;
-    if (p.atmosphereParameters.index != 0xffffffffu && (deviceDepth > 0.0f || p.skyVisible != 0u)) {
+    if (deviceDepth > 0.0f || p.skyVisible != 0u) {
         GPUAtmosphereParameters a = resolveUniform(p.atmosphereParameters)[0];
         ScreenTraceProjection camera = makeScreenTraceProjection(p.camera, p.jitter);
         float2 screen = screenTraceScreenPosition((float2(pixel) + 0.5f + p.jitter) / float2(size));

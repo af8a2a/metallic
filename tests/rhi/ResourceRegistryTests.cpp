@@ -2881,8 +2881,11 @@ public:
         };
         REG_REQUIRE(create(parameters, sizeof(GPUAtmosphereParameters), sizeof(GPUAtmosphereParameters)));
         REG_REQUIRE(create(aerial, 32, 16));
-        REG_REQUIRE(create(output, 26 * 16, 16));
-        std::array<float, 80> expectedParameters;
+        constexpr size_t parameterFloats = sizeof(GPUAtmosphereParameters) / sizeof(float);
+        constexpr size_t aerialOffset = parameterFloats + 4 * 4;
+        std::array<float, aerialOffset + 8> actual;
+        REG_REQUIRE(create(output, sizeof(actual), 16));
+        std::array<float, parameterFloats> expectedParameters;
         for (size_t i = 0; i < expectedParameters.size(); ++i) { expectedParameters[i] = float(i + 1); }
         const std::array<float, 8> expectedAerial{1, 2, 3, 4, 5, 6, 7, 8};
         const auto upload = [&](Buffer& buffer, const auto& data) {
@@ -2928,19 +2931,18 @@ public:
         output->invalidate();
         const auto* values = static_cast<const float*>(output->map());
         REG_CHECK(values != nullptr);
-        std::array<float, 104> actual;
         std::memcpy(actual.data(), values, sizeof(actual));
         output->unmap();
         for (size_t i = 0; i < expectedParameters.size(); ++i) { REG_CHECK(actual[i] == expectedParameters[i]); }
         for (size_t i = 0; i < 4; ++i) {
-            REG_CHECK(actual[80 + i * 4] == float(i * 2 + 2));
-            REG_CHECK(actual[81 + i * 4] == float(i * 2 + 3));
+            REG_CHECK(actual[parameterFloats + i * 4] == float(i * 2 + 2));
+            REG_CHECK(actual[parameterFloats + i * 4 + 1] == float(i * 2 + 3));
         }
         for (size_t i = 0; i < 8; ++i) {
-            REG_CHECK(actual[96 + i] == expectedAerial[i]);
+            REG_CHECK(actual[aerialOffset + i] == expectedAerial[i]);
         }
         bench::readbackEvidence(context, "atmosphere-resources.bin", std::span<const float>(actual));
-        return RHITestResult::pass("320-byte atmosphere state including cloud/phase tail, LUT/cloud-shadow binding 101 and aerial perspective binding");
+        return RHITestResult::pass("Atmosphere parameter ABI including cloud shape handles, LUTs, cloud shadow and aerial perspective");
     }
 };
 METALLIC_REGISTER_RHI_TEST(AtmosphereResourceParametersTest);

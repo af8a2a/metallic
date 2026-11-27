@@ -4,12 +4,16 @@
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
+#include "Runtime/Render/Core/StaticTextureUpload.h"
 #include "Runtime/Render/Environment/CelestialLighting.h"
+#include "Runtime/Render/GAPI/TextureFormat.h"
 
 #include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <vector>
 
 #ifndef PROJECT_SOURCE_DIR
@@ -17,6 +21,85 @@
 #endif
 
 namespace metallic::render {
+namespace {
+
+struct CloudShapeTexture {
+    const char* file;
+    Format format;
+    uint32_t width, height, depth;
+};
+
+Result<ResourceLease> loadCloudShapeTexture(Device& device, ResourceRegistry& registry,
+    const CloudShapeTexture& desc, Queue& graphics, Queue* compute, std::string& log)
+{
+    const auto path = std::filesystem::path(PROJECT_SOURCE_DIR "/Asset/Atmosphere/CloudShape") / desc.file;
+    const auto footprint = textureCopyFootprint(desc.format, desc.width, desc.height, desc.depth);
+    if (!footprint) { return makeError(footprint.error()); }
+    const auto size = footprint->requiredBytes;
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file || file.tellg() != static_cast<std::streamoff>(size)) {
+        log = "Expected a " + std::to_string(size) + "-byte cloud shape texture at " + path.string();
+        return makeError(Error::InvalidArgument);
+    }
+    auto staging = device.createBuffer({.size = size, .usage = BufferUsageBits::TransferSource,
+        .memoryLocation = MemoryLocation::HostUpload});
+    if (!staging) { return makeError(staging.error()); }
+    auto* bytes = static_cast<char*>((*staging)->map());
+    if (!bytes) { return makeError(Error::Failure); }
+    file.seekg(0).read(bytes, static_cast<std::streamsize>(size));
+    if (!file) {
+        (*staging)->unmap();
+        log = "Failed to read cloud shape texture " + path.string();
+        return makeError(Error::Failure);
+    }
+    (*staging)->flush();
+    (*staging)->unmap();
+    auto texture = device.createTexture({.type = desc.depth > 1 ? TextureType::Texture3D : TextureType::Texture2D,
+        .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination, .format = desc.format,
+        .width = desc.width, .height = desc.height, .depth = desc.depth,
+        .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute});
+    if (!texture) { return makeError(texture.error()); }
+    // The shared weather field is also sampled by graphics-queue ray tracing pipelines.
+    auto upload = uploadStaticComputeTexture(device, graphics, **texture, **staging, compute, PipelineStageBits::AllCommands);
+    if (!upload) { return makeError(upload.error()); }
+    auto view = device.createTextureView(**texture, {});
+    if (!view) { return makeError(view.error()); }
+    return registry.sampledImage(**view);
+}
+
+Result<AtmosphereUInt4> cloudShapeResources(Device& device, ResourceRegistry& registry, std::string& log)
+{
+    // Every immutable atmosphere publication on the device uses the same descriptor indices.
+    // The device-owned leases retain the sampled views and allocations through their last use.
+    using Leases = std::array<ResourceLease, 4>;
+    static const char key = 0;
+    auto state = device.sharedState(&key, [&]() -> Result<std::shared_ptr<void>> {
+        constexpr CloudShapeTexture textures[]{
+            {"Pattern.rgba16f", Format::RGBA16Sfloat, 256, 256, 1},
+            {"Profile.rgba16f", Format::RGBA16Sfloat, 256, 256, 1},
+            {"Noise.rgba8srgb", Format::RGBA8sRGB, 128, 128, 128},
+        };
+        auto* graphics = device.getQueue(QueueType::Graphics);
+        if (!graphics) { log = "Cloud shape textures require a graphics upload queue"; return makeError(Error::Unsupported); }
+        auto* compute = device.getQueue(QueueType::Compute);
+        auto leases = std::make_shared<Leases>();
+        for (size_t i = 0; i < std::size(textures); ++i) {
+            auto lease = loadCloudShapeTexture(device, registry, textures[i], *graphics, compute, log);
+            if (!lease) { return makeError(lease.error()); }
+            (*leases)[i] = std::move(*lease);
+        }
+        auto sampler = registry.sampler({.mipFilter = SamplerFilter::Linear, .addressU = SamplerAddressMode::Repeat,
+            .addressV = SamplerAddressMode::Repeat, .addressW = SamplerAddressMode::Repeat});
+        if (!sampler) { return makeError(sampler.error()); }
+        (*leases)[3] = std::move(*sampler);
+        return leases;
+    });
+    if (!state) { return makeError(state.error()); }
+    const auto& leases = *std::static_pointer_cast<Leases>(*state);
+    return AtmosphereUInt4{leases[0].shaderIndex(), leases[1].shaderIndex(), leases[2].shaderIndex(), leases[3].shaderIndex()};
+}
+
+} // namespace
 
 float3 atmosphereSpectrumToWorking(const float3& s)
 {
@@ -69,8 +152,8 @@ GPUAtmosphereParameters buildGPUAtmosphereParameters(const environment::Environm
         weather.cloudCoverage, weather.cloudDensity * (1.0f + 0.5f * weather.precipitation)};
     p.cloudOptics = {weather.cloudExtinctionPerKm, 0.98f, 0.75f, weather.cloudEnabled ? 1.0f : 0.0f};
     const auto wind = environment::normalizedWeatherWindDirection(weather);
-    // Every noise octave repeats at a divisor of 2048 km. Reduce in double
-    // before narrowing so continuous advection also works after long runs.
+    // The two material noise layers move by integer UV periods when the wind
+    // displacement wraps by 2048 km (eight 256 km layouts). Reduce before narrowing.
     const bool movingClouds = weather.cloudEnabled && weather.cloudCoverage > 0.0f && weather.cloudDensity > 0.0f &&
         weather.cloudExtinctionPerKm > 0.0f && weather.windSpeed > 0.0f;
     const double cloudElapsed = movingClouds ? environment.elapsedSeconds : 0.0;
@@ -92,6 +175,7 @@ GPUAtmosphereParameters buildGPUAtmosphereParameters(const environment::Environm
     p.moonToSun = {astronomy.moonToSunDirection.x, astronomy.moonToSunDirection.y,
         astronomy.moonToSunDirection.z, astronomy.automatic ? 1.0f : 0.0f};
     p.moonPhase = {astronomy.moonPhaseAngleRadians, astronomy.moonIlluminatedFraction, astronomy.moonLambertPhase, 0.0f};
+    p.cloudShapeResources.fill(UINT32_MAX);
     return p;
 }
 
@@ -295,14 +379,20 @@ Result<> AtmosphereResourcesGPU::record(CommandBuffer& commands, const environme
             return makeError(Error::InvalidArgument);
         }
     }
+    auto registry = ResourceRegistry::forDevice(*impl_->device);
+    if (!registry) { return makeError(registry.error()); }
+    if (environment.weather.cloudEnabled && impl_->parameters.cloudLayer[2] > 0.0f &&
+        impl_->parameters.cloudLayer[3] > 0.0f && impl_->parameters.cloudOptics[0] > 0.0f) {
+        auto shapes = cloudShapeResources(*impl_->device, **registry, log);
+        if (!shapes) { return makeError(shapes.error()); }
+        impl_->parameters.cloudShapeResources = *shapes;
+    }
     void* mapped = impl_->parameterBuffer->map();
     if (mapped == nullptr) { return makeError(Error::Failure); }
     std::memcpy(mapped, &impl_->parameters, sizeof(impl_->parameters));
     impl_->parameterBuffer->flush({0, sizeof(impl_->parameters)});
     impl_->parameterBuffer->unmap();
     commands.hostWriteBarrier();
-    auto registry = ResourceRegistry::forDevice(*impl_->device);
-    if (!registry) { return makeError(registry.error()); }
     ParameterWriter writer(*impl_->device, **registry, RenderFrameContext::from(commands));
     AtmospherePrecomputeParams params{};
     params.parameters = writer.bufferSpan(impl_->parameterBuffer.get(), 16, 16);

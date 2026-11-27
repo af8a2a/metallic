@@ -15,7 +15,7 @@
 namespace metallic::tests {
 namespace {
 
-using CloudReadback = std::array<std::array<float, 4>, 49>;
+using CloudReadback = std::array<std::array<float, 4>, 51>;
 struct alignas(16) CloudsProbeParams {
     render::AtmospherePrecomputeParams resources;
     render::GPUBufferSpan inputAerial;
@@ -179,10 +179,16 @@ public:
         clear.reset(); // Shared image owners must survive publication eviction.
         if (!probe("cloud-repeat", 0.0, repeatValues, repeated, dense.get())) { return RHITestResult::fail(log); }
         if (denseValues != repeatValues) { return RHITestResult::fail("Same seed/time cloud publication is not deterministic"); }
-        if (denseValues[26][0] != 1.0f || denseValues[26][1] != 320.0f || denseValues[26][2] != 0.75f ||
+        // Offline evaluation of the UE 5.7.4 instance with its Windows cooked mip zero
+        // and linear wrap filtering. Allow for fixed-function interpolation precision.
+        if (!cloudClose(denseValues[49], {0.14059f, 0.10986f, 0.0f, 1.0f}, 0.0f, 0.004f) ||
+            std::abs(denseValues[50][0] - denseValues[49][0] * 0.5f) > 0.0001f || denseValues[50][1] != 0.0f) {
+            return RHITestResult::fail("UE texture-driven cloud shape or camera-distance fade differs from the reference");
+        }
+        if (denseValues[26][0] != 1.0f || denseValues[26][1] != sizeof(GPUAtmosphereParameters) || denseValues[26][2] != 0.75f ||
             denseValues[30][0] != 48.0f || denseValues[30][1] != 0.0f || denseValues[30][2] != 1.0f ||
             denseValues[2][2] != 1.0f || denseValues[3][0] != 0.0f) {
-            return RHITestResult::fail("320-byte atmosphere ABI or dominant Sun cloud-shadow budget mismatch");
+            return RHITestResult::fail("Atmosphere ABI or dominant Sun cloud-shadow budget mismatch");
         }
         if (!(denseValues[0][0] < 0.9f) || std::abs(denseValues[0][0] - denseValues[1][0]) > 0.035f ||
             !(denseValues[4][0] < 0.9f * denseValues[5][0]) || !cloudClose(denseValues[6], denseValues[7])) {
@@ -212,7 +218,7 @@ public:
             !cloudClose(denseValues[16], denseValues[14], 0.1f, 10.0f) ||
             !cloudClose(denseValues[15], {denseValues[14][0] + denseValues[29][0],
                 denseValues[14][1] + denseValues[29][1], denseValues[14][2] + denseValues[29][2], 1.0f}, 1e-5f, 0.01f)) {
-            return RHITestResult::fail("Cloud advection covariance or disk-free environment capture policy failed");
+            return RHITestResult::fail("Cloud wind wrap or disk-free environment capture policy failed");
         }
         world.weather.cloudDensity = 0.0f;
         if (!probe("cloud-zero", 120.0, zeroValues, zero, dense.get())) { return RHITestResult::fail(log); }
@@ -241,14 +247,16 @@ public:
             nightValues[2][2] != 0.0f || nightValues[3][0] != 1.0f ||
             nightValues[26][2] != 1.125f || !(nightValues[20][1] < seedValues[20][1]) ||
             !(nightValues[36][0] < 0.9f * nightValues[37][0]) ||
-            std::abs(nightValues[38][0] - nightValues[38][1]) > 0.035f) {
+            std::abs(nightValues[38][0] - nightValues[38][2]) > 0.001f) {
             return RHITestResult::fail("Dominant Moon map or Moon receiver attenuation failed");
         }
         world.sun.enabled = true;
         world.sun.direction = {-0.8660254f, -0.5f, 0.0f};
         world.moon.enabled = false;
         world.weather.cloudCoverage = 0.9f;
-        world.weather.cloudDensity = 0.05f;
+        // At this column the UE weather pattern has a lower fill than the old
+        // noise field. Target moderate slant transmittance for the FP32 probe.
+        world.weather.cloudDensity = 0.25f;
         world.weather.precipitation = 0.0f;
         world.weather.windSpeed = 0.0f;
         if (!probe("cloud-elevated-terrain", 120.0, terrainValues, terrain, dense.get())) { return RHITestResult::fail(log); }

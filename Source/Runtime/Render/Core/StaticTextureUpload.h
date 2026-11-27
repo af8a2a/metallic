@@ -33,7 +33,7 @@ inline Result<> submitStaticComputeUpload(Device& device, Queue& queue, CommandB
 
 // Initialize a single-mip, tightly packed lookup texture before its first compute dispatch.
 inline Result<> uploadStaticComputeTexture(Device& device, Queue& queue, Texture& texture, Buffer& staging,
-    Queue* computeConsumer = nullptr)
+    Queue* computeConsumer = nullptr, PipelineStageBits shaderStages = PipelineStageBits::ComputeShader)
 {
     auto source = staging.slice();
     if (!source) { return makeError(source.error()); }
@@ -56,7 +56,7 @@ inline Result<> uploadStaticComputeTexture(Device& device, Queue& queue, Texture
     barrier.oldLayout = TextureLayout::TransferDestination;
     barrier.newLayout = TextureLayout::ShaderRead;
     barrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite};
-    barrier.after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead};
+    barrier.after = {shaderStages, AccessBits::ShaderRead};
     result = (*commands)->synchronize({.textures = {&barrier, 1}});
     if (!result) { return result; }
     result = (*commands)->end();

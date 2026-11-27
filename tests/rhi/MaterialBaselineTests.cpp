@@ -73,7 +73,7 @@ class PhysicalCloudFinalReceipt final : public render::IRenderDebugObserver
 public:
     bool requiresResourceReadback() const override { return false; }
     render::GPUAtmosphereParameters parameters{};
-    std::array<std::byte, 320> bytes{};
+    std::array<std::byte, sizeof(render::GPUAtmosphereParameters)> bytes{};
     bool captured = false, valid = true, completed = false;
     uint32_t executions = 0;
     std::string publication;
@@ -103,7 +103,7 @@ public:
                 binding.buffer->desc().memoryLocation != render::MemoryLocation::HostUpload) { valid = false; continue; }
             const void* mapped = binding.buffer->map();
             if (!mapped) { valid = false; continue; }
-            std::array<std::byte, 320> next;
+            decltype(bytes) next;
             std::memcpy(next.data(), mapped, next.size());
             binding.buffer->unmap();
             if (captured && bytes != next) { valid = false; }
@@ -934,7 +934,7 @@ public:
                     receipt.write(reinterpret_cast<const char*>(cloudReceipt->bytes.data()), cloudReceipt->bytes.size());
                     if (!receipt) { return fail("Cannot write physical publication receipt"); }
                     result["physicalCloudReceipt"] = {{"frame", caseFrames - 1}, {"observedTimedFrames", 0}, {"parameterFile", file},
-                        {"bytes", 320}, {"memoryLocation", "HostUpload"}, {"environmentSource", "PhysicalAtmosphere"}, {"role", "PhysicalAtmosphere.parameters"},
+                        {"bytes", cloudReceipt->bytes.size()}, {"memoryLocation", "HostUpload"}, {"environmentSource", "PhysicalAtmosphere"}, {"role", "PhysicalAtmosphere.parameters"},
                         {"publication", cloudReceipt->publication}, {"cloudLayer", cloudReceipt->parameters.cloudLayer},
                         {"cloudOptics", p.cloudOptics}, {"observerWorldTop", p.observerWorldTop}, {"observerPlanetBottom", p.observerPlanetBottom},
                         {"observerAltitudeKm", altitude}, {"resolvedCamera", camera}, {"cornerSampleOrigin", {-1.48828125,2201.48828125,4.0}},

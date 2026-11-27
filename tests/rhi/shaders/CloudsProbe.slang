@@ -25,7 +25,7 @@ void store(uint index, float3 value)
 void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
 {
     if (any(id != 0u)) { return; }
-    for (uint index = 0u; index < 49u; ++index) { store(index, float3(0.0)); }
+    for (uint index = 0u; index < 51u; ++index) { store(index, float3(0.0)); }
     GPUAtmosphereParameters p = loadParameters(gProbe.resources.parameters);
     let trans = resolveUniform(gProbe.resources.transmittance);
     let multi = resolveUniform(gProbe.resources.multiScattering);
@@ -63,10 +63,11 @@ void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
         cloudShadowTransmittance(p, shadow, above, 0u), 0.0));
     float3 samplePoint = ground + up * 2.5 + float3(6.0, 0.0, 3.0);
     GPUAtmosphereParameters shifted = p;
-    shifted.cloudAdvection.x += 1.0;
+    // The two noise layers wrap at integer multiples of the 256 km layout.
+    // Both must remain continuous across the CPU's 2048 km phase reduction.
+    shifted.cloudAdvection.x += 2048.0;
     store(19, float3(Metallic.Clouds::density(p, samplePoint),
-        Metallic.Clouds::density(shifted, samplePoint + float3(1.0, 0.0, 0.0)),
-        Metallic.Clouds::density(shifted, samplePoint)));
+        Metallic.Clouds::density(shifted, samplePoint), 0.0));
     float densityMean = 0.0, transMean = 0.0, minT = 1.0;
     for (uint sample = 0; sample < 64u; ++sample) {
         float3 point = normalize(ground + float3(float(sample % 8u) * 2.0 - 7.0, 0.0,
@@ -115,8 +116,25 @@ void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
     store(34, reference.radiance); store(35, reference.transmittance);
     store(36, solarIrradiance(p, trans, ground, 1u));
     store(37, solarIrradiance(clear, trans, ground, 1u));
+    // The map centre is between four texels. Compare the cached moon with
+    // the same four physical columns and integration budget.
+    float filteredMoon = 1.0f;
+    if (uint(p.cloudShadowBudget.z) & 2u) {
+        uint width, height;
+        shadow.GetDimensions(width, height);
+        float3 localUp, east, north;
+        radialBasis(p, localUp, east, north);
+        filteredMoon = 0.0f;
+        for (int y = -1; y <= 1; y += 2) {
+            for (int x = -1; x <= 1; x += 2) {
+                float3 column = ground + east * (x * p.cloudShadowCentre.w / width) + north * (y * p.cloudShadowCentre.w / height);
+                column = normalize(column) * (p.observerPlanetBottom.w + 0.002f);
+                filteredMoon += 0.25f * Metallic.Clouds::transmittance(p, column, p.moonDirectionRadius.xyz, 1e9f, uint(p.cloudShadowBudget.y));
+            }
+        }
+    }
     store(38, float3(cloudShadowTransmittance(p, shadow, ground, 1u),
-        Metallic.Clouds::transmittance(p, ground, p.moonDirectionRadius.xyz), 0.0));
+        Metallic.Clouds::transmittance(p, ground, p.moonDirectionRadius.xyz), filteredMoon));
     store(39, float3(p.cloudAdvection.x, p.cloudAdvection.z, p.weatherComposition.w));
     float mapError = 0.0, terrainParallax = 0.0, elevatedMeanT = 0.0;
     for (uint receiver = 0u; receiver < 16u; ++receiver) {
@@ -151,4 +169,23 @@ void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
     }
     store(47, slab.luminance);
     store(48, float3(slab.transmittance, slab.representativeDepthMeters(), slab.depthWeightsSum));
+
+    if (Metallic.Clouds::enabled(p)) {
+        // The UE instance reference coordinates use absolute world km and its original placement.
+        GPUAtmosphereParameters shape = p;
+        shape.cloudLayer = float4(1.5, 4.0, 0.5, 1.0);
+        shape.cloudOptics.x = 8.0;
+        shape.cloudAdvection = 0.0;
+        float3 a = worldToAtmosphereKm(shape, float3(-13000, 3000, 16000));
+        float3 b = worldToAtmosphereKm(shape, float3(4000, 3750, 18000));
+        float3 c = worldToAtmosphereKm(shape, float3(6000, 2500, 3000));
+        store(49, float3(Metallic.Clouds::density(shape, a), Metallic.Clouds::density(shape, b), Metallic.Clouds::density(shape, c)));
+        // Hold the world-space material sample still while moving the camera to 250 m and 0 m.
+        shape.observerPlanetBottom.xyz = a - float3(0.25, 0, 0);
+        shape.observerWorldTop.xyz = float3(-13250, 3000, 16000);
+        float halfFade = Metallic.Clouds::density(shape, a);
+        shape.observerPlanetBottom.xyz = a;
+        shape.observerWorldTop.xyz = float3(-13000, 3000, 16000);
+        store(50, float3(halfFade, Metallic.Clouds::density(shape, a), 0));
+    }
 }
