@@ -3,19 +3,35 @@
     "nodes": [],
     "world": {
         "environment": {
-            "enabled": false,
-            "visible": false,
+            "source": "physicalAtmosphere",
+            "enabled": true,
+            "visible": true,
             "sun": {
                 "enabled": true,
-                "direction": [0.48, -0.865, -0.15],
+                "castShadowsOnAtmosphere": true,
+                "direction": [0.20, -0.977, -0.06],
                 "color": [1.0, 0.91, 0.77],
                 "illuminance": 6.0,
+                "topOfAtmosphereIrradiance": [0.0002211, 0.00027756, 0.000286797],
                 "angularRadius": 0.00465
             },
             "moon": {"enabled": false},
+            "atmosphere": {"aerialPerspectiveStartDepthKm": 0.1},
+            "weather": {
+                "cloudEnabled": true,
+                "cloudCoverage": 0.75,
+                "cloudDensity": 1.0,
+                "cloudBaseAltitudeKm": 0.16,
+                "cloudTopAltitudeKm": 0.24,
+                "cloudExtinctionPerKm": 448.75,
+                "cloudPatternWorldSizeKm": 1.28,
+                "cloudShadowExtentKm": 0.5,
+                "windSpeed": 0.0,
+                "noiseSeed": 763
+            },
             "volumetricFog": {
                 "enabled": true,
-                "density": 0.16,
+                "density": 0.06,
                 "heightFalloff": 0.24,
                 "distanceMeters": 36.0,
                 "albedo": [0.89, 0.93, 0.99],
@@ -36,7 +52,7 @@
             }
         },
         "lighting": {
-            "exposureEV100": 0.0,
+            "exposureEV100": 1.0,
             "autoExposure": {"enabled": false},
             "lights": [
                 {

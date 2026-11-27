@@ -46,7 +46,7 @@ public struct GPUAtmosphereParameters {
     ATMOSPHERE_PUBLIC AtmosphereFloat4 settings;             // Aerial range km, physical enabled, start depth km, cloud lighting image index (asuint).
     ATMOSPHERE_PUBLIC AtmosphereFloat4 cloudLayer;           // Base/top km; coverage; density multiplier.
     ATMOSPHERE_PUBLIC AtmosphereFloat4 cloudOptics;          // Grey extinction/km; albedo; material PhaseG; enabled.
-    ATMOSPHERE_PUBLIC AtmosphereFloat4 cloudAdvection;       // Offset km; noise seed bit pattern.
+    ATMOSPHERE_PUBLIC AtmosphereFloat4 cloudAdvection;       // X/Z wind offset km; Y horizontal pattern period km; W noise seed bits.
     ATMOSPHERE_PUBLIC AtmosphereFloat4 cloudShadowCentre;    // Snapped Sun anchor, planet km; map half extent km.
     ATMOSPHERE_PUBLIC AtmosphereFloat4 cloudShadowBudget;    // Sun/Moon samples; active mask; dominant slot.
     ATMOSPHERE_PUBLIC AtmosphereFloat4 weatherComposition;   // Aerosol, humidity, precipitation, wrapped elapsed.

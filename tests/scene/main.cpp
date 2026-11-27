@@ -6502,6 +6502,7 @@ TEST(WorldEnvironment, DynamicDocumentRoundTripRejectsInvalidStateAndPreservesLe
         .longitudeDegrees = -122.345678901, .moonAlbedo = 0.18f};
     world.weather = {.cloudEnabled = true, .cloudCoverage = 0.75f, .cloudDensity = 2.5f,
         .cloudBaseAltitudeKm = 2.0f, .cloudTopAltitudeKm = 6.0f, .cloudExtinctionPerKm = 12.0f,
+        .cloudPatternWorldSizeKm = 2.0f, .cloudShadowExtentKm = 0.5f,
         .aerosolDensity = 3.0f, .humidity = 0.8f, .precipitation = 0.6f, .windSpeed = 15.5f,
         .windDirection = float2(-2.0f, 1.0f), .noiseSeed = UINT32_MAX};
     ASSERT_TRUE(document.setWorldEnvironment(world));
@@ -6524,7 +6525,7 @@ TEST(WorldEnvironment, DynamicDocumentRoundTripRejectsInvalidStateAndPreservesLe
     EXPECT_EQ(document.worldEnvironment(), world);
     EXPECT_FALSE(document.dirty());
     const auto identity = restored.resourceIdentity();
-    const std::array<nlohmann::json, 16> invalidSettings{
+    const std::array<nlohmann::json, 18> invalidSettings{
         nlohmann::json{{"time", false}}, nlohmann::json{{"time", {{"julianDateUTC", 0.0}}}},
         nlohmann::json{{"time", {{"paused", "false"}}}}, nlohmann::json{{"time", {{"timeScale", 1e10}}}},
         nlohmann::json{{"astronomy", {{"mode", "ephemeris"}}}}, nlohmann::json{{"astronomy", {{"mode", 2}}}},
@@ -6532,6 +6533,8 @@ TEST(WorldEnvironment, DynamicDocumentRoundTripRejectsInvalidStateAndPreservesLe
         nlohmann::json{{"astronomy", {{"moonAlbedo", 1.1}}}},
         nlohmann::json{{"weather", {{"cloudEnabled", 1}}}},
         nlohmann::json{{"weather", {{"cloudBaseAltitudeKm", 10.0}, {"cloudTopAltitudeKm", 2.0}}}},
+        nlohmann::json{{"weather", {{"cloudPatternWorldSizeKm", 0.0}}}},
+        nlohmann::json{{"weather", {{"cloudShadowExtentKm", -1.0}}}},
         nlohmann::json{{"weather", {{"windDirection", {0.0, 0.0}}}}},
         nlohmann::json{{"weather", {{"windDirection", {1.0, 2.0, 3.0}}}}},
         nlohmann::json{{"weather", {{"noiseSeed", -1}}}},
@@ -6588,6 +6591,8 @@ TEST(WorldEnvironment, DynamicDocumentRoundTripRejectsInvalidStateAndPreservesLe
     EXPECT_EQ(restored.worldEnvironment().time, EnvironmentTimeState{});
     EXPECT_EQ(restored.worldEnvironment().astronomy, AstronomyState{});
     EXPECT_EQ(restored.worldEnvironment().weather, WeatherState{});
+    EXPECT_FLOAT_EQ(restored.worldEnvironment().weather.cloudPatternWorldSizeKm, 256.0f);
+    EXPECT_FLOAT_EQ(restored.worldEnvironment().weather.cloudShadowExtentKm, 32.0f);
     EXPECT_EQ(restored.environmentSnapshot().celestial[0], world.sun);
     EXPECT_EQ(restored.environmentSnapshot().celestial[1], world.moon);
     EXPECT_EQ(restored.environmentSnapshot().atmosphere, world.atmosphere);
@@ -6608,6 +6613,21 @@ TEST(WorldEnvironment, DynamicWorldSampleLoadsAuthoredState)
     EXPECT_GT(authored.weather.windSpeed, 0.0f);
     EXPECT_TRUE(document.environmentSnapshot().evaluatedAstronomy.automatic);
     EXPECT_FALSE(document.dirty());
+}
+
+TEST(WorldEnvironment, SponzaShowcaseLoadsCourtyardClouds)
+{
+    metallic::scene::SceneDocument document;
+    const auto path = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/Sponza/SponzaTechnologyShowcase.metallic_scene.json";
+    ASSERT_TRUE(document.load(path)) << document.lastLoadResult().error << " " << document.documentWarning();
+    const auto& world = document.worldEnvironment();
+    EXPECT_EQ(world.source, metallic::environment::EnvironmentSource::PhysicalAtmosphere);
+    EXPECT_TRUE(world.sun.enabled && world.weather.cloudEnabled);
+    const auto firstCamera = std::ranges::find_if(document.cameras(), [](const auto& camera) {
+        return camera.visible && !camera.fallback;
+    });
+    ASSERT_NE(firstCamera, document.cameras().end());
+    EXPECT_EQ(firstCamera->name, "Courtyard Cloud Shadows");
 }
 
 TEST(WorldEnvironment, LegacyDirectionalMigratesToSunAndPersistsCelestialOnly)

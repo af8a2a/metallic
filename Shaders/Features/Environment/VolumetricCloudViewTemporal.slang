@@ -75,7 +75,7 @@ void cloudTraceTemporalMain(uint3 id : SV_DispatchThreadID)
     float noise = lumenProbeBlueNoiseScalar(resolveUniform(p.blueNoise), id.xy * 4u + 2u, p.noiseFrameIndex);
     CloudViewIntegral nearCloud;
     float noCloudDepthKm;
-    CloudViewIntegral farCloud = traceViewCloud(a, originKm, direction, farKm, noise, shadow,
+    CloudViewIntegral farCloud = traceViewCloud(a, originKm, direction, farKm, p.invDistanceToSampleCountMax, noise, shadow,
         nearKm * 1000.0f, nearCloud, noCloudDepthKm);
     CloudTargetSample s;
     s.farRGBT = cloudViewRGBT(p, a, farCloud, originMeters, originKm, direction, shadow);
@@ -144,7 +144,8 @@ void cloudReconstructMain(uint3 id : SV_DispatchThreadID)
     if (any(id.xy >= halfSize)) { return; }
     uint2 traceSize = (halfSize + 1u) / 2u;
     float2 uv = (float2(id.xy) + 0.5f) / float2(halfSize);
-    if (p.historyValid == 0u) {
+    // All previous textures are bound together when the history is valid.
+    if (p.previousFar.index == 0xffffffffu) {
         writeCloudTargets(p, id.xy, sampleCloudTargets(p, false, cloudBilinear(uv, traceSize)));
         return;
     }

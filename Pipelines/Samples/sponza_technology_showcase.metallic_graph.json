@@ -25,6 +25,7 @@
         {"id": 3, "name": "Deferred", "type": "VisibilityBufferDeferredPass", "position": {"x": 680, "y": 140},
             "properties": {
                 "path": "Asset/Sponza/SponzaTechnologyShowcase.metallic_scene.json", "materialBinning": true, "outputLinear": true,
+                "directionalAtmosphereShadows": true, "independentViewClouds": true,
                 "exportLumenReceivers": true, "exportLumenPreviousPosition": true, "exportLumenSpecular": true,
                 "exportUpscalerGuides": true, "decalFullScan": false
             }},
@@ -61,22 +62,22 @@
                 "publishScreenTraceHistory": true, "dynamicReprojection": true, "fastLightingUpdate": true,
                 "maxFramesAccumulated": 32, "stochasticHistoryQuantization": true, "roughSpecular": true
             }},
-        {"id": 10, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 2970, "y": 140}},
+        {"id": 10, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 3290, "y": 140}},
         {"id": 11, "name": "Reflections", "type": "LumenReflectionPass", "position": {"x": 1630, "y": 140},
             "properties": {
                 "maxTraceDistance": 40, "dynamicReprojection": true, "screenTraces": true,
-                "detailTracing": true, "classifiedTracing": true, "roughSpecular": true,
+                "detailTracing": true, "classifiedTracing": true, "roughSpecular": true, "allowPhysicalAtmosphere": true,
                 "maxRayIntensity": 40000, "detailDistanceFieldPaths": ["Asset/Sponza/SponzaGIBakes/SponzaOpaqueReflection.meshdf"]
             }},
-        {"id": 12, "name": "DLSSSR", "type": "StreamlineDLSSSRPass", "position": {"x": 2330, "y": 140},
+        {"id": 12, "name": "DLSSSR", "type": "StreamlineDLSSSRPass", "position": {"x": 2650, "y": 140},
             "properties": {
                 "mode": "Quality", "fallbackToInput": true
             }},
-        {"id": 13, "name": "AutoExposure", "type": "AutoExposurePass", "position": {"x": 2650, "y": 140},
+        {"id": 13, "name": "AutoExposure", "type": "AutoExposurePass", "position": {"x": 2970, "y": 140},
             "properties": {
                 "publishProbeExposure": true
             }},
-        {"id": 14, "name": "ColorGrading", "type": "ColorGradingLUTPass", "position": {"x": 2650, "y": 470},
+        {"id": 14, "name": "ColorGrading", "type": "ColorGradingLUTPass", "position": {"x": 2970, "y": 470},
             "properties": {
                 "toneCurve": "aces2"
             }},
@@ -89,7 +90,9 @@
                 "gridPixelSize": 16, "gridSizeZ": 64, "rayTracedShadows": false,
                 "temporalReprojection": true, "localFogVolumes": true, "localFogStartDistanceMeters": 1.0
             }},
-        {"id": 17, "name": "FogComposite", "type": "VolumetricFogCompositePass", "position": {"x": 1970, "y": 140}}
+        {"id": 17, "name": "FogComposite", "type": "VolumetricFogCompositePass", "position": {"x": 2290, "y": 140}},
+        {"id": 18, "name": "CloudView", "type": "VolumetricCloudViewPass", "position": {"x": 1970, "y": 140},
+            "properties": {"distanceToSampleMaxCountKm": 0.6}}
     ],
     "edges": [
         {"id": 1, "src": "VBuffer.visibility", "dst": "Deferred.visibility"},
@@ -176,7 +179,7 @@
         {"id": 83, "src": "ColorGrading.lut", "dst": "FinalBlit.lut"},
         {"id": 84, "src": "VBuffer.depth", "dst": "Fog.depth"},
         {"id": 85, "src": "VBuffer.rasterInfo", "dst": "Fog.rasterInfo"},
-        {"id": 86, "src": "Reflections.color", "dst": "FogComposite.sceneColor"},
+        {"id": 86, "src": "CloudView.color", "dst": "FogComposite.sceneColor"},
         {"id": 87, "src": "VBuffer.depth", "dst": "FogComposite.depth"},
         {"id": 88, "src": "Fog.integrated", "dst": "FogComposite.integrated"},
         {"id": 89, "src": "Fog.view", "dst": "FogComposite.view"},
@@ -196,19 +199,25 @@
         {"id": 103, "src": "TranslucencyVolume.giAmbient", "dst": "Fog.giAmbient"},
         {"id": 104, "src": "TranslucencyVolume.giDirectional", "dst": "Fog.giDirectional"},
         {"id": 105, "src": "TranslucencyVolume.giGrid", "dst": "Fog.giGrid"},
-        {"id": 106, "src": "FogComposite.color", "dst": "DLSSSR.inputColor"}
+        {"id": 106, "src": "FogComposite.color", "dst": "DLSSSR.inputColor"},
+        {"id": 107, "src": "Shadows.worldShadowFaces", "dst": "Deferred.worldShadowFaces"},
+        {"id": 108, "src": "Reflections.color", "dst": "CloudView.sceneColor"},
+        {"id": 109, "src": "VBuffer.depth", "dst": "CloudView.depth"},
+        {"id": 110, "src": "VBuffer.rasterInfo", "dst": "CloudView.rasterInfo"},
+        {"id": 111, "src": "Deferred.cameraAerial", "dst": "CloudView.cameraAerial"},
+        {"id": 112, "src": "Shadows.worldShadowFaces", "dst": "CloudView.worldShadowFaces"}
     ],
     "outputs": [],
     "view": {
         "camera": {
             "eye": [
-                7.2,
-                2.65,
+                6.7,
+                3.45,
                 0.35
             ],
             "center": [
                 -3.5,
-                0.95,
+                2.38,
                 -0.15
             ],
             "up": [
@@ -217,7 +226,7 @@
                 0
             ],
             "projection": "perspective",
-            "fovDegrees": 60.0,
+            "fovDegrees": 76.0,
             "znear": 0.05,
             "zfar": 100.0
         },

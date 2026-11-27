@@ -26,6 +26,7 @@ struct CloudChannel {
     ShaderStorageImage VolumetricCloudViewParams::*output;
 };
 using CloudParams = VolumetricCloudViewParams;
+constexpr float kDefaultDistanceToSampleMaxCountKm = 15.0f;
 constexpr std::array<CloudChannel, 4> kCloudChannels{{
     {"traceFar", "currentFar", "previousFar", Format::RGBA32Sfloat, {0, 0, 0, 1},
         &CloudParams::currentFar, &CloudParams::previousFar, &CloudParams::writeFar},
@@ -40,6 +41,7 @@ constexpr std::array<CloudChannel, 4> kCloudChannels{{
 struct CloudHistoryContent {
     uint64_t scene, discontinuity, atmosphereRevision, rasterSettings;
     uint32_t viewIndex, viewGeneration, cutSerial, width, height, skyVisible;
+    float invDistanceToSampleCountMax;
     environment::WeatherState weather;
     std::array<environment::CelestialLight, environment::kCelestialLightCount> authoredLights;
     environment::EnvironmentTimeState authoredTime;
@@ -55,7 +57,8 @@ public:
     {
         auto setting = runtimeBoolSetting("temporalReconstruction", "Temporal cloud reconstruction", true, true);
         setting.rebuildGraph = true;
-        return {std::move(setting)};
+        return {std::move(setting), runtimeFloatSetting("distanceToSampleMaxCountKm", "Distance to maximum sample count (km)",
+            kDefaultDistanceToSampleMaxCountKm, 0.0f, 350.0f, true)};
     }
 
     RenderGraphSceneDependency sceneDependency() const override
@@ -138,6 +141,12 @@ public:
             log = "VolumetricCloudViewPass temporalReconstruction must be a boolean";
             return makeError(Error::InvalidArgument);
         }
+        const auto distance = properties().find("distanceToSampleMaxCountKm");
+        if (distance != properties().end() && (!distance->is_number() || !std::isfinite(distance->get<float>()) ||
+            distance->get<float>() < 0.0f)) {
+            log = "VolumetricCloudViewPass distanceToSampleMaxCountKm must be a finite non-negative distance";
+            return makeError(Error::InvalidArgument);
+        }
         device_ = context.device;
         const auto compileKernel = [&](const char* entry, ComputeKernel& kernel) {
             return ShaderRegistry::instance().getComputeKernel(*device_,
@@ -200,6 +209,9 @@ public:
         p.cloudDepth = writer.storageImageHandle(context.outputTexture("cloudDepth").view());
         const auto* set = context.resources<EnvironmentResourceSet>();
         if (set) {
+            // UE 5.7.4 VolumetricCloudRendering.cpp clamps the denominator to one centimetre.
+            const float distanceKm = properties().value("distanceToSampleMaxCountKm", kDefaultDistanceToSampleMaxCountKm);
+            p.invDistanceToSampleCountMax = 1.0f / std::max(0.01f, 1000.0f * distanceKm);
             p.depth = writer.sampledImageHandle(context.inputTexture("depth").view());
             const auto& lighting = set->lighting;
             p.atmosphereParameters = writer.buffer(lighting.atmosphereParametersBuffer);
@@ -277,7 +289,8 @@ Result<> VolumetricCloudViewPass::executeTemporal(RenderGraphExecutionContext& c
     const CloudHistoryContent content{raster.sceneIdentity,
         (shared ? *shared : context.graphHistoryResources()).geometryReprojectionInvalidationRevision(),
         environment.atmosphereRevision, raster.rasterSettingsRevision, raster.lightGridViewIndex, raster.lightGridViewGeneration,
-        view ? view->frame[3] : 0u, raster.width, raster.height, p.skyVisible, environment.weather, environment.authoredCelestial,
+        view ? view->frame[3] : 0u, raster.width, raster.height, p.skyVisible, p.invDistanceToSampleCountMax,
+        environment.weather, environment.authoredCelestial,
         environment.time, environment.astronomy};
     history_.beginFrame(context.frameIndex());
     const uint32_t halfWidth = (raster.width + 1u) / 2u, halfHeight = (raster.height + 1u) / 2u;
@@ -298,7 +311,6 @@ Result<> VolumetricCloudViewPass::executeTemporal(RenderGraphExecutionContext& c
     const uint32_t offset = orderDithering[frameId];
     p.tracingPixelOffset = {offset % 2u, offset / 2u};
     p.noiseFrameIndex = uint32_t(context.frameIndex() % 8u);
-    p.historyValid = valid;
     p.previousCamera = valid ? previousCamera_ : p.camera;
     auto reconstruction = p, composite = p;
     std::vector<RenderGraphTextureImport> imports;

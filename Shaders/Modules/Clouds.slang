@@ -26,11 +26,12 @@ public float cloudNormalizedHeight(GPUAtmosphereParameters p, float3 planetPosit
 public float4 cloudConservativeDensity(GPUAtmosphereParameters p, float3 cameraRelativeKm, float h)
 {
     float3 worldKm = cameraRelativeKm + p.observerWorldTop.xyz * 0.001f;
-    float3 skyTexScale = worldKm.xzy / 256.0f + float3(0.5f, 0.5f, 0.0f);
+    float periodKm = p.cloudAdvection.y;
+    float3 skyTexScale = float3(worldKm.xz / periodKm + 0.5f, worldKm.y / 256.0f);
     // Seed zero preserves the reference placement. Other seeds translate the same field.
     uint seed = hash(asuint(p.cloudAdvection.w));
     skyTexScale.xy += float2(seed & 0xffffu, seed >> 16u) * (1.0f / 65536.0f);
-    float3 wind = -p.cloudAdvection.xzy / 256.0f;
+    float3 wind = float3(-p.cloudAdvection.xz / periodKm, 0.0f);
     return simpleCloudConservativeDensity(p.cloudShapeResources, skyTexScale, h, wind,
         p.cloudLayer.z - 0.7f);
 }

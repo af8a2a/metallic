@@ -697,6 +697,7 @@ nlohmann::json serializeWeather(const environment::WeatherState& weather)
     return {{"cloudEnabled", weather.cloudEnabled}, {"cloudCoverage", weather.cloudCoverage},
         {"cloudDensity", weather.cloudDensity}, {"cloudBaseAltitudeKm", weather.cloudBaseAltitudeKm},
         {"cloudTopAltitudeKm", weather.cloudTopAltitudeKm}, {"cloudExtinctionPerKm", weather.cloudExtinctionPerKm},
+        {"cloudPatternWorldSizeKm", weather.cloudPatternWorldSizeKm}, {"cloudShadowExtentKm", weather.cloudShadowExtentKm},
         {"aerosolDensity", weather.aerosolDensity}, {"humidity", weather.humidity},
         {"precipitation", weather.precipitation}, {"windSpeed", weather.windSpeed},
         {"windDirection", {weather.windDirection.x, weather.windDirection.y}}, {"noiseSeed", weather.noiseSeed}};
@@ -712,6 +713,7 @@ bool parseWeather(const nlohmann::json& value, environment::WeatherState& weathe
     const std::pair<const char*, float*> scalars[] = {
         {"cloudCoverage", &weather.cloudCoverage}, {"cloudDensity", &weather.cloudDensity},
         {"cloudBaseAltitudeKm", &weather.cloudBaseAltitudeKm}, {"cloudTopAltitudeKm", &weather.cloudTopAltitudeKm},
+        {"cloudPatternWorldSizeKm", &weather.cloudPatternWorldSizeKm}, {"cloudShadowExtentKm", &weather.cloudShadowExtentKm},
         {"cloudExtinctionPerKm", &weather.cloudExtinctionPerKm}, {"aerosolDensity", &weather.aerosolDensity},
         {"humidity", &weather.humidity}, {"precipitation", &weather.precipitation}, {"windSpeed", &weather.windSpeed},
     };
@@ -738,7 +740,7 @@ bool parseWeather(const nlohmann::json& value, environment::WeatherState& weathe
         weather.noiseSeed = seed.get<uint32_t>();
     }
     if (!environment::validWeatherState(weather)) {
-        reason = "invalid cloud layer, coverage/density, aerosol/humidity, precipitation or wind";
+        reason = "invalid cloud layer, pattern size, shadow extent, coverage/density, aerosol/humidity, precipitation or wind";
         return false;
     }
     return true;

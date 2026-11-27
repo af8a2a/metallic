@@ -5157,6 +5157,10 @@ void EditorApplication::drawEnvironmentControls()
         ImGui::Text("Atmosphere height: %.3f km; active clouds must fit inside it.", maximumCloudAltitude);
         celestialChanged |= ImGui::DragFloat("Cloud extinction (km^-1)", &weather.cloudExtinctionPerKm,
             0.1f, 0.0f, 1000.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        celestialChanged |= ImGui::DragFloat("Horizontal cloud pattern size (km)", &weather.cloudPatternWorldSizeKm,
+            0.01f, environment::kMinCloudLayoutKm, environment::kMaxCloudLayoutKm, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        celestialChanged |= ImGui::DragFloat("Cloud shadow half-width (km)", &weather.cloudShadowExtentKm,
+            0.01f, environment::kMinCloudLayoutKm, environment::kMaxCloudLayoutKm, "%.3f", ImGuiSliderFlags_AlwaysClamp);
         celestialChanged |= ImGui::DragFloat("Aerosol density", &weather.aerosolDensity,
             0.01f, 0.0f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
         celestialChanged |= ImGui::SliderFloat("Humidity", &weather.humidity, 0.0f, 1.0f, "%.3f");

@@ -12,6 +12,9 @@
 
 namespace metallic::environment {
 
+inline constexpr float kMinCloudLayoutKm = 0.01f;
+inline constexpr float kMaxCloudLayoutKm = 1e5f;
+
 struct WeatherState {
     bool cloudEnabled = false;
     float cloudCoverage = 0.0f;
@@ -19,6 +22,8 @@ struct WeatherState {
     float cloudBaseAltitudeKm = 1.5f;
     float cloudTopAltitudeKm = 4.0f;
     float cloudExtinctionPerKm = 8.0f;
+    float cloudPatternWorldSizeKm = 256.0f; // Horizontal period of the cloud material's layout texture.
+    float cloudShadowExtentKm = 32.0f; // Half-width of each directional cloud shadow projection.
     float aerosolDensity = 1.0f; // Multiplier of authored Mie density.
     float humidity = 0.0f; // Relative humidity, used by the growth approximation.
     float precipitation = 0.0f; // Normalized precipitation state.
@@ -31,6 +36,7 @@ struct WeatherState {
         return cloudEnabled == other.cloudEnabled && cloudCoverage == other.cloudCoverage &&
             cloudDensity == other.cloudDensity && cloudBaseAltitudeKm == other.cloudBaseAltitudeKm &&
             cloudTopAltitudeKm == other.cloudTopAltitudeKm && cloudExtinctionPerKm == other.cloudExtinctionPerKm &&
+            cloudPatternWorldSizeKm == other.cloudPatternWorldSizeKm && cloudShadowExtentKm == other.cloudShadowExtentKm &&
             aerosolDensity == other.aerosolDensity && humidity == other.humidity &&
             precipitation == other.precipitation && windSpeed == other.windSpeed &&
             windDirection.x == other.windDirection.x && windDirection.y == other.windDirection.y &&
@@ -46,6 +52,8 @@ inline bool validWeatherState(const WeatherState& weather)
     return range(weather.cloudCoverage, 0.0f, 1.0f) && range(weather.cloudDensity, 0.0f, 100.0f) &&
         range(weather.cloudBaseAltitudeKm, 0.0f, 1e5f) && range(weather.cloudTopAltitudeKm, 0.0f, 1e5f) &&
         weather.cloudTopAltitudeKm > weather.cloudBaseAltitudeKm &&
+        range(weather.cloudPatternWorldSizeKm, kMinCloudLayoutKm, kMaxCloudLayoutKm) &&
+        range(weather.cloudShadowExtentKm, kMinCloudLayoutKm, kMaxCloudLayoutKm) &&
         range(weather.cloudExtinctionPerKm, 0.0f, 1000.0f) && range(weather.aerosolDensity, 0.0f, 100.0f) &&
         range(weather.humidity, 0.0f, 1.0f) && range(weather.precipitation, 0.0f, 1.0f) &&
         range(weather.windSpeed, 0.0f, 1000.0f) && std::isfinite(weather.windDirection.x) &&

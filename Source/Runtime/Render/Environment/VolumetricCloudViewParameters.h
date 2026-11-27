@@ -51,7 +51,8 @@ struct VolumetricCloudViewParams {
     CloudViewUInt skyVisible;
     ViewCameraConstants previousCamera;
     CloudViewUInt2 tracingPixelOffset;
-    CloudViewUInt noiseFrameIndex, historyValid;
+    CloudViewUInt noiseFrameIndex;
+    float invDistanceToSampleCountMax; // Reciprocal metres.
     CloudViewColorIn currentFar, currentNear, currentDepth;
     CloudViewColorIn previousFar, previousNear, previousDepth;
     CloudViewColorOut writeFar, writeNear, writeDepth;
@@ -60,10 +61,11 @@ struct VolumetricCloudViewParams {
 };
 
 #ifdef __cplusplus
-inline constexpr uint64_t kVolumetricCloudViewABI = 0x56434c4400000002ull;
+inline constexpr uint64_t kVolumetricCloudViewABI = 0x56434c4400000003ull;
 static_assert(offsetof(VolumetricCloudViewParams, sceneColor) == 88);
 static_assert(offsetof(VolumetricCloudViewParams, cloudDepth) == 136);
 static_assert(offsetof(VolumetricCloudViewParams, previousCamera) == 144);
+static_assert(offsetof(VolumetricCloudViewParams, invDistanceToSampleCountMax) == 236);
 static_assert(offsetof(VolumetricCloudViewParams, writeFar) == 264);
 static_assert(offsetof(VolumetricCloudViewParams, writeRepresentativeDepth) == 284);
 static_assert(sizeof(VolumetricCloudViewParams) == 288);

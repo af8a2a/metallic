@@ -31,7 +31,7 @@ float3 cloudDirectTransmittance(GPUAtmosphereParameters a, float3 positionKm, fl
 }
 
 CloudViewIntegral traceViewCloud(GPUAtmosphereParameters a, float3 originKm,
-    float3 direction, float maximumDistanceKm, float stepNoise, DirectionalAtmosphereShadow shadow,
+    float3 direction, float maximumDistanceKm, float invDistanceToSampleCountMax, float stepNoise, DirectionalAtmosphereShadow shadow,
     float closestDepthMeters, out CloudViewIntegral closest, out float noCloudDepthKm)
 {
     CloudViewIntegral result = CloudViewIntegral::empty();
@@ -46,7 +46,7 @@ CloudViewIntegral traceViewCloud(GPUAtmosphereParameters a, float3 originKm,
     float tMin = range.x * 1000.0f;
     float tMax = tMin + min(50000.0f, (range.y - range.x) * 1000.0f);
     noCloudDepthKm = tMax * 0.001f;
-    uint stepCount = uint(max(2.0f, 96.0f * saturate((tMax - tMin) * (1.0f / 15000.0f))));
+    uint stepCount = uint(max(2.0f, 96.0f * saturate((tMax - tMin) * invDistanceToSampleCountMax)));
     float stepMeters = (tMax - tMin) / float(stepCount);
     float t = tMin + stepNoise * stepMeters;
     float3 sunIlluminance = cloudAtmosphereLightIlluminanceOnGround(a, 0u);
@@ -148,7 +148,7 @@ void volumetricCloudViewMain(uint3 id : SV_DispatchThreadID)
         float stepNoise = lumenProbeBlueNoiseScalar(resolveUniform(p.blueNoise), pixel, 0u);
         CloudViewIntegral closest;
         float noCloudDepthKm;
-        CloudViewIntegral cloud = traceViewCloud(a, originKm, direction, distanceKm, stepNoise, shadow,
+        CloudViewIntegral cloud = traceViewCloud(a, originKm, direction, distanceKm, p.invDistanceToSampleCountMax, stepNoise, shadow,
             -1.0f, closest, noCloudDepthKm);
         if (cloud.depthWeightsSum > 0.0f) {
             cloudDepthMeters = cloud.representativeDepthMeters();

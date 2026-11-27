@@ -2,9 +2,11 @@
 
 ## Technology showcase
 
-In **Open Render Graph Editor**, choose **Built-in Sample → Sponza / Technology Showcase** to see projected floor and wall decals, a low fog bank with a shadowed lamp, and warm and cool rectangular area lights. Lumen provides indirect light for the surfaces and the fog.
+In **Open Render Graph Editor**, choose **Built-in Sample → Sponza / Technology Showcase**. The opening view looks down the courtyard across a soft cloud shadow. The near paving sits under the cloud and the far end catches direct sun. The scene also shows projected decals, a low fog bank with a shadowed lamp, and warm and cool rectangular area lights. Lumen provides indirect light for the surfaces and the fog.
 
-Under **Scene Browser → Scene List → Cameras**, select **Overview**, **Floor Decals**, or **Fog & Rect Lights**, then click **Use as Viewport Camera** in the inspector. For an isolated comparison, toggle the decals in the scene browser, the fog in **Environment**, or **Warm floor wash** and **Cool arcade wash** in the lighting controls.
+Under **Scene Browser → Scene List → Cameras**, select **Courtyard Cloud Shadows** to recall the opening view, or choose **Overview**, **Floor Decals**, or **Fog & Rect Lights**. Click **Use as Viewport Camera** in the inspector. Toggle **Volumetric clouds** in **Environment** to compare the sunlit paving at the same exposure. The wind speed starts at zero to hold the cloud edge in place.
+
+For the other comparisons, toggle the decals in the scene browser, the fog in **Environment**, or **Warm floor wash** and **Cool arcade wash** in the lighting controls.
 
 ## Screenshot
 

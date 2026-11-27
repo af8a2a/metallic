@@ -1179,7 +1179,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         "Sun shafts, a shadowed arcade lamp and Lumen indirect lighting in the atrium fog.",
         "Asset/Sponza/SponzaVolumetricFog.metallic_scene.json", "Pipelines/Samples/sponza_volumetric_fog.metallic_graph.json"};
     static const GIPlaygroundSample sponzaTechnologyShowcase{"sponza-technology-showcase", "Sponza / Technology Showcase",
-        "Projected decals, local and height fog, rectangular lights, and IES spotlighting in the Sponza atrium.",
+        "Volumetric clouds cast shadows across the Sponza atrium, with projected decals, fog, rectangular lights and IES spotlights.",
         "Asset/Sponza/SponzaTechnologyShowcase.metallic_scene.json",
         "Pipelines/Samples/sponza_technology_showcase.metallic_graph.json", true};
     static const GIPlaygroundSample sponzaGIPathTracing{"sponza-gi-path-tracing", "Sponza with GI / Path Tracing",

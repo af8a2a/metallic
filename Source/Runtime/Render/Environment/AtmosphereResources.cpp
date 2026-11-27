@@ -153,25 +153,27 @@ GPUAtmosphereParameters buildGPUAtmosphereParameters(const environment::Environm
     p.cloudOptics = {weather.cloudExtinctionPerKm, 0.98f, 0.8f, weather.cloudEnabled ? 1.0f : 0.0f};
     const auto wind = environment::normalizedWeatherWindDirection(weather);
     // The two material noise layers move by integer UV periods when the wind
-    // displacement wraps by 2048 km (eight 256 km layouts). Reduce before narrowing.
+    // displacement wraps by eight layouts. Reduce before narrowing.
     const bool movingClouds = weather.cloudEnabled && weather.cloudCoverage > 0.0f && weather.cloudDensity > 0.0f &&
         weather.cloudExtinctionPerKm > 0.0f && weather.windSpeed > 0.0f;
     const double cloudElapsed = movingClouds ? environment.elapsedSeconds : 0.0;
     const double windKm = cloudElapsed * double(weather.windSpeed) * 0.001;
-    p.cloudAdvection = {static_cast<float>(std::remainder(windKm * wind.x, 2048.0)), 0.0f,
-        static_cast<float>(std::remainder(windKm * wind.y, 2048.0)), std::bit_cast<float>(weather.noiseSeed)};
+    const double windPeriodKm = 8.0 * weather.cloudPatternWorldSizeKm;
+    p.cloudAdvection = {static_cast<float>(std::remainder(windKm * wind.x, windPeriodKm)), weather.cloudPatternWorldSizeKm,
+        static_cast<float>(std::remainder(windKm * wind.y, windPeriodKm)), std::bit_cast<float>(weather.noiseSeed)};
     const double observerRadius = std::sqrt(double(p.observerPlanetBottom[0]) * p.observerPlanetBottom[0] +
         double(p.observerPlanetBottom[1]) * p.observerPlanetBottom[1] + double(p.observerPlanetBottom[2]) * p.observerPlanetBottom[2]);
     // UE VolumetricCloudRendering.cpp: snap the sub-camera ground point in world
     // space, then align world zero to the light's two-texel tracing grid.
     const double3 centreKm(a.planetCenter[0] * 0.001, a.planetCenter[1] * 0.001, a.planetCenter[2] * 0.001);
+    const double snapKm = std::min(20.0, (20.0 / 32.0) * weather.cloudShadowExtentKm);
     const auto snapGround = [&](uint32_t axis) {
         const double groundKm = a.planetCenter[axis] * 0.001 +
             double(p.observerPlanetBottom[axis]) * a.bottomRadiusKm / std::max(observerRadius, 1e-6);
-        return std::floor((groundKm + 10.0) / 20.0) * 20.0;
+        return std::floor((groundKm + 0.5 * snapKm) / snapKm) * snapKm;
     };
     const double3 snappedKm(snapGround(0), snapGround(1), snapGround(2));
-    p.cloudShadowCentre[3] = 32.0f;
+    p.cloudShadowCentre[3] = weather.cloudShadowExtentKm;
     const auto shadowAnchor = [&](const AtmosphereFloat4& direction, AtmosphereFloat4& anchor) {
         const double3 forward(-direction[0], -direction[1], -direction[2]);
         const double3 up = std::abs(forward.y) > 0.99 ? double3(1, 0, 0) : double3(0, 1, 0);

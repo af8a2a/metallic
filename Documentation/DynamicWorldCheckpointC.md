@@ -147,7 +147,9 @@ surface materials are outside this implementation.
 layer to the default UE 5.7.4 NvRTX `m_SimpleVolumetricCloud_Inst` shape.
 Its [material evaluation](../Shaders/Modules/SimpleVolumetricCloud.slang)
 samples the RGB stratocumulus, altostratus and cirrostratus layout on a
-256 km tile. Each channel selects a separate height profile. The red channel
+horizontal tile of `cloudPatternWorldSizeKm` kilometres (UE default 256).
+The vertical noise coordinate retains the reference scale. Each channel
+selects a separate height profile. The red channel
 of the Perlin–Worley volume distorts the coordinates of the green channel,
 which breaks up the cloud body. The material uses the maximum layout weight
 as its conservative occupancy bound. The active layer spans 2% to 98% of
@@ -159,7 +161,8 @@ Other seeds translate the texture coordinates deterministically. Metallic
 coverage 0.5 maps to the reference global coverage of -0.2. The authored
 extinction of 8/km at unit density maps to 0.008/m. The two noise scales
 advect with factors 7 and -6 using the scene wind direction and displacement.
-The CPU wraps displacement at 2048 km before conversion to GPU floats.
+The CPU wraps displacement at eight horizontal tile periods (2048 km by
+default) before conversion to GPU floats.
 Camera, light and environment capture rays all sample this material. The
 [texture pack](../Asset/Atmosphere/CloudShape/README.md) contains the three
 Windows platform mip-zero images and their import instructions. Each device
@@ -253,6 +256,10 @@ spectral-to-working-color conversion. The sky directions and ground
 illuminance are evaluated on the GPU. The adapters use Y-up world metres, kilometres for the
 spherical atmosphere, reversed Z and a zero empty-depth marker.
 
+`distanceToSampleMaxCountKm` controls the cloud ray length at which the
+view march reaches its maximum sample count, matching UE's
+`r.VolumetricCloud.DistanceToSampleMaxCount`. Both view paths default to
+15 km. The Sponza showcase uses 0.6 km for its 80 m thick cloud layer.
 For perspective views, `temporalReconstruction` defaults to true.
 The [UE Mode 0 reconstruction](../Shaders/Features/Environment/VolumetricCloudViewTemporal.slang)
 traces one ray per 4×4 block of render pixels, recording both the near- and
@@ -297,8 +304,10 @@ source receives 48 cloud-shadow integration samples. A second source at least
 horizon receive no map budget; ties retain the stable Sun slot.
 
 The Sun and Moon each have an orthographic light-space projection with a
-±32 km extent. The ground point under the observer snaps to UE's 20 km world
-grid. A per-light adjustment aligns world zero to its tracing texels. The
+half-width set by `cloudShadowExtentKm` (32 km by default). The ground point
+under the observer snaps to UE's 20 km world grid at the default extent.
+Narrower projections shrink the snap interval in proportion to the extent.
+A per-light adjustment aligns world zero to its tracing texels. The
 [producer](../Shaders/Features/Environment/CloudShadow.slang) traces the
 first illuminated spherical cloud interval using the UE full-resolution
 shadow branch. It fuses the default 2×2 spatial filter into each output

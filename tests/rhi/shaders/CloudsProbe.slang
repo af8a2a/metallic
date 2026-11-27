@@ -67,9 +67,8 @@ void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
         cloudShadowTransmittance(p, shadow, above, 0u), 0.0));
     float3 samplePoint = ground + up * 2.5 + float3(6.0, 0.0, 3.0);
     GPUAtmosphereParameters shifted = p;
-    // The two noise layers wrap at integer multiples of the 256 km layout.
-    // Both must remain continuous across the CPU's 2048 km phase reduction.
-    shifted.cloudAdvection.x += 2048.0;
+    // Both material noise layers repeat across eight horizontal layout periods.
+    shifted.cloudAdvection.x += 8.0f * p.cloudAdvection.y;
     store(19, float3(Metallic.Clouds::density(p, samplePoint),
         Metallic.Clouds::density(shifted, samplePoint), 0.0));
     float densityMean = 0.0, transMean = 0.0, minT = 1.0;
@@ -218,7 +217,7 @@ void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
         GPUAtmosphereParameters shape = p;
         shape.cloudLayer = float4(1.5, 4.0, 0.5, 1.0);
         shape.cloudOptics.x = 8.0;
-        shape.cloudAdvection = 0.0;
+        shape.cloudAdvection = float4(0, 256, 0, 0);
         float3 a = worldToAtmosphereKm(shape, float3(-13000, 3000, 16000));
         float3 b = worldToAtmosphereKm(shape, float3(4000, 3750, 18000));
         float3 c = worldToAtmosphereKm(shape, float3(6000, 2500, 3000));
