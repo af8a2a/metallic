@@ -1,5 +1,6 @@
 #include "Runtime/Scene/GeometryAttributes.h"
 #include "meshoptimizer.h"
+#include "tiny_gltf.h"
 
 #include <cmath>
 #include <cstring>
@@ -9,6 +10,13 @@
 #include <unordered_map>
 
 namespace metallic::scene {
+
+bool readMeshletLODBoundaryLock(const tinygltf::Value& extras)
+{
+    if (!extras.Has(kMeshletLODBoundaryLockExtra)) { return false; }
+    const auto& value = extras.Get(kMeshletLODBoundaryLockExtra);
+    return value.IsBool() && value.Get<bool>();
+}
 
 uint32_t repairZeroGeometryNormals(RenderPrimitive& primitive)
 {

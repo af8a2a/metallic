@@ -32,6 +32,7 @@ if(Python3_Interpreter_FOUND)
         "${METALLIC_TERRAIN_P0_DIRECTORY}/simple_terrain_height.bin")
     set(METALLIC_TERRAIN_P0_STREAMASSET
         "${METALLIC_TERRAIN_P0_GLTF}.meshstream.bin")
+    set(METALLIC_TERRAIN_HEIGHT_ARGS --horizontal-size 256 --height-scale 16 --skirt-depth 8)
 
     add_custom_command(
         OUTPUT
@@ -44,9 +45,7 @@ if(Python3_Interpreter_FOUND)
             "${METALLIC_TERRAIN_P0_SOURCE}"
             --output "${METALLIC_TERRAIN_P0_GLTF}"
             --binary-output "${METALLIC_TERRAIN_P0_BUFFER}"
-            --horizontal-size 256
-            --height-scale 16
-            --skirt-depth 8
+            ${METALLIC_TERRAIN_HEIGHT_ARGS}
         DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py"
             "${METALLIC_TERRAIN_P0_SOURCE}"
@@ -98,60 +97,59 @@ if(Python3_Interpreter_FOUND)
         VERBATIM
     )
 
-    set(METALLIC_TERRAIN_VSM_DIRECTORY "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainVSM")
-    set(METALLIC_TERRAIN_VSM_GLTF "${METALLIC_TERRAIN_VSM_DIRECTORY}/terrain_vsm.gltf")
-    set(METALLIC_TERRAIN_VSM_BUFFER "${METALLIC_TERRAIN_VSM_DIRECTORY}/terrain_vsm.bin")
-    set(METALLIC_TERRAIN_VSM_SCENE "${METALLIC_TERRAIN_VSM_DIRECTORY}/terrain_vsm.metallic_scene.json")
-    set(METALLIC_TERRAIN_VSM_LIGHTING "${CMAKE_SOURCE_DIR}/Asset/Terrain/TerrainVSM.metallic_scene.json")
-    set(METALLIC_TERRAIN_VSM_GRAPH "${CMAKE_SOURCE_DIR}/Pipelines/Samples/gpu_driven_terrain_vsm.metallic_graph.json")
-    set(METALLIC_TERRAIN_VSM_STREAMASSET "${METALLIC_TERRAIN_VSM_GLTF}.meshstream.bin")
-
+    set(METALLIC_TERRAIN_BLOCKS_DIRECTORY "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainBlocks")
+    set(METALLIC_TERRAIN_BLOCKS_HEIGHT "${METALLIC_TERRAIN_BLOCKS_DIRECTORY}/terrain_blocks_height")
     add_custom_command(
-        OUTPUT "${METALLIC_TERRAIN_VSM_GLTF}" "${METALLIC_TERRAIN_VSM_BUFFER}" "${METALLIC_TERRAIN_VSM_SCENE}"
-        COMMAND "${Python3_EXECUTABLE}" -B
-            "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainVSMSample.py"
-            "${METALLIC_TERRAIN_P0_GLTF}" "${METALLIC_TERRAIN_VSM_LIGHTING}"
-            "${METALLIC_TERRAIN_VSM_GRAPH}" "${METALLIC_TERRAIN_VSM_GLTF}"
-        DEPENDS
-            "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainVSMSample.py"
-            "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py"
-            "${METALLIC_TERRAIN_P0_GLTF}"
-            "${METALLIC_TERRAIN_VSM_LIGHTING}"
-            "${METALLIC_TERRAIN_VSM_GRAPH}"
+        OUTPUT "${METALLIC_TERRAIN_BLOCKS_HEIGHT}.gltf" "${METALLIC_TERRAIN_BLOCKS_HEIGHT}.bin"
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py"
+            "${METALLIC_TERRAIN_P0_SOURCE}" --output "${METALLIC_TERRAIN_BLOCKS_HEIGHT}.gltf"
+            ${METALLIC_TERRAIN_HEIGHT_ARGS} --tiles-per-axis 2
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py" "${METALLIC_TERRAIN_P0_SOURCE}"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        COMMENT "Assembling the terrain and opaque mesh props"
+        COMMENT "Converting the Houdini EXR height field to four terrain blocks"
         VERBATIM
     )
 
-    add_custom_command(
-        OUTPUT "${METALLIC_TERRAIN_VSM_STREAMASSET}"
-        COMMAND "$<TARGET_FILE:Metallic>"
-            --build-meshstream "${METALLIC_TERRAIN_VSM_GLTF}"
-            --output "${METALLIC_TERRAIN_VSM_STREAMASSET}"
-        DEPENDS
-            Metallic
-            "${METALLIC_TERRAIN_VSM_GLTF}"
-            "${METALLIC_TERRAIN_VSM_BUFFER}"
-            "${METALLIC_TERRAIN_P0_BUFFER}"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        COMMENT "Building the Terrain OpenPBR and VSM MeshletStreamAsset"
-        VERBATIM
-    )
+    function(add_metallic_terrain_vsm_sample bake_target smoke_target sample_id terrain_source output)
+        set(lighting "${CMAKE_SOURCE_DIR}/Asset/Terrain/TerrainVSM.metallic_scene.json")
+        set(graph "${CMAKE_SOURCE_DIR}/Pipelines/Samples/gpu_driven_terrain_vsm.metallic_graph.json")
+        set(stream_asset "${output}.gltf.meshstream.bin")
+        add_custom_command(
+            OUTPUT "${output}.gltf" "${output}.bin" "${output}.metallic_scene.json"
+            COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainVSMSample.py"
+                "${terrain_source}.gltf" "${lighting}" "${graph}" "${output}.gltf"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainVSMSample.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py"
+                "${terrain_source}.gltf" "${lighting}" "${graph}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            COMMENT "Assembling ${sample_id} with opaque mesh props"
+            VERBATIM
+        )
+        add_custom_command(
+            OUTPUT "${stream_asset}"
+            COMMAND "$<TARGET_FILE:Metallic>" --build-meshstream "${output}.gltf" --output "${stream_asset}"
+            DEPENDS Metallic "${output}.gltf" "${output}.bin" "${terrain_source}.bin"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            COMMENT "Building the ${sample_id} MeshletStreamAsset"
+            VERBATIM
+        )
+        add_custom_target(${bake_target} DEPENDS "${stream_asset}" "${output}.metallic_scene.json")
+        add_custom_target(${smoke_target}
+            COMMAND ${CMAKE_COMMAND} -E env METALLIC_SMOKE_TEST_HIDDEN=1
+                "METALLIC_SMOKE_TEST_SAMPLE=${sample_id}" "$<TARGET_FILE:Metallic>" --smoke-test
+            DEPENDS ${bake_target}
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            COMMENT "Rendering the ${sample_id} smoke frame"
+            VERBATIM
+        )
+    endfunction()
 
-    add_custom_target(MetallicTerrainVSMSample
-        DEPENDS "${METALLIC_TERRAIN_VSM_STREAMASSET}" "${METALLIC_TERRAIN_VSM_SCENE}"
-    )
-
-    add_custom_target(MetallicTerrainVSMSmoke
-        COMMAND ${CMAKE_COMMAND} -E env
-            METALLIC_SMOKE_TEST_HIDDEN=1
-            METALLIC_SMOKE_TEST_SAMPLE=gpu-driven-terrain-vsm
-            "$<TARGET_FILE:Metallic>" --smoke-test
-        DEPENDS MetallicTerrainVSMSample
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        COMMENT "Rendering the Terrain OpenPBR and VSM smoke frame"
-        VERBATIM
-    )
+    add_metallic_terrain_vsm_sample(MetallicTerrainVSMSample MetallicTerrainVSMSmoke
+        gpu-driven-terrain-vsm "${METALLIC_TERRAIN_P0_DIRECTORY}/simple_terrain_height"
+        "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainVSM/terrain_vsm")
+    add_metallic_terrain_vsm_sample(MetallicTerrainBlocksVSMSample MetallicTerrainBlocksVSMSmoke
+        gpu-driven-terrain-blocks-vsm "${METALLIC_TERRAIN_BLOCKS_HEIGHT}"
+        "${METALLIC_TERRAIN_BLOCKS_DIRECTORY}/terrain_blocks")
 else()
     message(STATUS "Python3 was not found; terrain sample build targets are unavailable")
 endif()

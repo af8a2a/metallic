@@ -9,7 +9,6 @@
             "position": {"x": 80, "y": 240},
             "properties": {
                 "path": "Asset/MeshletCache/TerrainVSM/terrain_vsm.gltf",
-                "streamAssetPath": "Asset/MeshletCache/TerrainVSM/terrain_vsm.gltf.meshstream.bin",
                 "sceneBinding": "world",
                 "viewBinding": "global",
                 "enableClusterRtx": false,

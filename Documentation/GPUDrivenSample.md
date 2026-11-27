@@ -42,4 +42,17 @@ cmake --build build-relwithdebinfo --target MetallicTerrainVSMSmoke
 
 烘焙后，在通用 `Metallic.exe` 的内置样例列表选择 **GPUDrivenSample / Terrain OpenPBR + VSM**。样例将 Houdini 高度场、测量塔和桥烘焙进同一份 StreamAsset。材质走 OpenPBR 延迟着色，场景里的 Sun 通过 VSM 投影。默认机位同时观察测量塔投到地表的影子，以及山脊投到桥面的影子。
 
-固定机位的 Vulkan 验证比较了 VSM 开关前后的深度、阴影和线性着色结果。深度逐字节一致，遮挡方向由源三角形射线确认。塔投到地表的阴影通过 27/27 个探针，山脊投到桥面的阴影通过 25/30 个探针。桥面的 5 个漏光探针仍可复现。窄视野检查中，镜头外山脊投到可见桥面的阴影通过 24/24 个探针。静态缓存与强制重绘的阴影和线性颜色逐字节一致。
+桥面原先有 5 个漏光点。朝向太阳的射线只命中地形背面，随后从西侧裙边下方穿出，单面材质的背面在 VSM 光栅中被剔除。这个样例的高度场材质现在启用双面。固定原机位和探针复验，塔投到地表 27/27，山脊投到桥面 30/30，直射对照 30/30，原漏光点的阴影值全部从 255 降到 0。可见性和深度缓冲与修复前逐字节一致，静态缓存与强制重绘的阴影和线性颜色也逐字节一致。
+
+### 2×2 地形块
+
+```powershell
+cmake --build build-relwithdebinfo --target MetallicTerrainBlocksVSMSample
+cmake --build build-relwithdebinfo --target MetallicTerrainBlocksVSMSmoke
+```
+
+在通用编辑器选择 **GPUDrivenSample / Terrain Blocks + VSM**。同一高度场划成四个独立网格，共用原样例的相机、道具和渲染图。共享顶点直接从全局网格取位置、法线、切线和 UV。裙边沿地形外圈生成。分块 primitive 通过 `METALLIC_lockMeshletLODBoundary` 在 meshstream 简化中锁定开放边端点，使相邻地形块可以独立选择 LOD。
+
+烘焙验证逐段比较了四条共享边的 LOD0、保底 LOD 及其混合配对。16 种配对和 124 次 DAG 细化替换均保留了接缝的解码位置及法线。原机位和两个掠射机位的 GPU 检查确认了相邻块的实际混合 LOD。接缝附近的两个背景像素位于山脊外轮廓，同机位的单块地形也复现了这两个像素。
+
+32 页上限下，编辑器在原机位渲染了 60 帧并导出画面。同一上限的严格 RHI 验收触发了流式断言，在接缝捕获前退出。三机位接缝结论来自默认驻留预算。

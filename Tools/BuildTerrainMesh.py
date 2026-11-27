@@ -285,6 +285,37 @@ def write_atomic(path: Path, data: bytes) -> None:
     os.replace(temporary_path, path)
 
 
+def split_terrain_tiles(indices: Any, columns: int, rows: int, tiles_per_axis: int):
+    import numpy as np
+
+    cells_x, cells_z = columns - 1, rows - 1
+    x_edges = [cells_x * tile // tiles_per_axis for tile in range(tiles_per_axis + 1)]
+    z_edges = [cells_z * tile // tiles_per_axis for tile in range(tiles_per_axis + 1)]
+    surface_size = cells_x * cells_z * 6
+    surface = indices[:surface_size].reshape(cells_z, cells_x, 6)
+    skirt = indices[surface_size:].reshape(-1, 6)
+    if skirt.size:
+        # Global skirt order is north and east increasing, then south and west
+        # decreasing. Reverse only the segment order to index by global cell.
+        north, east, south, west = np.split(skirt, [cells_x, cells_x + cells_z, 2 * cells_x + cells_z])
+        south, west = south[::-1], west[::-1]
+
+    for tile_z, (z_min, z_max) in enumerate(zip(z_edges, z_edges[1:])):
+        for tile_x, (x_min, x_max) in enumerate(zip(x_edges, x_edges[1:])):
+            parts = [surface[z_min:z_max, x_min:x_max].reshape(-1)]
+            if skirt.size:
+                if z_min == 0:
+                    parts.append(north[x_min:x_max].reshape(-1))
+                if x_max == cells_x:
+                    parts.append(east[z_min:z_max].reshape(-1))
+                if z_max == cells_z:
+                    parts.append(south[x_min:x_max].reshape(-1))
+                if x_min == 0:
+                    parts.append(west[z_min:z_max].reshape(-1))
+            vertices, local_indices = np.unique(np.concatenate(parts), return_inverse=True)
+            yield (tile_x, tile_z), (x_min, z_min, x_max, z_max), vertices, local_indices
+
+
 def write_terrain_gltf(
     output_path: Path,
     binary_path: Path,
@@ -301,7 +332,8 @@ def write_terrain_gltf(
     height_offset: float,
     skirt_depth: float,
     flip_z: bool,
-) -> None:
+    tiles_per_axis: int = 1,
+) -> int:
     import numpy as np
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -309,6 +341,9 @@ def write_terrain_gltf(
 
     payload = bytearray()
     buffer_views: list[dict[str, Any]] = []
+    accessors: list[dict[str, Any]] = []
+    meshes: list[dict[str, Any]] = []
+    nodes: list[dict[str, Any]] = []
 
     def append_buffer_view(array: Any, target: int) -> int:
         padding = (-len(payload)) % 4
@@ -396,42 +431,84 @@ def write_terrain_gltf(
         np.concatenate((tangent_xyz, handedness[:, None]), axis=1),
         dtype="<f4",
     )
-    position_view = append_buffer_view(positions, 34962)
-    normal_view = append_buffer_view(normals, 34962)
-    tangent_view = append_buffer_view(tangents, 34962)
-    texcoord_view = append_buffer_view(texcoords, 34962)
-    index_view = append_buffer_view(indices, 34963)
-
-    position_min = [float(value) for value in np.min(positions, axis=0)]
-    position_max = [float(value) for value in np.max(positions, axis=0)]
-    relative_binary = os.path.relpath(binary_path, output_path.parent).replace(os.sep, "/")
     terrain_name = output_path.stem
+
+    def append_accessor(array: Any, shape: str, bounds: bool = False) -> int:
+        index_data = shape == "SCALAR"
+        accessor = {
+            "bufferView": append_buffer_view(array, 34963 if index_data else 34962),
+            "componentType": 5125 if index_data else 5126,
+            "count": len(array),
+            "type": shape,
+        }
+        if bounds:
+            accessor["min"] = np.min(array, axis=0).tolist()
+            accessor["max"] = np.max(array, axis=0).tolist()
+            if index_data:
+                accessor["min"] = [accessor["min"]]
+                accessor["max"] = [accessor["max"]]
+        accessors.append(accessor)
+        return len(accessors) - 1
+
+    def append_mesh(name: str, vertices: Any, triangles: Any) -> None:
+        primitive = {
+            "attributes": {
+                "POSITION": append_accessor(positions[vertices], "VEC3", bounds=True),
+                "NORMAL": append_accessor(normals[vertices], "VEC3"),
+                "TANGENT": append_accessor(tangents[vertices], "VEC4"),
+                "TEXCOORD_0": append_accessor(texcoords[vertices], "VEC2", bounds=True),
+            },
+            "indices": append_accessor(np.ascontiguousarray(triangles, dtype="<u4"), "SCALAR", bounds=True),
+            "material": 0,
+            "mode": 4,
+        }
+        if tiles_per_axis > 1:
+            primitive["extras"] = {"METALLIC_lockMeshletLODBoundary": True}
+        nodes.append({"name": name, "mesh": len(meshes)})
+        meshes.append({"name": name, "primitives": [primitive]})
+
+    tile_metadata = []
+    exported_vertices = len(positions)
+    if tiles_per_axis == 1:
+        append_mesh(terrain_name, slice(None), indices)
+    else:
+        exported_vertices = 0
+        columns, rows = metadata["sourceResolution"]
+        for (x, z), cells, vertices, local_indices in split_terrain_tiles(indices, columns, rows, tiles_per_axis):
+            name = f"{terrain_name} Tile {x},{z}"
+            append_mesh(name, vertices, local_indices)
+            exported_vertices += len(vertices)
+            tile_metadata.append({
+                "name": name, "tile": [x, z], "cellBounds": list(cells),
+                "vertexCount": len(vertices), "triangleCount": len(local_indices) // 3,
+            })
+
+    terrain_metadata = {
+        "source": source_path.name,
+        "sourceSha256": sha256_file(source_path),
+        "sourceChannel": source_channel,
+        "sourceDataWindow": list(data_window),
+        "horizontalSize": horizontal_size,
+        "heightScale": height_scale,
+        "heightOffset": height_offset,
+        "skirtDepth": skirt_depth,
+        "flipZ": flip_z,
+        **metadata,
+    }
+    if tile_metadata:
+        terrain_metadata.update({"tilesPerAxis": tiles_per_axis, "tiles": tile_metadata,
+                                 "exportedVertexCount": exported_vertices})
+
+    relative_binary = os.path.relpath(binary_path, output_path.parent).replace(os.sep, "/")
     gltf = {
         "asset": {
             "version": "2.0",
             "generator": "Metallic Tools/BuildTerrainMesh.py",
         },
         "scene": 0,
-        "scenes": [{"name": terrain_name, "nodes": [0]}],
-        "nodes": [{"name": terrain_name, "mesh": 0}],
-        "meshes": [
-            {
-                "name": terrain_name,
-                "primitives": [
-                    {
-                        "attributes": {
-                            "POSITION": 0,
-                            "NORMAL": 1,
-                            "TANGENT": 2,
-                            "TEXCOORD_0": 3,
-                        },
-                        "indices": 4,
-                        "material": 0,
-                        "mode": 4,
-                    }
-                ],
-            }
-        ],
+        "scenes": [{"name": terrain_name, "nodes": list(range(len(nodes)))}],
+        "nodes": nodes,
+        "meshes": meshes,
         "materials": [
             {
                 "name": "TerrainP0",
@@ -445,63 +522,14 @@ def write_terrain_gltf(
         ],
         "buffers": [{"uri": quote(relative_binary, safe="/"), "byteLength": len(payload)}],
         "bufferViews": buffer_views,
-        "accessors": [
-            {
-                "bufferView": position_view,
-                "componentType": 5126,
-                "count": int(positions.shape[0]),
-                "type": "VEC3",
-                "min": position_min,
-                "max": position_max,
-            },
-            {
-                "bufferView": normal_view,
-                "componentType": 5126,
-                "count": int(normals.shape[0]),
-                "type": "VEC3",
-            },
-            {
-                "bufferView": tangent_view,
-                "componentType": 5126,
-                "count": int(tangents.shape[0]),
-                "type": "VEC4",
-            },
-            {
-                "bufferView": texcoord_view,
-                "componentType": 5126,
-                "count": int(texcoords.shape[0]),
-                "type": "VEC2",
-                "min": [0.0, 0.0],
-                "max": [1.0, 1.0],
-            },
-            {
-                "bufferView": index_view,
-                "componentType": 5125,
-                "count": int(indices.size),
-                "type": "SCALAR",
-                "min": [int(np.min(indices))],
-                "max": [int(np.max(indices))],
-            },
-        ],
-        "extras": {
-            "metallicTerrainP0": {
-                "source": source_path.name,
-                "sourceSha256": sha256_file(source_path),
-                "sourceChannel": source_channel,
-                "sourceDataWindow": list(data_window),
-                "horizontalSize": horizontal_size,
-                "heightScale": height_scale,
-                "heightOffset": height_offset,
-                "skirtDepth": skirt_depth,
-                "flipZ": flip_z,
-                **metadata,
-            }
-        },
+        "accessors": accessors,
+        "extras": {"metallicTerrainTiles" if tile_metadata else "metallicTerrainP0": terrain_metadata},
     }
 
     write_atomic(binary_path, bytes(payload))
     json_bytes = (json.dumps(gltf, indent=2, allow_nan=False) + "\n").encode("utf-8")
     write_atomic(output_path, json_bytes)
+    return exported_vertices
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -515,6 +543,10 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, help="output .gltf path")
     parser.add_argument("--binary-output", type=Path, help="output glTF .bin path")
     parser.add_argument("--channel", help="OpenEXR channel name (auto-selected by default)")
+    parser.add_argument(
+        "--tiles-per-axis", type=int, default=1,
+        help="export this many independently cooked tiles along each axis (default: 1)",
+    )
     parser.add_argument(
         "--horizontal-size",
         type=positive_float,
@@ -564,6 +596,8 @@ def main() -> int:
 
     try:
         heights, channel, data_window = load_height_field(source_path, arguments.channel)
+        if not 1 <= arguments.tiles_per_axis < min(heights.shape):
+            raise TerrainBuildError("--tiles-per-axis must be positive and fit the grid's cells")
         positions, normals, texcoords, indices, metadata = build_terrain_mesh(
             heights,
             arguments.horizontal_size,
@@ -572,7 +606,7 @@ def main() -> int:
             arguments.skirt_depth,
             arguments.flip_z,
         )
-        write_terrain_gltf(
+        exported_vertices = write_terrain_gltf(
             output_path,
             binary_path,
             source_path,
@@ -588,6 +622,7 @@ def main() -> int:
             arguments.height_offset,
             arguments.skirt_depth,
             arguments.flip_z,
+            arguments.tiles_per_axis,
         )
     except (OSError, TerrainBuildError, ValueError) as error:
         print(f"Terrain build failed: {error}", file=sys.stderr)
@@ -596,7 +631,7 @@ def main() -> int:
     print(
         f"Built terrain glTF '{output_path}': "
         f"source={metadata['sourceResolution'][0]}x{metadata['sourceResolution'][1]} "
-        f"channel={channel} vertices={metadata['vertexCount']} "
+        f"channel={channel} vertices={exported_vertices} "
         f"triangles={metadata['triangleCount']} "
         f"sourceHeight=[{metadata['sourceHeightMin']:.6g}, {metadata['sourceHeightMax']:.6g}] "
         f"worldHeight=[{metadata['worldHeightMin']:.6g}, {metadata['worldHeightMax']:.6g}]"

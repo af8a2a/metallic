@@ -1263,6 +1263,27 @@ struct ClusterLODWork {
             mesh.vertex_count,
             mesh.vertex_positions_stride);
 
+        if (primitive.lockMeshletLODBoundary) {
+            std::vector<unsigned int> adjacency(mesh.index_count * 2);
+            meshopt_generateAdjacencyIndexBuffer(adjacency.data(), mesh.indices, mesh.index_count,
+                mesh.vertex_positions, mesh.vertex_count, mesh.vertex_positions_stride);
+            boundaryLocks.resize(mesh.vertex_count);
+            for (size_t triangle = 0; triangle < adjacency.size(); triangle += 6) {
+                for (size_t edge = 0; edge < 6; edge += 2) {
+                    const auto start = adjacency[triangle + edge];
+                    // meshoptimizer repeats the starting vertex when the opposite edge is absent.
+                    if (adjacency[triangle + edge + 1] != start) { continue; }
+                    const auto end = adjacency[triangle + (edge + 2) % 6];
+                    boundaryLocks[remap[start]] = meshopt_SimplifyVertex_Lock;
+                    boundaryLocks[remap[end]] = meshopt_SimplifyVertex_Lock;
+                }
+            }
+            for (size_t vertex = 0; vertex < boundaryLocks.size(); ++vertex) {
+                boundaryLocks[vertex] = boundaryLocks[remap[vertex]];
+            }
+            mesh.vertex_lock = boundaryLocks.data();
+        }
+
         if (mesh.attribute_protect_mask != 0) {
             const size_t maxAttributes = mesh.vertex_attributes_stride / sizeof(float);
             for (size_t vertexIndex = 0; vertexIndex < mesh.vertex_count; ++vertexIndex) {
@@ -1447,6 +1468,7 @@ struct ClusterLODWork {
     MeshletBuildOptions options;
     std::vector<MeshletLODWorkerScratch> workerScratch;
     std::vector<unsigned char> locks;
+    std::vector<unsigned char> boundaryLocks;
     std::vector<unsigned int> remap;
     std::vector<clod::Cluster> clusters;
     std::vector<int> pending;
@@ -4661,6 +4683,7 @@ bool Scene::loadInternal(
                 primitive.primitiveIndex = static_cast<int32_t>(primitiveIndex);
                 primitive.materialIndex = gltfPrimitive.material;
                 primitive.mode = gltfPrimitive.mode;
+                primitive.lockMeshletLODBoundary = readMeshletLODBoundaryLock(gltfPrimitive.extras);
 
                 if (streamMetadata) {
                     const auto& position = model.accessors.at(gltfPrimitive.attributes.at("POSITION"));

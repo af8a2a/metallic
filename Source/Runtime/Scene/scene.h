@@ -152,6 +152,7 @@ struct RenderPrimitive {
     std::vector<float2> texcoords0;
     bool hasAuthoredNormals = false;
     bool hasAuthoredTangents = false;
+    bool lockMeshletLODBoundary = false;
     std::vector<uint32_t> indices;
     std::vector<MeshletCluster> meshletClusters;
     std::vector<uint32_t> meshletVertices;

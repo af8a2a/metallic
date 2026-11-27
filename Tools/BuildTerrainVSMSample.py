@@ -109,9 +109,12 @@ def build_sample(terrain_path: Path, scene_path: Path, graph_path: Path, output_
         })
         return mesh
 
-    terrain = document["nodes"][0]
-    terrain["name"] = "Houdini Heightfield"
-    document["materials"][0]["name"] = "Terrain Grass"
+    if len(document["nodes"]) == 1:
+        document["nodes"][0]["name"] = "Houdini Heightfield"
+    terrain_material = document["materials"][0]
+    terrain_material["name"] = "Terrain Grass"
+    # Grazing light can reach only the reverse face of an open heightfield.
+    terrain_material["doubleSided"] = True
     tower = append_box_mesh("Painted Survey Tower", (0.84, 0.24, 0.06), 0.1, 0.65)
     bridge = append_box_mesh("Blue Bridge Steel", (0.30, 0.62, 0.82), 0.25, 0.48)
     for name, mesh, translation, scale in (

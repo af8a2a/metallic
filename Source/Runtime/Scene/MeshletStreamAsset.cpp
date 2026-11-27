@@ -3152,6 +3152,13 @@ bool loadExternalGltfMetadataForStreamAssetBuilder(
                 primitive.indices = primitiveJson.value("indices", -1);
                 primitive.mode = primitiveJson.value("mode", TINYGLTF_MODE_TRIANGLES);
                 primitive.targets = primitiveJson.value("targets", decltype(primitive.targets){});
+                if (const auto extras = primitiveJson.find("extras"); extras != primitiveJson.end()) {
+                    const auto lock = extras->find(kMeshletLODBoundaryLockExtra);
+                    if (lock != extras->end() && lock->is_boolean() && lock->get<bool>()) {
+                        primitive.extras = tinygltf::Value(tinygltf::Value::Object{
+                            {kMeshletLODBoundaryLockExtra, tinygltf::Value(true)}});
+                    }
+                }
                 const nlohmann::json attributes =
                     primitiveJson.value("attributes", nlohmann::json::object());
                 if (!attributes.is_object()) {
@@ -3353,6 +3360,7 @@ bool loadRenderPrimitiveForStreamAssetBuilder(
     outPrimitive.primitiveIndex = primitiveIndex;
     outPrimitive.materialIndex = gltfPrimitive.material;
     outPrimitive.mode = gltfPrimitive.mode;
+    outPrimitive.lockMeshletLODBoundary = readMeshletLODBoundaryLock(gltfPrimitive.extras);
     if (outPrimitive.mode != TINYGLTF_MODE_TRIANGLES) {
         return true;
     }
@@ -3473,7 +3481,8 @@ std::string gltfGeometryKey(const tinygltf::Primitive& primitive)
     // Every geometry attribute participates. Instance material bindings are
     // independent; the page material is the canonical representative only.
     return nlohmann::json{{"mode", primitive.mode}, {"indices", primitive.indices},
-        {"attributes", primitive.attributes}, {"targets", primitive.targets}}.dump();
+        {"attributes", primitive.attributes}, {"targets", primitive.targets},
+        {"lockMeshletLODBoundary", readMeshletLODBoundaryLock(primitive.extras)}}.dump();
 }
 
 MeshletStreamPartialFileHeader makePartialBuildHeader(
