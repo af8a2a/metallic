@@ -436,6 +436,7 @@ public:
             {"openpbr_lookdev.metallic_graph.json", "PathTrace.color"},
             {"lookdev_shading_compare.metallic_graph.json", "Slider.color"},
             {"lookdev_vbuffer.metallic_graph.json", "Slider.color"},
+            {"lookdev_atmosphere.metallic_graph.json", "Slider.color"},
             {"lookdev_abeautiful_game.metallic_graph.json", "Slider.color"},
             {"material_visualization_abeautiful_game.metallic_graph.json", "MaterialViz.color"},
             {"native_strands.metallic_graph.json", "Fiber.color"},

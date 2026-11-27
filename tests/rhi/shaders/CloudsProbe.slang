@@ -2,6 +2,7 @@ module CloudsProbe;
 
 import Atmosphere;
 import Clouds;
+import VolumetricCloudViewTrace;
 import Lighting;
 using Metallic;
 using Metallic.Atmosphere;
@@ -24,7 +25,7 @@ void store(uint index, float3 value)
 void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
 {
     if (any(id != 0u)) { return; }
-    for (uint index = 0u; index < 47u; ++index) { store(index, float3(0.0)); }
+    for (uint index = 0u; index < 49u; ++index) { store(index, float3(0.0)); }
     GPUAtmosphereParameters p = loadParameters(gProbe.resources.parameters);
     let trans = resolveUniform(gProbe.resources.transmittance);
     let multi = resolveUniform(gProbe.resources.multiScattering);
@@ -138,4 +139,16 @@ void cloudsProbeMain(uint3 id : SV_DispatchThreadID)
     store(44, orbitalClear.transmittance); store(45, orbitalClear.radiance);
     SpectralSegment sourceSky = integrateEnvironment(p, trans, multi, p.observerPlanetBottom.xyz, sun, 1e9, true);
     store(46, spectralToWorking(sourceSky.radiance));
+
+    // A 100 m vacuum followed by a homogeneous 500 m slab. Record the production
+    // integral independently of the procedural density field and atmospheric LUTs.
+    let extinctionPerMeter = 0.002f;
+    Metallic.Clouds::CloudViewIntegral slab = Metallic.Clouds::CloudViewIntegral::empty();
+    slab.integrateSample(50.0f, 100.0f, 0.0f, float3(0.0f));
+    for (uint step = 0u; step < 5u; ++step) {
+        slab.integrateSample(150.0f + 100.0f * step, 100.0f, extinctionPerMeter,
+            extinctionPerMeter * float3(1, 2, 4));
+    }
+    store(47, slab.luminance);
+    store(48, float3(slab.transmittance, slab.representativeDepthMeters(), slab.depthWeightsSum));
 }

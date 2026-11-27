@@ -22,10 +22,11 @@ public struct LumenScreenTraceInputs
 
 public struct ScreenTraceProjection
 {
-    float3 eye, right, up, forward;
-    float2 halfExtent, extent, jitter;
+    public float3 eye, right, up, forward;
+    public float2 halfExtent;
+    float2 extent, jitter;
     float nearPlane, farPlane;
-    bool orthographic;
+    public bool orthographic;
 };
 
 public ScreenTraceProjection makeScreenTraceProjection(ViewCameraConstants camera, float2 jitter)

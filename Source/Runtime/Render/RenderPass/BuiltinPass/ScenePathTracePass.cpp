@@ -391,19 +391,24 @@ struct ScenePathTraceCameraSnapshot {
     bool operator==(const ScenePathTraceCameraSnapshot&) const = default;
 };
 
-struct ShadowedAtmosphereView {
+// Bit 31 is reserved for the Deferred primary ray. PT keeps its cloudy environment.
+constexpr uint32_t kSceneDeferredIndependentViewClouds = 1u << 31u;
+
+struct CameraAtmosphereView {
     std::unique_ptr<Buffer> aerial;
     std::unique_ptr<Texture> sky;
     std::unique_ptr<TextureView> skyView;
 
-    Result<> initialize(Device& device)
+    Result<> initialize(Device& device, bool privateAerial)
     {
         using Atmosphere = AtmosphereResourcesGPU;
         constexpr uint32_t size = Atmosphere::kAerialSize;
-        auto buffer = device.createBuffer({.size = uint64_t(size) * size * size * 2 * 16,
-            .structureStride = 16, .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::Device});
-        if (!buffer) { return makeError(buffer.error()); }
-        aerial = std::move(*buffer);
+        if (privateAerial) {
+            auto buffer = device.createBuffer({.size = uint64_t(size) * size * size * 2 * 16,
+                .structureStride = 16, .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::Device});
+            if (!buffer) { return makeError(buffer.error()); }
+            aerial = std::move(*buffer);
+        }
         auto texture = device.createTexture({.type = TextureType::Texture2D,
             .usage = TextureUsageBits::Storage | TextureUsageBits::Sampled, .format = Format::RGBA32Sfloat,
             .width = Atmosphere::kSkyViewWidth, .height = Atmosphere::kSkyViewHeight,
@@ -505,6 +510,11 @@ public:
         }
         if (visibilityDeferred_) {
             reflection.addTextureInput("visibility", "Streamed GPUScene visibility IDs").sampledRead().format = Format::R32Uint;
+            if (boolProperty(properties(), "independentViewClouds", false)) {
+                constexpr uint32_t size = AtmosphereResourcesGPU::kAerialSize;
+                reflection.addBufferOutput("cameraAerial", "Camera gas radiance and transmittance for view cloud compositing")
+                    .buffer(uint64_t(size) * size * size * 2 * 16, 16).storageReadWrite();
+            }
             reflection.addTextureInput("depth", "Depth from the same visibility raster").sampledRead().format = Format::D32Sfloat;
             auto& domain = reflection.addTextureInput("domain", "Optional displaced barycentrics and geometric normal").sampledRead().setOptional();
             domain.format = Format::Unknown; // R32G32B32A32 when active, inexpensive dummy when disabled.
@@ -768,8 +778,7 @@ public:
     }
     Result<> prepare(const RenderGraphCompileContext& context, std::string& log) override
     {
-        if (visibilityDeferred_ && boolProperty(properties(), "directionalAtmosphereShadows", false) &&
-            !shadowedSkyKernel_.valid()) { return compile(context, log); }
+        if (usesCameraAtmosphere() && !shadowedSkyKernel_.valid()) { return compile(context, log); }
         if (!validateTraversalBackend(properties(), log)) { return makeError(Error::Unsupported); }
         if (!validateInlineComputeRoot(properties(), log)) { return makeError(Error::Unsupported); }
         if (!validateTrustedSceneParameters(properties(), log)) { return makeError(Error::Unsupported); }
@@ -865,7 +874,7 @@ public:
             return makeError(Error::Unsupported);
         }
         device_ = context.device;
-        if (visibilityDeferred_ && boolProperty(properties(), "directionalAtmosphereShadows", false)) {
+        if (usesCameraAtmosphere()) {
             const auto compileShadowKernel = [&](const char* module, const char* entry, ComputeKernel& kernel) {
                 return ShaderRegistry::instance().getComputeKernel(*device_,
                     {.moduleName = module, .entryPointName = entry, .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
@@ -2029,7 +2038,9 @@ public:
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandMip), .buffer = textureFeedback.demandMip});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandHits), .buffer = textureFeedback.demandHits});
         if (!visibilityDeferred_) { appendStreamRayBindings(bindings, streamGeometry, streamGeometry.shadingChangeBuffer); }
-        ShadowedAtmosphereView* shadowedView = nullptr;
+        const bool separateViewClouds = visibilityDeferred_ && boolProperty(context.properties(), "independentViewClouds", false);
+        CameraAtmosphereView* cameraView = nullptr;
+        Buffer* cameraAerial = separateViewClouds ? context.outputBuffer("cameraAerial").buffer() : nullptr;
         uint32_t atmosphereShadowMask = 0;
         Buffer* worldShadowFaces = nullptr;
         if (environment.atmosphereParametersBuffer != nullptr && visibilityDeferred_ &&
@@ -2042,13 +2053,17 @@ public:
             }
             if (atmosphereShadowMask) {
                 worldShadowFaces = context.inputBuffer("worldShadowFaces").buffer();
-                auto view = acquireShadowedAtmosphereView(context.commandBuffer());
-                if (!view) { return makeError(view.error()); }
-                shadowedView = *view;
-                atmosphereSkyViews[0] = shadowedView->skyView.get();
                 bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneRealtimeResourceParameters, atmosphereWorldShadowFaces),
                     .buffer = worldShadowFaces});
             }
+        }
+        if (separateViewClouds) { push.deferredSettings |= kSceneDeferredIndependentViewClouds; }
+        if (environment.atmosphereParametersBuffer && (atmosphereShadowMask || separateViewClouds)) {
+            auto view = acquireCameraAtmosphereView(context.commandBuffer(), !separateViewClouds);
+            if (!view) { return makeError(view.error()); }
+            cameraView = *view;
+            atmosphereSkyViews[0] = cameraView->skyView.get();
+            if (!separateViewClouds) { cameraAerial = cameraView->aerial.get(); }
         }
         if (environment.atmosphereParametersBuffer != nullptr) {
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.atmosphereParameters), .buffer = environment.atmosphereParametersBuffer});
@@ -2056,7 +2071,7 @@ public:
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.multiScattering), .textureViews = {atmosphereMultiScatteringViews, 1}});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.skyView), .textureViews = {atmosphereSkyViews, 1}});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.aerialPerspective),
-                .buffer = shadowedView ? shadowedView->aerial.get() : environment.aerialPerspectiveBuffer});
+                .buffer = cameraView ? cameraAerial : environment.aerialPerspectiveBuffer});
             if (environment.cloudShadowView != nullptr) {
                 bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.cloudShadow), .textureViews = {atmosphereCloudShadowViews, 1}});
             }
@@ -2405,22 +2420,28 @@ public:
                 }
             }
             using Access = RenderGraphResourceAccess;
+            const std::string_view aerialName = separateViewClouds ? "output.cameraAerial" : "localCameraAerial";
             const RenderGraphStageUse skyUses[]{{"worldShadowFaces", Access::BufferStorageRead}, {"cameraSky", Access::TextureStorageWrite}};
-            const RenderGraphStageUse aerialUses[]{{"worldShadowFaces", Access::BufferStorageRead}, {"cameraAerial", Access::BufferStorageWrite}};
+            const RenderGraphStageUse aerialUses[]{{"worldShadowFaces", Access::BufferStorageRead}, {aerialName, Access::BufferStorageWrite}};
             std::array<RenderGraphStage, 3> stages{};
-            if (shadowedView) {
-                result = importBuffer(resources, "cameraAerial", shadowedView->aerial.get());
-                if (!result) { return result; }
-                // This recording owns the view through GPU completion. Both LUTs overwrite every texel.
-                resources.textures.push_back({"cameraSky", shadowedView->sky.get(), shadowedView->skyView.get()});
+            if (cameraView) {
+                if (!separateViewClouds) {
+                    result = importBuffer(resources, aerialName, cameraAerial);
+                    if (!result) { return result; }
+                }
+                resources.textures.push_back({"cameraSky", cameraView->sky.get(), cameraView->skyView.get()});
                 resources.uses.push_back({"cameraSky", Access::TextureSampleRead});
-                resources.uses.push_back({"cameraAerial", Access::BufferShaderRead});
-                resources.uses.push_back({"worldShadowFaces", Access::BufferStorageRead});
-                stages[0] = {"Shadowed sky view", skyUses, [&](CommandBuffer& commands) {
-                    return dispatchShadowedAtmosphere(commands, environment, *shadowedView, *worldShadowFaces, atmosphereShadowMask, true);
+                resources.uses.push_back({aerialName, Access::BufferShaderRead});
+                if (worldShadowFaces) { resources.uses.push_back({"worldShadowFaces", Access::BufferStorageRead}); }
+                stages[0] = {"Camera sky view", std::span(skyUses).subspan(worldShadowFaces ? 0u : 1u), [&](CommandBuffer& commands) {
+                    return dispatchCameraAtmosphere(commands, environment, cameraView->skyView.get(), nullptr,
+                        worldShadowFaces, atmosphereShadowMask, separateViewClouds);
                 }};
-                stages[1] = {"Shadowed aerial perspective", aerialUses, [&](CommandBuffer& commands) {
-                    return dispatchShadowedAtmosphere(commands, environment, *shadowedView, *worldShadowFaces, atmosphereShadowMask, false);
+            }
+            if (cameraAerial) {
+                stages[1] = {"Camera aerial perspective", std::span(aerialUses).subspan(worldShadowFaces ? 0u : 1u), [&](CommandBuffer& commands) {
+                    return dispatchCameraAtmosphere(commands, environment, nullptr, cameraAerial,
+                        worldShadowFaces, atmosphereShadowMask, separateViewClouds);
                 }};
             }
             stages[2] = {visibilityDeferred_ ? "Deferred shading" : "Path trace shading", resources.uses,
@@ -2468,7 +2489,8 @@ public:
                         .profiler = profiler,
                     });
                 }, compiledRayPipeline_ ? RenderGraphPassKind::RayTracing : RenderGraphPassKind::Compute};
-            result = context.executeStages(std::span(stages).subspan(shadowedView ? 0u : 2u), resources.buffers, resources.textures);
+            result = context.executeStages(std::span(stages).subspan(cameraView ? 0u : cameraAerial ? 1u : 2u),
+                resources.buffers, resources.textures);
             if (!result) { return result; }
         }
 
@@ -2632,40 +2654,49 @@ private:
 
     std::vector<std::shared_ptr<Buffer>> deferredFrameInfoPool_;
     ComputeKernel shadowedAerialKernel_, shadowedSkyKernel_;
-    std::vector<std::shared_ptr<ShadowedAtmosphereView>> shadowedViews_;
+    std::vector<std::shared_ptr<CameraAtmosphereView>> cameraAtmosphereViews_;
 
-    Result<ShadowedAtmosphereView*> acquireShadowedAtmosphereView(CommandBuffer& commands)
+    bool usesCameraAtmosphere() const
     {
-        auto free = std::find_if(shadowedViews_.begin(), shadowedViews_.end(),
-            [](const auto& view) { return view.use_count() == 1; });
-        if (free == shadowedViews_.end()) {
-            auto view = std::make_shared<ShadowedAtmosphereView>();
-            if (auto r = view->initialize(*device_); !r) { return makeError(r.error()); }
-            shadowedViews_.push_back(std::move(view));
-            free = std::prev(shadowedViews_.end());
+        return visibilityDeferred_ && (boolProperty(properties(), "directionalAtmosphereShadows", false) ||
+            boolProperty(properties(), "independentViewClouds", false));
+    }
+
+    Result<CameraAtmosphereView*> acquireCameraAtmosphereView(CommandBuffer& commands, bool privateAerial)
+    {
+        auto free = std::find_if(cameraAtmosphereViews_.begin(), cameraAtmosphereViews_.end(),
+            [privateAerial](const auto& view) { return view.use_count() == 1 && bool(view->aerial) == privateAerial; });
+        if (free == cameraAtmosphereViews_.end()) {
+            auto view = std::make_shared<CameraAtmosphereView>();
+            if (auto r = view->initialize(*device_, privateAerial); !r) { return makeError(r.error()); }
+            cameraAtmosphereViews_.push_back(std::move(view));
+            free = std::prev(cameraAtmosphereViews_.end());
         }
         if (auto r = commands.retainResource(*free); !r) { return makeError(r.error()); }
         return free->get();
     }
 
-    Result<> dispatchShadowedAtmosphere(CommandBuffer& commands, const EnvironmentLightingSnapshot& environment,
-        const ShadowedAtmosphereView& view, Buffer& faces, uint32_t mask, bool sky)
+    Result<> dispatchCameraAtmosphere(CommandBuffer& commands, const EnvironmentLightingSnapshot& environment,
+        TextureView* sky, Buffer* aerial, Buffer* faces, uint32_t mask, bool separateViewClouds)
     {
         auto registry = ResourceRegistry::forDevice(*device_);
         if (!registry) { return makeError(registry.error()); }
         ParameterWriter writer(*device_, **registry, RenderFrameContext::from(commands));
         AtmospherePrecomputeParams p{};
-        p.parameters = writer.bufferSpan(environment.atmosphereParametersBuffer, 16, 16);
-        p.transmittance = writer.sampledImage(environment.transmittanceView);
-        p.multiScattering = writer.sampledImage(environment.multiScatteringView);
-        p.worldShadowFaces = writer.buffer(&faces).index;
+        if (environment.atmosphereParametersBuffer) {
+            p.parameters = writer.bufferSpan(environment.atmosphereParametersBuffer, 16, 16);
+            p.transmittance = writer.sampledImage(environment.transmittanceView);
+            p.multiScattering = writer.sampledImage(environment.multiScatteringView);
+        }
+        p.worldShadowFaces = faces ? writer.buffer(faces).index : UINT32_MAX;
+        const uint32_t flags = mask | (separateViewClouds ? kAtmosphereSeparateViewClouds : 0u);
         using Atmosphere = AtmosphereResourcesGPU;
         if (sky) {
-            p.dimensions = {Atmosphere::kSkyViewWidth, Atmosphere::kSkyViewHeight, 1u, mask};
-            p.output = writer.storageImage(view.skyView.get());
+            p.dimensions = {Atmosphere::kSkyViewWidth, Atmosphere::kSkyViewHeight, 1u, flags};
+            p.output = writer.storageImage(sky);
         } else {
-            p.dimensions = {Atmosphere::kAerialSize, Atmosphere::kAerialSize, Atmosphere::kAerialSize, mask};
-            p.aerial = writer.bufferSpan(view.aerial.get(), 16, 16);
+            p.dimensions = {Atmosphere::kAerialSize, Atmosphere::kAerialSize, Atmosphere::kAerialSize, flags};
+            p.aerial = writer.bufferSpan(aerial, 16, 16);
         }
         auto packet = writer.encode(p, kAtmospherePrecomputeABI, ParameterTransport::InlinePush);
         if (!packet) { return makeError(packet.error()); }

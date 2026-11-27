@@ -43,14 +43,16 @@ std::vector<float> decodeSeamHDR(const render::RenderGraphPreviewRenderer& previ
 
 bool seamExecutionMatches(const render::RenderGraphExecutionStats& stats, bool pathTraced)
 {
-    bool sawPT = false, sawDeferred = false, sawVBuffer = false, sawSlider = false;
+    bool sawPT = false, sawDeferred = false, sawVBuffer = false, sawCloudView = false, sawSlider = false;
     for (const auto& node : stats.nodes) {
         sawPT |= node.name == "Reference";
         sawDeferred |= node.name == "Deferred";
         sawVBuffer |= node.name == "VBuffer";
+        sawCloudView |= node.name == "CloudView";
         sawSlider |= node.name == "Slider";
     }
-    return sawPT == pathTraced && sawDeferred == !pathTraced && sawVBuffer == !pathTraced && !sawSlider;
+    return sawPT == pathTraced && sawDeferred == !pathTraced && sawVBuffer == !pathTraced &&
+        sawCloudView == !pathTraced && !sawSlider;
 }
 
 struct SeamStatistics {
@@ -158,7 +160,7 @@ public:
                 for (uint32_t frame = 0; frame < kSeamFrames; ++frame) {
                     preview.setRawReadbackEnabled(frame + 1 == kSeamFrames);
                     if (!preview.render(graph, kSeamWidth, kSeamHeight,
-                            pt ? "Reference.color" : "Deferred.color", frame + 1 == kSeamFrames)) {
+                            pt ? "Reference.color" : "CloudView.color", frame + 1 == kSeamFrames)) {
                         return RHITestResult::fail(label + "/" + state + ": " + preview.lastLog());
                     }
                     if (!seamExecutionMatches(preview.executionStats(), pt)) {

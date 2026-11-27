@@ -541,7 +541,7 @@ public:
     {
         return "Asset/LookDev/PhysicalAtmosphere/PhysicalAtmosphere.metallic_scene.json";
     }
-    std::string graphPath() const override { return "Pipelines/Samples/lookdev_vbuffer.metallic_graph.json"; }
+    std::string graphPath() const override { return "Pipelines/Samples/lookdev_atmosphere.metallic_graph.json"; }
     std::vector<std::string> scenePathTargets() const override { return {"Reference", "VBuffer", "Deferred"}; }
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
@@ -560,7 +560,7 @@ public:
     {
         return "Asset/LookDev/DynamicWorld/DynamicWorld.metallic_scene.json";
     }
-    std::string graphPath() const override { return "Pipelines/Samples/lookdev_vbuffer.metallic_graph.json"; }
+    std::string graphPath() const override { return "Pipelines/Samples/lookdev_atmosphere.metallic_graph.json"; }
     std::vector<std::string> scenePathTargets() const override { return {"Reference", "VBuffer", "Deferred"}; }
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
@@ -1391,12 +1391,15 @@ bool supportsLookDevRenderPaths(const RenderGraph& graph)
                 makeRenderGraphFieldName(edge.dstPass, edge.dstField) == destination;
         });
     };
+    const bool rasterBranch = graph.findNode("CloudView")
+        ? hasType("CloudView", "VolumetricCloudViewPass") && hasEdge("Deferred.color", "CloudView.sceneColor") &&
+            hasEdge("CloudView.color", "Slider.sourceB")
+        : hasEdge("Deferred.color", "Slider.sourceB");
     return hasType("Reference", "ScenePathTracePass") &&
         hasType("VBuffer", "VisibilityBufferPass") &&
         hasType("Deferred", "VisibilityBufferDeferredPass") &&
         hasType("Slider", "SliderDebugPass") &&
-        hasEdge("Reference.color", "Slider.sourceA") &&
-        hasEdge("Deferred.color", "Slider.sourceB");
+        hasEdge("Reference.color", "Slider.sourceA") && rasterBranch;
 }
 
 bool makeLookDevRenderGraph(const RenderGraph& comparison, LookDevRenderPath path,
@@ -1408,10 +1411,13 @@ bool makeLookDevRenderGraph(const RenderGraph& comparison, LookDevRenderPath pat
     }
     RenderGraph graph = comparison;
     if (path != LookDevRenderPath::Comparison) {
-        const std::string source = path == LookDevRenderPath::PathTraceOnly ? "Reference.color" : "Deferred.color";
+        const char* sliderInput = path == LookDevRenderPath::PathTraceOnly ? "sourceA" : "sourceB";
+        std::string source;
         std::vector<std::string> destinations;
         for (const auto& edge : graph.edges()) {
-            if (edge.srcPass == "Slider" && edge.srcField == "color") {
+            if (edge.dstPass == "Slider" && edge.dstField == sliderInput) {
+                source = makeRenderGraphFieldName(edge.srcPass, edge.srcField);
+            } else if (edge.srcPass == "Slider" && edge.srcField == "color") {
                 destinations.push_back(makeRenderGraphFieldName(edge.dstPass, edge.dstField));
             }
         }
@@ -1420,6 +1426,7 @@ bool makeLookDevRenderGraph(const RenderGraph& comparison, LookDevRenderPath pat
         });
         graph.removeNode(graph.findNode("Slider")->id);
         if (path == LookDevRenderPath::PathTraceOnly) {
+            if (const auto* cloudView = graph.findNode("CloudView")) { graph.removeNode(cloudView->id); }
             graph.removeNode(graph.findNode("Deferred")->id);
             graph.removeNode(graph.findNode("VBuffer")->id);
         } else {

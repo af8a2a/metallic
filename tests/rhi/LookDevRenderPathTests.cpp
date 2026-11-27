@@ -23,7 +23,8 @@ public:
         std::string log;
         uint32_t checked = 0;
         for (const auto& desc : listBuiltInRenderSamples()) {
-            if (desc.category != "LookDev" && desc.category != "Painter Validation" && desc.category != "Studio LookDev") { continue; }
+            if (desc.category != "LookDev" && desc.category != "Painter Validation" && desc.category != "Studio LookDev" &&
+                desc.category != "Environment") { continue; }
             RenderSampleLoadResult sample;
             if (!loadBuiltInRenderSample(desc.id, sample, log)) { return RHITestResult::fail(log); }
             if (!supportsLookDevRenderPaths(sample.graph)) { continue; }
@@ -35,6 +36,7 @@ public:
                 const bool deferred = path != LookDevRenderPath::PathTraceOnly;
                 if (bool(graph.findNode("Reference")) != pt || bool(graph.findNode("Deferred")) != deferred ||
                     bool(graph.findNode("VBuffer")) != deferred ||
+                    bool(graph.findNode("CloudView")) != (deferred && sample.graph.findNode("CloudView")) ||
                     bool(graph.findNode("Slider")) != (path == LookDevRenderPath::Comparison) ||
                     graph.presentationOutputName() != sample.graph.presentationOutputName() ||
                     graph.viewProperties() != sample.graph.viewProperties()) {
@@ -88,7 +90,8 @@ public:
         if (!document.load(std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath)) { return RHITestResult::fail("Scene load failed"); }
         for (auto path : {LookDevRenderPath::PathTraceOnly, LookDevRenderPath::DeferredOnly}) {
             const bool pt = path == LookDevRenderPath::PathTraceOnly;
-            const char* output = pt ? "Reference.color" : "Deferred.color";
+            const bool hasViewClouds = sample.graph.findNode("CloudView") != nullptr;
+            const char* output = pt ? "Reference.color" : (hasViewClouds ? "CloudView.color" : "Deferred.color");
             std::vector<std::byte> reference;
             for (bool isolated : {false, true}) {
                 RenderGraph graph = sample.graph;
@@ -104,15 +107,17 @@ public:
                     preview.setRawReadbackEnabled(frame == 31);
                     if (!preview.render(graph, kSize, kSize, output, frame == 31)) { return RHITestResult::fail(preview.lastLog()); }
                     const auto& stats = preview.executionStats();
-                    bool sawPT = false, sawDeferred = false, sawVBuffer = false, sawSlider = false;
+                    bool sawPT = false, sawDeferred = false, sawVBuffer = false, sawCloudView = false, sawSlider = false;
                     for (const auto& node : stats.nodes) {
                         sawPT |= node.name == "Reference";
                         sawDeferred |= node.name == "Deferred";
                         sawVBuffer |= node.name == "VBuffer";
+                        sawCloudView |= node.name == "CloudView";
                         sawSlider |= node.name == "Slider";
                     }
                     if (sawPT != (!isolated || pt) || sawDeferred != (!isolated || !pt) ||
-                        sawVBuffer != (!isolated || !pt) || sawSlider != !isolated) {
+                        sawVBuffer != (!isolated || !pt) || sawCloudView != (hasViewClouds && (!isolated || !pt)) ||
+                        sawSlider != !isolated) {
                         return RHITestResult::fail("Unexpected executed passes in " + graph.name());
                     }
                 }

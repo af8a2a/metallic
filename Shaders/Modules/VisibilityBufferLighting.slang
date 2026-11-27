@@ -369,7 +369,8 @@ public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgra
     if (applyAerial) {
         let resources = getSceneResourceParameterField<EnvironmentResourceParameters>(kSceneEnvironmentOffset);
         let shadow = deferredAtmosphereShadow(ray.origin);
-        let segment = physicalAerialSegment(resources, hit.position, ray.origin, shadow);
+        let segment = physicalAerialSegment(resources, hit.position, ray.origin, shadow,
+            (push.deferredSettings & kSceneDeferredIndependentViewClouds) == 0u);
         if (kExportLumenReceivers) {
             receiver.diffuse *= segment.transmittance;
 #if METALLIC_DEFERRED_LUMEN_SPECULAR

@@ -53,20 +53,24 @@ public PunctualLightSample sampleCelestialLightAtPosition(StructuredBuffer<GPUCe
 }
 
 public float3 physicalVisibleEnvironment<TShadow : Metallic.Atmosphere::IAtmosphereLightShadow>(
-    EnvironmentResourceParameters resources, float3 direction, float3 primaryWorldOrigin, TShadow shadow)
+    EnvironmentResourceParameters resources, float3 direction, float3 primaryWorldOrigin, TShadow shadow,
+    bool includeViewCloudMedium = true)
 {
     GPUAtmosphereParameters atmosphere;
     if (resources.skyView.index == 0xffffffffu || resources.transmittance.index == 0xffffffffu ||
         !loadPhysicalAtmosphere(resources, atmosphere)) { return float3(0.0); }
+    // The independent view pass applies its line-of-sight transmittance to both celestial disks.
+    GPUAtmosphereParameters diskAtmosphere = atmosphere;
+    if (!includeViewCloudMedium) { diskAtmosphere.cloudOptics.w = 0.0; }
     if (any(primaryWorldOrigin != atmosphere.observerWorldTop.xyz)) {
         if (resources.multiScattering.index == 0xffffffffu) { return float3(0.0); }
         float3 positionKm = Metallic.Atmosphere::worldToAtmosphereKm(atmosphere, primaryWorldOrigin);
         let integrated = Metallic.Atmosphere::integrateEnvironment(atmosphere, resolveUniform(resources.transmittance),
-            resolveUniform(resources.multiScattering), positionKm, direction, 1e9, true, shadow, 0.0);
+            resolveUniform(resources.multiScattering), positionKm, direction, 1e9, true, shadow, 0.0, includeViewCloudMedium);
         return max(Metallic.Atmosphere::spectralToWorking(integrated.radiance), 0.0) +
-            Metallic.Atmosphere::visibleSourceDisks(atmosphere, resolveUniform(resources.transmittance), positionKm, direction);
+            Metallic.Atmosphere::visibleSourceDisks(diskAtmosphere, resolveUniform(resources.transmittance), positionKm, direction);
     }
-    return Metallic.Atmosphere::visibleSky(atmosphere, resolveUniform(resources.skyView),
+    return Metallic.Atmosphere::visibleSky(diskAtmosphere, resolveUniform(resources.skyView),
         resolveUniform(resources.transmittance), direction, true);
 }
 
@@ -104,7 +108,8 @@ public float physicalNrdInversePreExposure(EnvironmentResourceParameters resourc
 }
 
 public Metallic.Atmosphere::AtmosphereSegment physicalAerialSegment<TShadow : Metallic.Atmosphere::IAtmosphereLightShadow>(
-    EnvironmentResourceParameters resources, float3 worldEndpoint, float3 primaryWorldOrigin, TShadow shadow)
+    EnvironmentResourceParameters resources, float3 worldEndpoint, float3 primaryWorldOrigin, TShadow shadow,
+    bool includeViewCloudMedium = true)
 {
     Metallic.Atmosphere::AtmosphereSegment result;
     result.radiance = float3(0.0);
@@ -124,7 +129,7 @@ public Metallic.Atmosphere::AtmosphereSegment physicalAerialSegment<TShadow : Me
         // the LUT distance would miss the entire medium in that case.
         return Metallic.Atmosphere::integrateAerialPerspective(atmosphere, resolveUniform(resources.transmittance),
             resolveUniform(resources.multiScattering), Metallic.Atmosphere::worldToAtmosphereKm(atmosphere, primaryWorldOrigin),
-            deltaKm / distanceKm, distanceKm - atmosphere.settings.z, shadow);
+            deltaKm / distanceKm, distanceKm - atmosphere.settings.z, shadow, includeViewCloudMedium);
     }
     if (resources.aerialPerspective.index == 0xffffffffu) { return result; }
     let buffer = resolveBuffer<StructuredBuffer<float4>>(resources.aerialPerspective);

@@ -70,6 +70,13 @@ public struct AtmospherePrecomputeParams {
     ATMOSPHERE_PUBLIC AtmosphereUInt4 dimensions; // x,y,z; mode (capture=0,mip=1).
 };
 
+// View kernels use dimensions.w bits 0 and 1 for Sun/Moon VSM visibility.
+#ifdef __cplusplus
+inline constexpr uint32_t kAtmosphereSeparateViewClouds = 4u;
+#else
+public static const uint kAtmosphereSeparateViewClouds = 4u;
+#endif
+
 #ifdef __cplusplus
 inline constexpr uint64_t kAtmospherePrecomputeABI = 0x41544d4f53500001ull;
 static_assert(sizeof(GPUAtmosphereParameters) == 320 && alignof(GPUAtmosphereParameters) == 16);

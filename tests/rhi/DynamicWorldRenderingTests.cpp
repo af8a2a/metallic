@@ -127,14 +127,17 @@ bool dynamicWorldExecutionMatches(const render::RenderGraphExecutionStats& stats
     bool sawPT = false;
     bool sawDeferred = false;
     bool sawVBuffer = false;
+    bool sawCloudView = false;
     bool sawSlider = false;
     for (const auto& node : stats.nodes) {
         sawPT |= node.name == "Reference";
         sawDeferred |= node.name == "Deferred";
         sawVBuffer |= node.name == "VBuffer";
+        sawCloudView |= node.name == "CloudView";
         sawSlider |= node.name == "Slider";
     }
-    return sawPT == pathTraced && sawDeferred == !pathTraced && sawVBuffer == !pathTraced && !sawSlider;
+    return sawPT == pathTraced && sawDeferred == !pathTraced && sawVBuffer == !pathTraced &&
+        sawCloudView == !pathTraced && !sawSlider;
 }
 
 
@@ -221,7 +224,7 @@ public:
                 for (uint32_t frame = 0; frame < kDynamicWorldFrames; ++frame) {
                     preview.setRawReadbackEnabled(frame + 1 == kDynamicWorldFrames);
                     if (!preview.render(graph, kDynamicWorldSize, kDynamicWorldSize,
-                            pt ? "Reference.color" : "Deferred.color", frame + 1 == kDynamicWorldFrames)) {
+                            pt ? "Reference.color" : "CloudView.color", frame + 1 == kDynamicWorldFrames)) {
                         return RHITestResult::fail(label + "/" + testCase.name + ": " + preview.lastLog());
                     }
                     if (!dynamicWorldExecutionMatches(preview.executionStats(), pt)) {
@@ -321,7 +324,7 @@ public:
             preview.setWorldEnvironment(world);
             const auto capture = [&](DynamicWorldImage& image) {
                 preview.setRawReadbackEnabled(true);
-                if (!preview.render(graph, kDynamicWorldSize, kDynamicWorldSize, pt ? "Reference.color" : "Deferred.color", true)) {
+                if (!preview.render(graph, kDynamicWorldSize, kDynamicWorldSize, pt ? "Reference.color" : "CloudView.color", true)) {
                     log = preview.lastLog(); return false;
                 }
                 image.rgba = decodeDynamicWorldHDR(preview);

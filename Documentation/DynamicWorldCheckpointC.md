@@ -17,7 +17,7 @@ prior SDK acceptance items remain explicitly outside this evidence.
 Open **Samples / Environment / Dynamic World / OpenPBR LookDev**
 (`dynamic-world-lookdev`). Its
 [scene document](../Asset/LookDev/DynamicWorld/DynamicWorld.metallic_scene.json)
-references the existing OpenPBR glTF geometry and uses the existing LookDev
+references the existing OpenPBR glTF geometry and uses the atmosphere LookDev
 comparison graph, with actual PT and Deferred branches. The authored start is
 UTC JD `2460483.0`, latitude 35° north, longitude 0°, astronomical mode,
 240 simulated seconds per real second, both celestial sources enabled and
@@ -154,7 +154,7 @@ floats, avoiding an unbounded displacement coordinate during long playback.
 Cloud extinction is grey. The fixed approximation uses scattering albedo 0.98,
 Henyey–Greenstein anisotropy 0.75, a transmitted direct term and three broadened
 higher scattering orders. This finite-order closure is not a full volumetric
-path-traced multiple-scattering solution. Integration clips disjoint spherical
+path-traced multiple-scattering solution. The environment provider clips disjoint spherical
 layer intervals, supports below-cloud, inside-cloud and above-cloud rays, and
 adds cloud extinction/scattering to the existing atmosphere integrals. Each
 clipped cloud region uses 24 integration steps and each clear region uses 32
@@ -163,8 +163,7 @@ gas integration steps.
 The same prescribed field attenuates surface Sun/Moon lighting, visible disks
 and ground illumination. It contributes to sky view and aerial perspective,
 then to disk-free environment capture, diffuse SH, prefiltered specular and
-the environment PDF. Production Deferred and PT therefore consume the same
-published cloudy environment rather than independent authored sky colors.
+the environment PDF. Deferred and PT consume this shared lighting environment.
 Primary ray-origin handling and HDR/exposure contracts continue from B.
 
 Active physical clouds must lie inside the atmospheric shell. Cross-field
@@ -175,6 +174,53 @@ settings may remain authored while clouds or physical atmosphere are inactive.
 Physical sky view and lighting capture use RGBA32F to retain bright forward
 cloud scattering above 65504. Transmittance, multi-scattering and cloud shadow
 maps retain RGBA16F; aerial data remains FP32.
+
+### Deferred primary-view clouds
+
+The [physical LookDev graph](../Pipelines/Samples/lookdev_atmosphere.metallic_graph.json)
+enables `independentViewClouds` on Deferred. The
+[Sponza GI atmosphere graph](../Pipelines/Samples/sponza_gi_atmosphere.metallic_graph.json)
+composites the cloud over Lumen reflections before DLSS-SR. Both graphs use
+the scene's existing Weather and clouds controls.
+Deferred builds camera sky and aerial perspective with gas extinction and
+scattering. Clouds still shadow the illumination of that gas, the ground and
+opaque surfaces. The shared environment capture and PT keep the combined
+gas and cloud transport described above.
+
+`VolumetricCloudViewPass` reads scene-linear HDR, opaque reversed-Z depth,
+the matching raster camera and its jitter. The optional `cameraAerial` input
+reuses the Deferred camera's gas integration. A direct gas integration covers
+orthographic rays and distances outside the LUT. The optional
+`worldShadowFaces` input supplies directional VSM visibility. Place this pass
+before display mapping or temporal upscaling. It publishes the following
+full-resolution outputs.
+
+| Output | Meaning |
+| --- | --- |
+| `scattering` | Premultiplied, atmosphere-adjusted cloud radiance in scene-linear RGB. Alpha is one minus cloud transmittance. |
+| `transmittance` | Scalar view transmittance in [0, 1]. An empty ray returns 1. |
+| `cloudDepth` | Transmittance-weighted representative distance along the ray, in metres. An empty ray returns 0. |
+| `color` | Scattering RGB plus transmittance times the incoming scene RGB, preserving scene alpha. |
+
+The trace follows the first contiguous cloud-shell intersection, truncated
+by opaque depth and the planet. It uses the UE 5.7.4 NvRTX
+`VolumetricCloud.usf` default distance-from-layer-entry convention, ray-step
+integration, representative depth and aerial perspective at that depth.
+Entry is limited to 350 km and the trace to 50 km. The step count scales
+from 2 to 96, reaching 96 at a 15 km interval.
+
+The material and celestial lights use Metallic's existing weather field,
+grey extinction, spectral solar/lunar transport and eight-sample light
+transmittance. The adapters use Y-up world metres, kilometres for the
+spherical atmosphere, reversed Z and a zero empty-depth marker. The buffer
+formats are full precision. Blue-noise sampling uses a fixed phase because
+this path traces at full resolution without temporal reconstruction.
+
+The GPU regression `volumetric_cloud_view_depth_and_composite` checks the
+outputs against an opaque ceiling before and within the cloud layer, an open
+orthographic view, an in-cloud perspective view and disabled clouds.
+`cloud_transport_weather_shadow_domains` also checks the ray integrator
+against a homogeneous slab with an analytic Beer–Lambert solution.
 
 ## Celestial shadow scheduling
 

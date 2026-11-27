@@ -376,7 +376,8 @@ public float3 environmentRadiance<TShadow : Metallic.Atmosphere::IAtmosphereLigh
         // background queries the physical sky with disks, avoiding direct-light MIS duplication.
         let physicalResources = getSceneEnvironmentResources();
         if (physicalEnvironmentEnabled(physicalResources)) {
-            return physicalVisibleEnvironment(physicalResources, direction, primaryWorldOrigin, shadow) * max(push.environmentIntensity, 0.0);
+            return physicalVisibleEnvironment(physicalResources, direction, primaryWorldOrigin, shadow,
+                (push.deferredSettings & kSceneDeferredIndependentViewClouds) == 0u) * max(push.environmentIntensity, 0.0);
         }
     }
 

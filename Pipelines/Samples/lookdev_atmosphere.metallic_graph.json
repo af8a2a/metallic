@@ -1,0 +1,55 @@
+{
+    "version": 1,
+    "name": "LookDev Physical Atmosphere and View Clouds",
+    "nodes": [
+        {"id": 1, "name": "Reference", "type": "ScenePathTracePass", "position": {"x": 80, "y": 80},
+            "properties": {
+                "path": "Asset/LookDev/DynamicWorld/DynamicWorld.metallic_scene.json",
+                "camera": {
+                    "eye": [0.0, 1.0478609688580036, 3.6447348222404337],
+                    "center": [-0.05485051870346069, 1.0478609688580036, -0.06448951363563538],
+                    "up": [0, 1, 0], "fovDegrees": 60, "projection": "perspective", "znear": 0.05, "zfar": 100
+                },
+                "samples": 4, "bsdf": "openpbr", "cacheMode": "off", "maxDepth": 12,
+                "accumulate": true, "outputLinear": true, "cameraSyncGroup": "LookDevComparison"
+            }},
+        {"id": 2, "name": "VBuffer", "type": "VisibilityBufferPass", "position": {"x": 80, "y": 440},
+            "properties": {
+                "path": "Asset/LookDev/DynamicWorld/DynamicWorld.metallic_scene.json",
+                "camera": {
+                    "eye": [0.0, 1.0478609688580036, 3.6447348222404337],
+                    "center": [-0.05485051870346069, 1.0478609688580036, -0.06448951363563538],
+                    "up": [0, 1, 0], "fovDegrees": 60, "projection": "perspective", "znear": 0.05, "zfar": 100
+                },
+                "cameraSyncGroup": "LookDevComparison", "visualization": "none", "autoLod": false, "lodLevel": 0
+            }},
+        {"id": 3, "name": "Deferred", "type": "VisibilityBufferDeferredPass", "position": {"x": 440, "y": 440},
+            "properties": {
+                "path": "Asset/LookDev/DynamicWorld/DynamicWorld.metallic_scene.json",
+                "bsdf": "openpbr", "outputLinear": true, "independentViewClouds": true
+            }},
+        {"id": 4, "name": "CloudView", "type": "VolumetricCloudViewPass", "position": {"x": 800, "y": 440}},
+        {"id": 5, "name": "Slider", "type": "SliderDebugPass", "position": {"x": 1160, "y": 220},
+            "properties": {"splitPosition": 0.5}},
+        {"id": 6, "name": "AutoExposure", "type": "AutoExposurePass", "position": {"x": 1520, "y": 220}},
+        {"id": 7, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 1880, "y": 220}},
+        {"id": 8, "name": "ColorGrading", "type": "ColorGradingLUTPass", "position": {"x": 1520, "y": 600},
+            "properties": {"toneCurve": "aces2"}}
+    ],
+    "edges": [
+        {"id": 1, "src": "VBuffer.visibility", "dst": "Deferred.visibility"},
+        {"id": 2, "src": "VBuffer.depth", "dst": "Deferred.depth"},
+        {"id": 3, "src": "VBuffer.rasterInfo", "dst": "Deferred.rasterInfo"},
+        {"id": 4, "src": "VBuffer.domain", "dst": "Deferred.domain"},
+        {"id": 5, "src": "VBuffer.depth", "dst": "CloudView.depth"},
+        {"id": 6, "src": "VBuffer.rasterInfo", "dst": "CloudView.rasterInfo"},
+        {"id": 7, "src": "Deferred.color", "dst": "CloudView.sceneColor"},
+        {"id": 8, "src": "Deferred.cameraAerial", "dst": "CloudView.cameraAerial"},
+        {"id": 9, "src": "Reference.color", "dst": "Slider.sourceA"},
+        {"id": 10, "src": "CloudView.color", "dst": "Slider.sourceB"},
+        {"id": 11, "src": "Slider.color", "dst": "AutoExposure.source"},
+        {"id": 12, "src": "AutoExposure.color", "dst": "FinalBlit.source"},
+        {"id": 13, "src": "ColorGrading.lut", "dst": "FinalBlit.lut"}
+    ],
+    "outputs": []
+}

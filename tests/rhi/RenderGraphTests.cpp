@@ -3117,10 +3117,16 @@ public:
             !detail::sceneRealtimeGIAllowsPhysicalAtmosphere(startup.graph) ||
             !hasEdge(startup.graph, "Shadows.shadows", "Deferred.virtualShadows") ||
             !hasEdge(startup.graph, "Temporal.color", "Reflections.sceneColor") ||
-            !hasEdge(startup.graph, "Reflections.color", "DLSSSR.inputColor") ||
+            !hasEdge(startup.graph, "Reflections.color", "CloudView.sceneColor") ||
+            !hasEdge(startup.graph, "CloudView.color", "DLSSSR.inputColor") ||
+            !hasEdge(startup.graph, "Deferred.cameraAerial", "CloudView.cameraAerial") ||
+            !hasEdge(startup.graph, "VBuffer.depth", "CloudView.depth") ||
+            !hasEdge(startup.graph, "VBuffer.rasterInfo", "CloudView.rasterInfo") ||
+            !hasEdge(startup.graph, "Shadows.worldShadowFaces", "CloudView.worldShadowFaces") ||
+            !startup.graph.findNode("Deferred")->properties.value("independentViewClouds", false) ||
             !hasEdge(startup.graph, "Deferred.motionVectors", "DLSSSR.motionVectors") ||
             !hasEdge(startup.graph, "Deferred.deviceDepth", "DLSSSR.depth")) {
-            return RHITestResult::fail("Editor startup must connect VSM and scene realtime GI to DLSS-SR: " + startupLog);
+            return RHITestResult::fail("Editor startup must connect VSM, scene realtime GI and view clouds to DLSS-SR: " + startupLog);
         }
         scene::SceneDocument startupScene;
         if (!startupScene.loadDeferredMeshlets(root / startup.desc.scenePath, {}) || !startupScene.realtimeGI() ||

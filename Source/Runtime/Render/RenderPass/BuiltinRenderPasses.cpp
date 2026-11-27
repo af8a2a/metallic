@@ -44,6 +44,8 @@ void registerBuiltInRenderGraphPasses()
         []() { return builtin_pass::createColorGradingLUTPass(); });
     registerRenderGraphPassType("LumenTranslucencyVolumePass", "Trace Surface Cache and sky radiance into view-aligned GI probes",
         []() { return builtin_pass::createLumenTranslucencyVolumePass(); });
+    registerRenderGraphPassType("VolumetricCloudViewPass", "Trace full-resolution clouds against the raster depth and composite scene-linear light",
+        []() { return builtin_pass::createVolumetricCloudViewPass(); });
     registerRenderGraphPassType("VolumetricFogPass", "Scatter and integrate directional lighting in a camera froxel volume",
         []() { return builtin_pass::createVolumetricFogPass(); });
     registerRenderGraphPassType("VolumetricFogCompositePass", "Apply integrated fog at the opaque surface or sky depth",

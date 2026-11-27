@@ -169,14 +169,17 @@ bool physicalEnvironmentExecutionMatches(const render::RenderGraphExecutionStats
     bool sawPT = false;
     bool sawDeferred = false;
     bool sawVBuffer = false;
+    bool sawCloudView = false;
     bool sawSlider = false;
     for (const auto& node : stats.nodes) {
         sawPT |= node.name == "Reference";
         sawDeferred |= node.name == "Deferred";
         sawVBuffer |= node.name == "VBuffer";
+        sawCloudView |= node.name == "CloudView";
         sawSlider |= node.name == "Slider";
     }
-    return sawPT == pathTraced && sawDeferred == !pathTraced && sawVBuffer == !pathTraced && !sawSlider;
+    return sawPT == pathTraced && sawDeferred == !pathTraced && sawVBuffer == !pathTraced &&
+        sawCloudView == !pathTraced && !sawSlider;
 }
 
 class PhysicalEnvironmentRenderingTest final : public RHITest {
@@ -230,7 +233,7 @@ public:
                 for (uint32_t frame = 0; frame < kPhysicalEnvironmentFrames; ++frame) {
                     preview.setRawReadbackEnabled(frame + 1 == kPhysicalEnvironmentFrames);
                     if (!preview.render(graph, kPhysicalEnvironmentSize, kPhysicalEnvironmentSize,
-                            pt ? "Reference.color" : "Deferred.color", frame + 1 == kPhysicalEnvironmentFrames)) {
+                            pt ? "Reference.color" : "CloudView.color", frame + 1 == kPhysicalEnvironmentFrames)) {
                         return RHITestResult::fail(label + "/" + testCase.name + ": " + preview.lastLog());
                     }
                     if (!physicalEnvironmentExecutionMatches(preview.executionStats(), pt)) {
@@ -382,7 +385,7 @@ public:
                 for (uint32_t frame = 0; frame < frames; ++frame) {
                     preview.setRawReadbackEnabled(frame + 1 == frames);
                     if (!preview.render(graph, kPhysicalEnvironmentSize, kPhysicalEnvironmentSize,
-                            pt ? "Reference.color" : "Deferred.color", frame + 1 == frames)) { return false; }
+                            pt ? "Reference.color" : "CloudView.color", frame + 1 == frames)) { return false; }
                     if (sharc_) {
                         const auto snapshot = preview.executionSnapshot();
                         if (!snapshot || !std::any_of(snapshot->passes.begin(), snapshot->passes.end(), [](const auto& pass) {

@@ -15,7 +15,7 @@
 namespace metallic::tests {
 namespace {
 
-using CloudReadback = std::array<std::array<float, 4>, 47>;
+using CloudReadback = std::array<std::array<float, 4>, 49>;
 struct alignas(16) CloudsProbeParams {
     render::AtmospherePrecomputeParams resources;
     render::GPUBufferSpan inputAerial;
@@ -149,6 +149,18 @@ public:
             return probeResult && saveCloudProbe(context, label, values);
         };
         if (!probe("cloud-clear", 120.0, clearValues, clear, nullptr)) { return RHITestResult::fail(log); }
+        const float expectedT = std::exp(-1.0f);
+        const float opacity = 1.0f - expectedT;
+        double depthNumerator = 0.0, depthDenominator = 0.0;
+        for (int step = 0; step < 5; ++step) {
+            const double weight = std::exp(-0.2 * step);
+            depthNumerator += (150.0 + 100.0 * step) * weight;
+            depthDenominator += weight;
+        }
+        if (!cloudClose(clearValues[47], {opacity, 2 * opacity, 4 * opacity, 1}) ||
+            !cloudClose(clearValues[48], {expectedT, float(depthNumerator / depthDenominator), float(depthDenominator), 1})) {
+            return RHITestResult::fail("Cloud view integral disagrees with homogeneous Beer transport or depth weighting");
+        }
         const auto disabledLater = buildGPUAtmosphereParameters(world.snapshot(1, 1, 1, 1, 1, 10000.0), {0.0, 2.0, 0.0});
         if (clear->parameters().cloudAdvection != disabledLater.cloudAdvection ||
             clear->parameters().weatherComposition != disabledLater.weatherComposition) {

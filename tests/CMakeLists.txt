@@ -536,6 +536,7 @@ add_executable(MetallicRHITests
     rhi/DynamicWorldRenderingTests.cpp
     rhi/DynamicWorldStateTests.cpp
     rhi/CloudsTests.cpp
+    rhi/VolumetricCloudViewTests.cpp
     rhi/FiniteCelestialTests.cpp
     rhi/RealtimePipelineTests.cpp
     rhi/EnvironmentPrefilterTests.cpp
