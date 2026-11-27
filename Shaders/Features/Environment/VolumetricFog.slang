@@ -7,6 +7,7 @@ import ScenePathMath;
 import Lighting;
 import LumenScreenTrace;
 import VolumetricFogPunctual;
+import FogSkyOcclusion;
 using Metallic;
 using Metallic.ScenePath;
 using Metallic.Lighting;
@@ -201,6 +202,22 @@ void conservativeDepth(uint3 id : SV_DispatchThreadID)
     if (p.historyDepthOut.index != 0xffffffffu) { resolveUniform(p.historyDepthOut)[id.xy] = minDepth; }
 }
 
+// UE GetSkySHDiffuseSimple uses the linear terms plus the packed constant,
+// which includes the constant part of UE Y20. Metallic's convolved SH stores
+// irradiance (pi times diffuse radiance) and uses Z-polar SH in a Y-up world.
+float3 getSkySHDiffuseSimple(float3 direction, FogSkyLightParameters sky)
+{
+    float3 local = float3(sky.rotationCos * direction.x - sky.rotationSin * direction.z, direction.y,
+        sky.rotationSin * direction.x + sky.rotationCos * direction.z);
+    let sh = resolveUniform(sky.irradianceSH);
+    // Y20 about world up equals -1/2 Y20 - sqrt(3)/2 Y22 in the stored basis.
+    float3 upZonal = -0.5f * sh[6].rgb - 0.8660254038f * sh[8].rgb;
+    float3 constant = SH::basis(0u, local) * sh[0].rgb - 0.3153915653f * upZonal;
+    float3 diffuse = SH::basis(3u, local) * sh[3].rgb + SH::basis(1u, local) * sh[1].rgb +
+        SH::basis(2u, local) * sh[2].rgb + constant;
+    return max(0.0f, diffuse / SH::kPi);
+}
+
 void writeScattering(uint3 id, float4 value, VolumetricFogParams p)
 {
     resolveUniform(p.scatteringOut)[id] = value;
@@ -282,6 +299,13 @@ void lightScattering(uint3 id : SV_DispatchThreadID)
         light += (irradiance * p.lightColorIntensity.w) * shadowFactor * phase;
         if (p.indirectLight.ambient.index != 0xffffffffu) {
             light += fogIndirectScattering(cell, cameraVector, p);
+        } else if (p.skyLight.irradianceSH.index != 0xffffffffu) {
+            float3 skyLighting = p.skyLight.environmentIntensity *
+                getSkySHDiffuseSimple(cameraVector * -p.lightDirectionPhase.w, p.skyLight);
+            float visibility = Metallic.Fog::computeSkyVisibility(p.current.eye.xyz + cell * 0.01f,
+                p.skyLight.pageTable, p.skyLight.pageAtlas, p.skyLight.domains, p.sampler,
+                p.skyLight.maxOcclusionDistanceMeters, p.skyLight.clipmapCount);
+            light += (visibility * p.skyLight.volumetricScatteringIntensity) * skyLighting;
         }
         if (p.lightGrid.index != 0xffffffffu) {
             float sceneDepthCm = computeDepthFromZSlice(max(float(id.z) + offset.z, 0.0f), p.gridZ.xyz);

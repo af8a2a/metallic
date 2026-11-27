@@ -6310,6 +6310,10 @@ TEST(WorldEnvironment, PhysicalAtmosphereDocumentRoundTripAndTransactionalReject
     fog.extinctionScale = 1.4f;
     fog.scatteringDistribution = -0.28f;
     fog.directionalScatteringIntensity = 1.6f;
+    EXPECT_FLOAT_EQ(fog.skyLightVolumetricScatteringIntensity, 1.0f);
+    EXPECT_FLOAT_EQ(fog.skyOcclusionMaxDistanceMeters, 10.0f);
+    fog.skyLightVolumetricScatteringIntensity = 0.35f;
+    fog.skyOcclusionMaxDistanceMeters = 5.0f;
     fog.localVolumes.push_back({.enabled = false, .centerMeters = {-10.0f, 5.0f, 1.0f},
         .rotationDegrees = {2.0f, 30.0f, 15.0f}, .radiusMeters = 3.0f, .radialExtinction = 0.3f,
         .heightExtinction = 1.5f, .heightFalloff = 58.0f, .heightOffset = -0.25f,
@@ -6333,7 +6337,9 @@ TEST(WorldEnvironment, PhysicalAtmosphereDocumentRoundTripAndTransactionalReject
     EXPECT_EQ(restored.worldEnvironment(), world);
     const auto identity = restored.resourceIdentity();
     EXPECT_EQ(restored.environmentSnapshot().volumetricFog, fog);
-    const std::array<nlohmann::json, 17> invalidSettings{
+    const std::array<nlohmann::json, 19> invalidSettings{
+        nlohmann::json{{"volumetricFog", {{"skyLightVolumetricScatteringIntensity", -1.0}}}},
+        nlohmann::json{{"volumetricFog", {{"skyOcclusionMaxDistanceMeters", -1.0}}}},
         nlohmann::json{{"moon", {{"castShadowsOnAtmosphere", "false"}}}},
         nlohmann::json{{"volumetricFog", {{"localVolumes", "sphere"}}}},
         nlohmann::json{{"volumetricFog", {{"localVolumes", {{{"sortPriority", 1.5}}}}}}},

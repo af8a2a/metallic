@@ -544,7 +544,10 @@ constexpr std::pair<const char*, float FogState::*> kFogScalars[] = {
     {"secondDensity", &FogState::secondDensity}, {"secondHeightFalloff", &FogState::secondHeightFalloff},
     {"secondHeightOffsetMeters", &FogState::secondHeightOffsetMeters}, {"extinctionScale", &FogState::extinctionScale},
     {"scatteringDistribution", &FogState::scatteringDistribution},
-    {"directionalScatteringIntensity", &FogState::directionalScatteringIntensity}, {"distanceMeters", &FogState::distanceMeters},
+    {"directionalScatteringIntensity", &FogState::directionalScatteringIntensity},
+    {"skyLightVolumetricScatteringIntensity", &FogState::skyLightVolumetricScatteringIntensity},
+    {"skyOcclusionMaxDistanceMeters", &FogState::skyOcclusionMaxDistanceMeters},
+    {"distanceMeters", &FogState::distanceMeters},
     {"startDistanceMeters", &FogState::startDistanceMeters}, {"nearFadeInDistanceMeters", &FogState::nearFadeInDistanceMeters},
 };
 

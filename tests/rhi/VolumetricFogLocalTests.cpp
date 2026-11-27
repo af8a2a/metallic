@@ -138,6 +138,8 @@ void configureProbe(RenderWorld& world, std::string_view name)
     fog.density = 0.45f;
     fog.heightFalloff = 0;
     fog.scatteringDistribution = 0;
+    // The UE local-light and VSM reference captures have no Sky Light.
+    fog.skyLightVolumetricScatteringIntensity = 0.0f;
     fog.distanceMeters = 60;
     fog.localVolumes.clear();
     if (name == "local" || name == "emissive") {
@@ -587,6 +589,27 @@ FogGIMeasurement readFogGI(RHITestContext& context, RenderGraphExecutor& executo
     return result;
 }
 
+void writeDirectionalSky(const std::filesystem::path& path)
+{
+    constexpr int width = 64, height = 32;
+    std::vector<float> radiance(width * height * 3);
+    for (int row = 0; row < height; ++row) {
+        const float theta = std::numbers::pi_v<float> * (row + 0.5f) / height;
+        for (int column = 0; column < width; ++column) {
+            const float phi = 2.0f * std::numbers::pi_v<float> * ((column + 0.5f) / width - 0.5f);
+            const float z = std::sin(theta) * std::sin(phi);
+            const float y = std::cos(theta);
+            const int offset = (row * width + column) * 3;
+            radiance[offset] = 1.0f + z;
+            radiance[offset + 1] = 1.0f - z;
+            radiance[offset + 2] = 3.0f * y * y;
+        }
+    }
+    if (!stbi_write_hdr(path.string().c_str(), width, height, 3, radiance.data())) {
+        throw std::runtime_error("Could not write directional test sky");
+    }
+}
+
 class VolumetricFogLumenTest final : public RHITest
 {
 public:
@@ -683,8 +706,9 @@ public:
             graph.addEdge("SurfaceCache.scene", "Volume.cardScene");
             graph.addEdge("SurfaceCache.depth", "Volume.cardDepth");
             const uint32_t directLightingEdge = graph.addEdge("SurfaceCache.lighting", "Volume.cardLighting")->id;
+            std::vector<uint32_t> volumeLightingEdges;
             for (const std::string field : {"giAmbient", "giDirectional", "giGrid"}) {
-                graph.addEdge("Volume." + field, "Fog." + field);
+                volumeLightingEdges.push_back(graph.addEdge("Volume." + field, "Fog." + field)->id);
             }
             compile();
             const auto red = capture("red-wall");
@@ -709,13 +733,23 @@ public:
             const std::vector<float> white(16 * 8 * 3, 1.0f);
             if (!stbi_write_hdr(sky.path.string().c_str(), 16, 8, 3, white.data())) { return RHITestResult::fail("Write white sky"); }
             world.setEnvironment(sky);
-            const auto* skyProvider = executor.subsystemHost()->get<EnvironmentLightingSubsystem>();
-            for (int frame = 0; frame < 32 && !skyProvider->snapshot().mapAvailable; ++frame) {
-                checked(executor.execute({.graphicsQueue = &context.graphicsQueue}), "publish Cornell sky");
-                checked(executor.waitForSubmittedWork(), "wait for Cornell sky");
-            }
-            if (!skyProvider->snapshot().mapAvailable) { return RHITestResult::fail("Cornell HDRI did not become resident"); }
+            const auto waitForSky = [&](uint32_t width) {
+                const auto* skyProvider = executor.subsystemHost()->get<EnvironmentLightingSubsystem>();
+                for (int frame = 0; frame < 32; ++frame) {
+                    checked(executor.execute({.graphicsQueue = &context.graphicsQueue}), "publish Cornell sky");
+                    checked(executor.waitForSubmittedWork(), "wait for Cornell sky");
+                    const auto& snapshot = skyProvider->snapshot();
+                    if (snapshot.mapAvailable && snapshot.width == width) { return; }
+                }
+                throw std::runtime_error("Cornell HDRI did not become resident");
+            };
+            waitForSky(16);
             const auto closed = capture("roof-closed");
+            env.volumetricFog.skyLightVolumetricScatteringIntensity = 0.0f;
+            world.setWorldEnvironment(env);
+            const auto lumenWithoutSkySH = capture("lumen-skylight-scale-zero");
+            env.volumetricFog.skyLightVolumetricScatteringIntensity = 1.0f;
+            world.setWorldEnvironment(env);
             if (!document.setObjectVisible(document.objectForNode(1).entity(), false)) {
                 return RHITestResult::fail("Could not remove Cornell roof");
             }
@@ -753,7 +787,90 @@ public:
             };
             const auto bouncedOpen = measureRadiosity(false, "diffuse-roof-open");
             const auto bouncedClosed = measureRadiosity(true, "diffuse-roof-closed");
+            for (const auto edge : volumeLightingEdges) { graph.removeEdge(edge); }
+            compile();
+            const auto skySH = capture("sky-sh-no-gdf");
+            env.volumetricFog.skyLightVolumetricScatteringIntensity = 2.0f;
+            world.setWorldEnvironment(env);
+            const auto skySHDouble = capture("sky-sh-scale-two");
+            env.volumetricFog.skyLightVolumetricScatteringIntensity = 0.0f;
+            world.setWorldEnvironment(env);
+            const auto skySHOff = capture("sky-sh-scale-zero");
+            env.volumetricFog.skyLightVolumetricScatteringIntensity = 1.0f;
+            env.volumetricFog.skyOcclusionMaxDistanceMeters = 2.0f;
+            world.setWorldEnvironment(env);
+            // The inner clipmap covers the cone, the outer distance bands reach the roof from mid-air.
+            const auto* pages = graph.findNode("GlobalDistanceFieldPages");
+            auto pageProperties = pages->properties;
+            pageProperties["extent"] = 4.0f;
+            pageProperties["clipmapCount"] = 3;
+            pageProperties["resolution"] = 56;
+            graph.setNodeProperties(pages->id, std::move(pageProperties));
+            for (const std::string field : {"pageTable", "pageAtlas", "domain"}) {
+                graph.addEdge("GlobalDistanceFieldPages." + field, "Fog." + field);
+            }
+            compile();
+            const auto skySHClosed = capture("sky-sh-roof-closed");
+            if (!document.setObjectVisible(document.objectForNode(1).entity(), false)) {
+                return RHITestResult::fail("Could not remove Cornell roof for skylight occlusion");
+            }
+            world.notifySceneChanged(RenderChangeBits::Geometry);
+            const auto skySHOpen = capture("sky-sh-roof-open");
+            sky.path = directory / "directional-sky.hdr";
+            writeDirectionalSky(sky.path);
+            sky.sourceColorSpace = sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg ? kACEScg : kLinearRec709;
+            world.setEnvironment(sky);
+            env.volumetricFog.scatteringDistribution = 0.75f;
+            env.volumetricFog.skyOcclusionMaxDistanceMeters = 0.0f;
+            world.setWorldEnvironment(env);
+            waitForSky(64);
+            const auto directional = capture("sky-sh-directional");
+            sky.enabled = false;
+            world.setEnvironment(sky);
+            env.source = environment::EnvironmentSource::PhysicalAtmosphere;
+            env.sun.enabled = true;
+            env.sun.direction = float3(0, -1, 0);
+            env.volumetricFog.directionalScatteringIntensity = 0.0f;
+            env.volumetricFog.scatteringDistribution = 0.0f;
+            world.setWorldEnvironment(env);
+            const auto atmosphereSky = capture("sky-sh-physical-atmosphere");
+            env.volumetricFog.skyLightVolumetricScatteringIntensity = 0.0f;
+            world.setWorldEnvironment(env);
+            const auto atmosphereOff = capture("sky-sh-physical-scale-zero");
             std::ofstream(directory / "linear-measurements.json") << measurements.dump(2);
+            if (atmosphereSky.scatter[1] <= 0 || atmosphereSky.hdr[1] <= 0 ||
+                atmosphereOff.scatter != baseline.scatter || atmosphereOff.hdr != baseline.hdr ||
+                atmosphereSky.extinction != baseline.extinction || atmosphereOff.extinction != baseline.extinction) {
+                return RHITestResult::fail("Physical sky publication failed to light fog independently of the sun beam: " + measurements.dump());
+            }
+            // The camera faces -Z. UE evaluates at -g * viewRay, so convolution of 1 +/- z
+            // gives 1 +/- (2/3) * 0.75 on axis. The off-axis ROI varies by less than 0.06.
+            // For 3*y*y = 1 + 2*P2(y), the constant term left by simple SH is 1 - 1/4.
+            constexpr std::array<double, 3> directionalReference{1.5, 0.5, 0.75};
+            for (size_t channel = 0; channel < directionalReference.size(); ++channel) {
+                if (std::abs(directional.scatter[channel] / directional.extinction - directionalReference[channel]) > 0.07) {
+                    return RHITestResult::fail("Directional sky disagrees with the simple SH projection: " + measurements.dump());
+                }
+            }
+            if (skySHOpen.scatter[1] <= skySHClosed.scatter[1] * 1.05 || skySHOpen.hdr[1] <= skySHClosed.hdr[1] ||
+                skySHOpen.extinction != skySHClosed.extinction || skySHClosed.extinction != skySH.extinction) {
+                return RHITestResult::fail("The GDF roof failed to occlude the non-Lumen skylight: " + measurements.dump());
+            }
+            if (lumenWithoutSkySH.scatter != closed.scatter || lumenWithoutSkySH.hdr != closed.hdr) {
+                return RHITestResult::fail("Skylight scale changed Lumen-lit fog: " + measurements.dump());
+            }
+            if (skySHOff.scatter != baseline.scatter || skySHOff.hdr != baseline.hdr ||
+                skySHOff.extinction != skySH.extinction || skySHDouble.extinction != skySH.extinction) {
+                return RHITestResult::fail("Disabling the fallback skylight changed fog extinction or left residual light: " + measurements.dump());
+            }
+            for (size_t channel = 0; channel < skySH.scatter.size(); ++channel) {
+                // In a uniform unit-radiance sky, isotropic white fog scatters its extinction coefficient.
+                if (std::abs(skySH.scatter[channel] / skySH.extinction - 1.0) > 0.03 ||
+                    std::abs(skySHDouble.scatter[channel] / skySH.scatter[channel] - 2.0) > 0.01 ||
+                    !(skySH.hdr[channel] > 0) || std::abs(skySHDouble.hdr[channel] / skySH.hdr[channel] - 2.0) > 0.01) {
+                    return RHITestResult::fail("Uniform skylight failed to illuminate non-Lumen fog at its authored intensity: " + measurements.dump());
+                }
+            }
             const auto redder = [](const auto& a, const auto& b) { return a[0] * b[1] > a[1] * b[0]; };
             if (baseline.scatter != std::array<double, 3>{} || dark.scatter != baseline.scatter ||
                 baseline.extinction <= 0 || red.extinction != baseline.extinction || open.extinction != baseline.extinction) {

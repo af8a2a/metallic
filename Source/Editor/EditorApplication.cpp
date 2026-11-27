@@ -5189,6 +5189,9 @@ void EditorApplication::drawEnvironmentControls()
         celestialChanged |= ImGui::InputFloat("Extinction scale", &fog.extinctionScale);
         celestialChanged |= ImGui::SliderFloat("Scattering distribution", &fog.scatteringDistribution, -0.99f, 0.99f);
         celestialChanged |= ImGui::InputFloat("Sun scattering intensity", &fog.directionalScatteringIntensity);
+        celestialChanged |= ImGui::InputFloat("Sky scattering intensity (without Lumen)", &fog.skyLightVolumetricScatteringIntensity);
+        celestialChanged |= ImGui::DragFloat("Sky occlusion distance (m)", &fog.skyOcclusionMaxDistanceMeters,
+            0.1f, 0.02f, 30.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
         celestialChanged |= ImGui::InputFloat("View distance (m)", &fog.distanceMeters);
         celestialChanged |= ImGui::InputFloat("Start distance (m)", &fog.startDistanceMeters);
         celestialChanged |= ImGui::InputFloat("Near fade distance (m)", &fog.nearFadeInDistanceMeters);

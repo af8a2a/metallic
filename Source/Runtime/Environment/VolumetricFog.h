@@ -60,6 +60,9 @@ struct VolumetricFogState {
     float extinctionScale = 1.0f;
     float scatteringDistribution = 0.2f;
     float directionalScatteringIntensity = 1.0f;
+    // Dynamic Sky Light parameters used when no Lumen translucency volume is connected.
+    float skyLightVolumetricScatteringIntensity = 1.0f;
+    float skyOcclusionMaxDistanceMeters = 10.0f;
     float distanceMeters = 60.0f;
     float startDistanceMeters = 0.0f;
     float nearFadeInDistanceMeters = 0.0f;
@@ -73,7 +76,9 @@ struct VolumetricFogState {
             albedo.x == other.albedo.x && albedo.y == other.albedo.y && albedo.z == other.albedo.z &&
             emissive.x == other.emissive.x && emissive.y == other.emissive.y && emissive.z == other.emissive.z &&
             extinctionScale == other.extinctionScale && scatteringDistribution == other.scatteringDistribution &&
-            directionalScatteringIntensity == other.directionalScatteringIntensity && distanceMeters == other.distanceMeters &&
+            directionalScatteringIntensity == other.directionalScatteringIntensity &&
+            skyLightVolumetricScatteringIntensity == other.skyLightVolumetricScatteringIntensity &&
+            skyOcclusionMaxDistanceMeters == other.skyOcclusionMaxDistanceMeters && distanceMeters == other.distanceMeters &&
             startDistanceMeters == other.startDistanceMeters && nearFadeInDistanceMeters == other.nearFadeInDistanceMeters &&
             localVolumes == other.localVolumes;
     }
@@ -88,6 +93,7 @@ inline bool validVolumetricFog(const VolumetricFogState& fog)
         unit(fog.albedo.x) && unit(fog.albedo.y) && unit(fog.albedo.z) &&
         nonnegative(fog.emissive.x) && nonnegative(fog.emissive.y) && nonnegative(fog.emissive.z) &&
         nonnegative(fog.extinctionScale) && nonnegative(fog.directionalScatteringIntensity) &&
+        nonnegative(fog.skyLightVolumetricScatteringIntensity) && nonnegative(fog.skyOcclusionMaxDistanceMeters) &&
         fog.scatteringDistribution >= -0.99f && fog.scatteringDistribution <= 0.99f &&
         nonnegative(fog.startDistanceMeters) && nonnegative(fog.nearFadeInDistanceMeters) &&
         // CalculateGridZParams places the first slice 9.5 cm beyond the start plane.

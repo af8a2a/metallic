@@ -19,10 +19,12 @@
             "properties": {"toneCurve": "aces2"}},
         {"id": 8, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 1620, "y": 220}, "properties": {}},
         {"id": 9, "name": "GlobalDistanceFieldPages", "type": "GlobalDistanceFieldPagesPass", "position": {"x": -620, "y": 860},
-            "properties": {"resolution": 252, "maxPhysicalPages": 12288, "quantized": true, "clipmapCount": 1,
+            "properties": {"distanceFieldPaths": ["Asset/Sponza/SponzaGIBakes/SponzaOpaque.meshdf"],
+                "center": [0, 5, 0], "extent": 16, "resolution": 252, "maxPhysicalPages": 12288, "quantized": true, "clipmapCount": 1,
                 "buildObjectGrid": true, "persistentPages": true}},
         {"id": 10, "name": "SurfaceCache", "type": "LumenSurfaceCachePass", "position": {"x": -300, "y": 860},
-            "properties": {"atlasSize": 512, "tileResolution": 64, "shadowedLighting": true,
+            "properties": {"meshCardPaths": ["Asset/Sponza/SponzaGIBakes/SponzaOpaque.meshcards"],
+                "atlasSize": 512, "tileResolution": 64, "shadowedLighting": true,
                 "exportDirectIrradiance": true, "persistentCards": true}},
         {"id": 11, "name": "Radiosity", "type": "LumenRadiosityPass", "position": {"x": 20, "y": 860},
             "properties": {"atlasSize": 512, "tileResolution": 64, "maxTraceDistance": 40,
@@ -84,7 +86,10 @@
         {"id": 51, "src": "VBuffer.rasterInfo", "dst": "TranslucencyVolume.rasterInfo"},
         {"id": 52, "src": "TranslucencyVolume.giAmbient", "dst": "Fog.giAmbient"},
         {"id": 53, "src": "TranslucencyVolume.giDirectional", "dst": "Fog.giDirectional"},
-        {"id": 54, "src": "TranslucencyVolume.giGrid", "dst": "Fog.giGrid"}
+        {"id": 54, "src": "TranslucencyVolume.giGrid", "dst": "Fog.giGrid"},
+        {"id": 55, "src": "GlobalDistanceFieldPages.pageTable", "dst": "Fog.pageTable"},
+        {"id": 56, "src": "GlobalDistanceFieldPages.pageAtlas", "dst": "Fog.pageAtlas"},
+        {"id": 57, "src": "GlobalDistanceFieldPages.domain", "dst": "Fog.domain"}
     ],
     "outputs": [],
     "view": {

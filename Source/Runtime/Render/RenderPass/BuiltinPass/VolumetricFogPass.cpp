@@ -8,12 +8,15 @@
 #include "Runtime/Render/Shadow/VirtualShadowMapWorld.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
+#include <numbers>
 
 namespace metallic::render::builtin_pass {
 namespace {
 
 using Access = RenderGraphResourceAccess;
 using StageUse = RenderGraphStageUse;
+
+constexpr uint32_t kFogGDFDomainStride = sizeof(FogFloat4) * 2;
 
 struct FogView {
     ViewCameraConstants camera;
@@ -39,6 +42,39 @@ FogFloat4 gridZParams(float nearPlane, float farPlane, uint32_t sizeZ)
     const double O = (F - N * std::exp2(sizeZ / S)) / (F - N);
     const double B = (1 - O) / N;
     return {float(B), float(O), float(S), 0};
+}
+
+Result<> bindFogSkyOcclusion(const RenderGraphExecutionContext& context, ParameterWriter& writer,
+    FogSkyLightParameters& skyLight, std::vector<StageUse>& lightUses,
+    bool enabled, float occlusionMaxDistanceMeters)
+{
+    const auto pageTable = context.inputTexture("pageTable");
+    const auto pageAtlas = context.inputTexture("pageAtlas");
+    const auto domains = context.inputBuffer("domain");
+    if (pageTable.valid() != pageAtlas.valid() || pageTable.valid() != domains.valid()) {
+        spdlog::error("VolumetricFogPass requires pageTable, pageAtlas and domain together for sky occlusion");
+        return makeError(Error::InvalidArgument);
+    }
+    // UE FDistanceFieldAOParameters clamps the Sky Light range before applying r.AOGlobalDFStartDistance.
+    const float distance = std::clamp(occlusionMaxDistanceMeters, 0.02f, 30.0f);
+    if (!enabled || !pageTable.valid() || distance < 1.0f) { return {}; }
+
+    const auto& table = pageTable.desc();
+    const uint32_t clipmapCount = table.depth / table.width;
+    if (clipmapCount < 1 || clipmapCount > 6 || table.width != table.height ||
+        table.depth != table.width * clipmapCount || domains.desc().size != clipmapCount * kFogGDFDomainStride) {
+        spdlog::error("VolumetricFogPass requires matching quantized GDF clipmaps for sky occlusion");
+        return makeError(Error::InvalidArgument);
+    }
+    skyLight.pageTable = writer.sampledImageHandle(pageTable.view());
+    skyLight.pageAtlas = writer.sampledImageHandle(pageAtlas.view());
+    skyLight.domains = writer.buffer(domains.buffer());
+    skyLight.maxOcclusionDistanceMeters = distance;
+    skyLight.clipmapCount = clipmapCount;
+    lightUses.push_back({"pageTable", Access::TextureSampleRead});
+    lightUses.push_back({"pageAtlas", Access::TextureSampleRead});
+    lightUses.push_back({"domain", Access::BufferStorageRead});
+    return {};
 }
 
 void reflectMetadata(RenderGraphField& field, uint32_t size)
@@ -101,6 +137,16 @@ RenderPassReflection VolumetricFogPass::reflect(const RenderGraphCompileContext&
     depth.format = Format::D32Sfloat;
     depth.matchOutputExtent = false;
     reflectMetadata(reflection.addBufferInput("rasterInfo", "Camera that produced the depth"), sizeof(VisibilityBufferFrameInfo));
+    auto& pageTable = reflection.addTextureInput("pageTable", "GDF page table for sky occlusion")
+        .texture3D(0, 0, 0).sampledRead().setOptional();
+    pageTable.format = Format::R32Uint;
+    pageTable.matchOutputExtent = false;
+    auto& pageAtlas = reflection.addTextureInput("pageAtlas", "Quantized GDF fine distances for sky occlusion")
+        .texture3D(0, 0, 0).sampledRead().setOptional();
+    pageAtlas.format = Format::R8Unorm;
+    pageAtlas.matchOutputExtent = false;
+    reflection.addBufferInput("domain", "GDF clipmap domains for sky occlusion")
+        .buffer(0, kFogGDFDomainStride).storageRead().setOptional();
     reflection.addBufferInput("worldShadowFaces", "Optional world-space VSM faces for punctual fog lights")
         .buffer(0, sizeof(VirtualShadowMapWorldFace)).bufferLayout("VirtualShadowMapWorldFace")
         .storageRead().setOptional().sharedProducerInput = "rasterInfo";
@@ -213,8 +259,10 @@ Result<> VolumetricFogPass::declareResourceRequests(const RenderGraphResourceReq
     RenderGraphResourceRequestBuilder& builder, std::string& log)
 {
     const auto environment = resolveWorldEnvironment(context.runtimeScene(), context.world());
-    if (!environment.volumetricFog.enabled || environment.source != environment::EnvironmentSource::PhysicalAtmosphere ||
-        !environment.celestial[0].enabled) { return {}; }
+    const bool useAtmosphericSun = environment.source == environment::EnvironmentSource::PhysicalAtmosphere &&
+        environment.celestial[0].enabled;
+    if (!environment.volumetricFog.enabled ||
+        (!useAtmosphericSun && environment.volumetricFog.skyLightVolumetricScatteringIntensity == 0.0f)) { return {}; }
     std::array<double, 3> observer{};
     if (const auto* view = context.viewConstants()) {
         observer = {view->current.eye[0], view->current.eye[1], view->current.eye[2]};
@@ -336,11 +384,22 @@ Result<> VolumetricFogPass::execute(RenderGraphExecutionContext& context)
         p.lightIndices = writer.buffer(grid->lightIndices);
         p.lightCandidates = writer.buffer(grid->candidates);
     }
-    if (const auto* atmosphere = context.resources<EnvironmentResourceSet>()) {
-        const auto& lighting = atmosphere->lighting;
-        p.atmosphereParameters = writer.buffer(lighting.atmosphereParametersBuffer);
-        p.transmittance = writer.sampledImageHandle(lighting.transmittanceView);
-        if (lighting.cloudShadowView) { p.cloudShadow = writer.sampledImageHandle(lighting.cloudShadowView); }
+    if (const auto* environment = context.resources<EnvironmentResourceSet>()) {
+        const auto& lighting = environment->lighting;
+        if (lighting.atmosphereParametersBuffer && p.lightColorIntensity[3] > 0.0f) {
+            p.atmosphereParameters = writer.buffer(lighting.atmosphereParametersBuffer);
+            p.transmittance = writer.sampledImageHandle(lighting.transmittanceView);
+            if (lighting.cloudShadowView) { p.cloudShadow = writer.sampledImageHandle(lighting.cloudShadowView); }
+        }
+        if (!giAmbient.valid() && lighting.settings.enabled && lighting.sphericalHarmonicsBuffer &&
+            lighting.settings.intensity > 0.0f && fog.skyLightVolumetricScatteringIntensity > 0.0f) {
+            p.skyLight.irradianceSH = writer.buffer(lighting.sphericalHarmonicsBuffer);
+            const auto yaw = lighting.settings.rotationDegrees * (std::numbers::pi_v<float> / 180.0f);
+            p.skyLight.rotationSin = std::sin(yaw);
+            p.skyLight.rotationCos = std::cos(yaw);
+            p.skyLight.environmentIntensity = lighting.settings.intensity;
+            p.skyLight.volumetricScatteringIntensity = fog.skyLightVolumetricScatteringIntensity;
+        }
     }
 
     const auto currentDepth = context.outputTexture("conservativeDepth");
@@ -367,6 +426,9 @@ Result<> VolumetricFogPass::execute(RenderGraphExecutionContext& context)
     std::vector<StageUse> depthUses{{"depth", Access::TextureSampleRead}, {"conservativeDepth", Access::TextureStorageWrite}};
     std::vector<StageUse> materialUses{{"material", Access::TextureStorageWrite}};
     std::vector<StageUse> lightUses{{"material", Access::TextureSampleRead}, {"scattering", Access::TextureStorageWrite}};
+    if (auto r = bindFogSkyOcclusion(context, writer, p.skyLight, lightUses,
+        p.skyLight.volumetricScatteringIntensity > 0.0f && p.current.upProjection[3] <= 0.5f,
+        fog.skyOcclusionMaxDistanceMeters); !r) { return r; }
     if (giAmbient.valid()) {
         const auto& ambient = giAmbient.desc();
         const auto& directional = giDirectional.desc();
