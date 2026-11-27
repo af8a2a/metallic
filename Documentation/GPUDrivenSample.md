@@ -29,3 +29,17 @@ Streamline 注释和异步计算。复现、回放验证和回归命令见
 [捕获崩溃调查](NsightCommandBufferCaptureInvestigation.md)。
 
 任意 `--scene` 覆盖、旧诊断 ID、`--streamasset` 和 `--minizorah-vbuffer` 不再作为本程序入口。其他诊断样例与自定义图仍在通用 `Metallic` 编辑器中使用；共享样例目录和渲染 Pass 保留。
+
+## 地形样例
+
+在仓库根目录使用已有的编辑器构建。地形烘焙所需的 Python 依赖见 [requirements-terrain.txt](../Tools/requirements-terrain.txt)。
+
+```powershell
+cmake --build build-relwithdebinfo --target MetallicTerrainP0Smoke MetallicTerrainP1Smoke
+cmake --build build-relwithdebinfo --target MetallicTerrainVSMSample
+cmake --build build-relwithdebinfo --target MetallicTerrainVSMSmoke
+```
+
+烘焙后，在通用 `Metallic.exe` 的内置样例列表选择 **GPUDrivenSample / Terrain OpenPBR + VSM**。样例将 Houdini 高度场、测量塔和桥烘焙进同一份 StreamAsset。材质走 OpenPBR 延迟着色，场景里的 Sun 通过 VSM 投影。默认机位同时观察测量塔投到地表的影子，以及山脊投到桥面的影子。
+
+固定机位的 Vulkan 验证比较了 VSM 开关前后的深度、阴影和线性着色结果。深度逐字节一致，遮挡方向由源三角形射线确认。塔投到地表的阴影通过 27/27 个探针，山脊投到桥面的阴影通过 25/30 个探针。桥面的 5 个漏光探针仍可复现。窄视野检查中，镜头外山脊投到可见桥面的阴影通过 24/24 个探针。静态缓存与强制重绘的阴影和线性颜色逐字节一致。

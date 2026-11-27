@@ -1,0 +1,102 @@
+{
+    "name": "GPUDriven Terrain OpenPBR and VSM",
+    "version": 1,
+    "nodes": [
+        {
+            "id": 1,
+            "name": "VBuffer",
+            "type": "VisibilityBufferPass",
+            "position": {"x": 80, "y": 240},
+            "properties": {
+                "path": "Asset/MeshletCache/TerrainVSM/terrain_vsm.gltf",
+                "streamAssetPath": "Asset/MeshletCache/TerrainVSM/terrain_vsm.gltf.meshstream.bin",
+                "sceneBinding": "world",
+                "viewBinding": "global",
+                "enableClusterRtx": false,
+                "initialLoad": true,
+                "maxResidentBytes": 67108864,
+                "maxResidentPages": 256,
+                "maxActiveGroups": 4096,
+                "autoLod": true,
+                "lodPixelError": 1.5,
+                "visualization": "none",
+                "instanceFrustumCull": true,
+                "instanceHzbCull": true,
+                "meshletFrustumCull": true,
+                "meshletNormalConeCull": false,
+                "hybridRaster": true
+            }
+        },
+        {
+            "id": 2,
+            "name": "Shadows",
+            "type": "VirtualShadowMapLightsPass",
+            "position": {"x": 420, "y": 0},
+            "properties": {
+                "enabled": true,
+                "pageSize": 128,
+                "virtualPagesPerAxis": 32,
+                "clipmapCount": 7,
+                "firstClipmapExtent": 8.0,
+                "physicalPageBudget": 512,
+                "cacheEnabled": true,
+                "compactOutputs": true,
+                "shadowLOD": true,
+                "shadowLODErrorTexels": 0.5,
+                "filter": "pcf",
+                "pcfRadius": 1.0
+            }
+        },
+        {
+            "id": 3,
+            "name": "Deferred",
+            "type": "VisibilityBufferDeferredPass",
+            "position": {"x": 760, "y": 240},
+            "properties": {
+                "path": "Asset/MeshletCache/TerrainVSM/terrain_vsm.gltf",
+                "materialBinning": true,
+                "outputLinear": true
+            }
+        },
+        {
+            "id": 4,
+            "name": "FinalBlit",
+            "type": "FinalBlitPass",
+            "position": {"x": 1100, "y": 240},
+            "properties": {}
+        },
+        {
+            "id": 5,
+            "name": "ColorGrading",
+            "type": "ColorGradingLUTPass",
+            "position": {"x": 760, "y": 480},
+            "properties": {"toneCurve": "aces2"}
+        }
+    ],
+    "edges": [
+        {"id": 1, "src": "VBuffer.visibility", "dst": "Deferred.visibility"},
+        {"id": 2, "src": "VBuffer.depth", "dst": "Deferred.depth"},
+        {"id": 3, "src": "VBuffer.rasterInfo", "dst": "Deferred.rasterInfo"},
+        {"id": 4, "src": "VBuffer.domain", "dst": "Deferred.domain"},
+        {"id": 5, "src": "VBuffer.depth", "dst": "Shadows.depth"},
+        {"id": 6, "src": "VBuffer.rasterInfo", "dst": "Shadows.rasterInfo"},
+        {"id": 7, "src": "VBuffer.visibility", "dst": "Shadows.visibility"},
+        {"id": 8, "src": "Shadows.shadows", "dst": "Deferred.virtualShadows"},
+        {"id": 9, "src": "Shadows.lights", "dst": "Deferred.virtualShadowLights"},
+        {"id": 10, "src": "Deferred.color", "dst": "FinalBlit.source"},
+        {"id": 11, "src": "ColorGrading.lut", "dst": "FinalBlit.lut"}
+    ],
+    "outputs": [],
+    "view": {
+        "camera": {
+            "projection": "perspective",
+            "eye": [38.0, 91.0, 113.0],
+            "center": [-27.0, 4.0, 4.0],
+            "up": [0.0, 1.0, 0.0],
+            "fovDegrees": 60.0,
+            "znear": 0.5,
+            "zfar": 1000.0
+        },
+        "temporalJitter": false
+    }
+}

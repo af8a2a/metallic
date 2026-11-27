@@ -77,34 +77,81 @@ if(Python3_Interpreter_FOUND)
     )
 
     add_custom_target(MetallicTerrainP0Smoke
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:SDL3::SDL3>"
-            "$<TARGET_FILE_DIR:MetallicGPUDrivenSample>"
-        COMMAND "$<TARGET_FILE:MetallicGPUDrivenSample>"
-            --terrain-p0
-            --smoke-test
-        DEPENDS
-            MetallicGPUDrivenSample
-            MetallicTerrainP0
+        COMMAND ${CMAKE_COMMAND} -E env
+            METALLIC_SMOKE_TEST_HIDDEN=1
+            METALLIC_SMOKE_TEST_SAMPLE=gpu-driven-terrain-p0
+            "$<TARGET_FILE:Metallic>" --smoke-test
+        DEPENDS MetallicTerrainP0
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         COMMENT "Rendering the Terrain P0 StreamAsset smoke frame"
         VERBATIM
     )
 
     add_custom_target(MetallicTerrainP1Smoke
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:SDL3::SDL3>"
-            "$<TARGET_FILE_DIR:MetallicGPUDrivenSample>"
-        COMMAND "$<TARGET_FILE:MetallicGPUDrivenSample>"
-            --terrain-p1
-            --smoke-test
-        DEPENDS
-            MetallicGPUDrivenSample
-            MetallicTerrainP0
+        COMMAND ${CMAKE_COMMAND} -E env
+            METALLIC_SMOKE_TEST_HIDDEN=1
+            METALLIC_SMOKE_TEST_SAMPLE=gpu-driven-terrain-p1-unified
+            "$<TARGET_FILE:Metallic>" --smoke-test
+        DEPENDS MetallicTerrainP0
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         COMMENT "Rendering the Terrain P1 unified GPUScene/StreamAsset smoke frame"
         VERBATIM
     )
+
+    set(METALLIC_TERRAIN_VSM_DIRECTORY "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainVSM")
+    set(METALLIC_TERRAIN_VSM_GLTF "${METALLIC_TERRAIN_VSM_DIRECTORY}/terrain_vsm.gltf")
+    set(METALLIC_TERRAIN_VSM_BUFFER "${METALLIC_TERRAIN_VSM_DIRECTORY}/terrain_vsm.bin")
+    set(METALLIC_TERRAIN_VSM_SCENE "${METALLIC_TERRAIN_VSM_DIRECTORY}/terrain_vsm.metallic_scene.json")
+    set(METALLIC_TERRAIN_VSM_LIGHTING "${CMAKE_SOURCE_DIR}/Asset/Terrain/TerrainVSM.metallic_scene.json")
+    set(METALLIC_TERRAIN_VSM_GRAPH "${CMAKE_SOURCE_DIR}/Pipelines/Samples/gpu_driven_terrain_vsm.metallic_graph.json")
+    set(METALLIC_TERRAIN_VSM_STREAMASSET "${METALLIC_TERRAIN_VSM_GLTF}.meshstream.bin")
+
+    add_custom_command(
+        OUTPUT "${METALLIC_TERRAIN_VSM_GLTF}" "${METALLIC_TERRAIN_VSM_BUFFER}" "${METALLIC_TERRAIN_VSM_SCENE}"
+        COMMAND "${Python3_EXECUTABLE}" -B
+            "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainVSMSample.py"
+            "${METALLIC_TERRAIN_P0_GLTF}" "${METALLIC_TERRAIN_VSM_LIGHTING}"
+            "${METALLIC_TERRAIN_VSM_GRAPH}" "${METALLIC_TERRAIN_VSM_GLTF}"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainVSMSample.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py"
+            "${METALLIC_TERRAIN_P0_GLTF}"
+            "${METALLIC_TERRAIN_VSM_LIGHTING}"
+            "${METALLIC_TERRAIN_VSM_GRAPH}"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Assembling the terrain and opaque mesh props"
+        VERBATIM
+    )
+
+    add_custom_command(
+        OUTPUT "${METALLIC_TERRAIN_VSM_STREAMASSET}"
+        COMMAND "$<TARGET_FILE:Metallic>"
+            --build-meshstream "${METALLIC_TERRAIN_VSM_GLTF}"
+            --output "${METALLIC_TERRAIN_VSM_STREAMASSET}"
+        DEPENDS
+            Metallic
+            "${METALLIC_TERRAIN_VSM_GLTF}"
+            "${METALLIC_TERRAIN_VSM_BUFFER}"
+            "${METALLIC_TERRAIN_P0_BUFFER}"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Building the Terrain OpenPBR and VSM MeshletStreamAsset"
+        VERBATIM
+    )
+
+    add_custom_target(MetallicTerrainVSMSample
+        DEPENDS "${METALLIC_TERRAIN_VSM_STREAMASSET}" "${METALLIC_TERRAIN_VSM_SCENE}"
+    )
+
+    add_custom_target(MetallicTerrainVSMSmoke
+        COMMAND ${CMAKE_COMMAND} -E env
+            METALLIC_SMOKE_TEST_HIDDEN=1
+            METALLIC_SMOKE_TEST_SAMPLE=gpu-driven-terrain-vsm
+            "$<TARGET_FILE:Metallic>" --smoke-test
+        DEPENDS MetallicTerrainVSMSample
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Rendering the Terrain OpenPBR and VSM smoke frame"
+        VERBATIM
+    )
 else()
-    message(STATUS "Python3 was not found; Terrain P0 build targets are unavailable")
+    message(STATUS "Python3 was not found; terrain sample build targets are unavailable")
 endif()

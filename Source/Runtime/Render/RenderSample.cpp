@@ -1006,6 +1006,24 @@ public:
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
+class GPUDrivenTerrainVSMSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "gpu-driven-terrain-vsm"; }
+    std::string_view name() const override { return "GPUDrivenSample / Terrain OpenPBR + VSM"; }
+    std::string_view category() const override { return "GPUDriven"; }
+    std::string_view description() const override
+    {
+        return "A Houdini heightfield, survey tower and bridge sharing streamed visibility, OpenPBR and virtual shadow maps.";
+    }
+    std::string scenePath() const override { return "Asset/MeshletCache/TerrainVSM/terrain_vsm.gltf"; }
+    std::string graphPath() const override
+    {
+        return "Pipelines/Samples/gpu_driven_terrain_vsm.metallic_graph.json";
+    }
+    std::vector<std::string> scenePathTargets() const override { return {"VBuffer", "Deferred"}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
 const RenderSample& pathTracingMeetMatSample()
 {
     static const PathTracingMeetMatSample sample;
@@ -1087,6 +1105,12 @@ const RenderSample& gpuDrivenTerrainP0Sample()
 const RenderSample& gpuDrivenTerrainP1UnifiedSample()
 {
     static const GPUDrivenTerrainP1UnifiedSample sample;
+    return sample;
+}
+
+const RenderSample& gpuDrivenTerrainVSMSample()
+{
+    static const GPUDrivenTerrainVSMSample sample;
     return sample;
 }
 
@@ -1271,6 +1295,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &gpuDrivenMiniZorahVBuffer,
         &gpuDrivenTerrainP0Sample(),
         &gpuDrivenTerrainP1UnifiedSample(),
+        &gpuDrivenTerrainVSMSample(),
         &gpuDrivenRtasVisualizationSample(),
     };
     const bool hasBoxDistanceField = std::filesystem::is_regular_file(projectPath(".cache/mesh-distance-field/BoxInstances.meshdf"));

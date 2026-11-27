@@ -1,0 +1,26 @@
+{
+    "version": 3,
+    "source": "../MeshletCache/TerrainVSM/terrain_vsm.gltf",
+    "sceneIndex": 0,
+    "nodes": [],
+    "world": {
+        "environment": {
+            "enabled": true,
+            "path": "../ABeautifulGame/environment.hdr",
+            "intensity": 0.45,
+            "visible": false,
+            "sun": {
+                "enabled": true,
+                "direction": [0.952424, -0.304776, 0.0],
+                "color": [1.0, 0.96, 0.87],
+                "illuminance": 4.0,
+                "angularRadius": 0.00465
+            },
+            "moon": {"enabled": false}
+        },
+        "lighting": {
+            "exposureEV100": 0.0,
+            "autoExposure": {"enabled": false}
+        }
+    }
+}
