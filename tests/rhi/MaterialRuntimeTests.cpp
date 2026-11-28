@@ -338,7 +338,7 @@ public:
                 return RHITestResult::fail("CPU/Slang field offsets, stride or program identity mismatch");
             }
         }
-        return RHITestResult::pass("All 720 transport bytes, array stride and explicit IDs agree on GPU despite conflicting source flags");
+        return RHITestResult::pass("All scene material transport bytes, array stride and explicit IDs agree on GPU despite conflicting source flags");
     }
 };
 METALLIC_REGISTER_RHI_TEST(MaterialRuntimeABITest);

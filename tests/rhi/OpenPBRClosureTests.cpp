@@ -6,6 +6,7 @@
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Material/MaterialExecutable.h"
+#include "Runtime/Render/Material/SceneMaterialData.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <algorithm>
@@ -65,6 +66,123 @@ template<typename T>
 void require(const Result<T>& value, const std::string& message)
 {
     require(bool(value), message);
+}
+
+void runOpenPBRTerrainLayers(RHITestContext& context, Device& device, ResourceRegistry& registry,
+    Buffer& output, Buffer& counters)
+{
+    const std::array<Float4, 16> texels{{
+        {0.15f, 0.25f, 0.05f, 0.05f}, {0, 0, 0, 0}, {0.6f, 0.2f, 0.2f, 1}, {0, 0, 0, 1},
+        {0.3f, 0.8f, 0.7f, 0.7f}, {0.7f, 0.3f, 0.45f, 0.6f}, {0.5f, 0.6f, 0.9f, 0.5f}, {0.8f, 0.4f, 0.15f, 0.4f},
+        {0.65f, 0.5f, 0.7f, 0.2f}, {0.5f, 0.9f, 0.8f, 0.3f}, {0.2f, 0.5f, 0.9f, 0.4f}, {0.5f, 0.2f, 0.0f, 0.5f},
+        {0.12f, 0.8f, 0.02f, 0.3f}, {0.67f, 0.8f, 0.02f, 0.3f}, {0.39f, 0.8f, 0.02f, 0.3f}, {0.9f, 0.8f, 0.02f, 0.3f},
+    }};
+    auto upload = device.createBuffer({.size = sizeof(texels), .usage = BufferUsageBits::TransferSource,
+        .memoryLocation = MemoryLocation::HostUpload});
+    require(upload, "Terrain layer probe upload allocation failed");
+    auto* mappedUpload = (*upload)->map();
+    require(mappedUpload != nullptr, "Terrain layer probe upload mapping failed");
+    std::memcpy(mappedUpload, texels.data(), sizeof(texels));
+    (*upload)->flush();
+    (*upload)->unmap();
+    std::array<TerrainLayerMaterialData, 5> bindings{};
+    for (uint32_t lane = 0; lane < bindings.size(); ++lane) {
+        auto& record = bindings[lane];
+        const bool threeLayers = lane == 2 || lane == 3;
+        const auto channels = threeLayers ? std::array{2u, 0u, 1u, 3u} : std::array{3u, 2u, 0u, 1u};
+        record.weights.textureIndex = std::min(lane, 3u);
+        record.settings[0] = threeLayers ? 3u : 4u;
+        record.settings[1] = 2;
+        std::copy(channels.begin(), channels.end(), record.channels);
+        for (uint32_t i = 0; i < kMaxTerrainMaterialLayers; ++i) {
+            auto& layer = record.layers[i];
+            layer.baseColor.textureIndex = 4 + i;
+            layer.baseColor.transform0[3] = i == 1 ? 1.0f : 0.0f;
+            layer.normal.textureIndex = 8 + i;
+            layer.normal.transform0[3] = i == 3 ? 2.0f : 0.0f;
+            layer.roughness.textureIndex = 12 + i;
+        }
+    }
+    auto layers = device.createBuffer({.size = sizeof(bindings), .usage = BufferUsageBits::Storage,
+        .memoryLocation = MemoryLocation::HostUpload});
+    require(layers, "Terrain layer probe binding allocation failed");
+    auto* mappedLayers = (*layers)->map();
+    require(mappedLayers != nullptr, "Terrain layer probe binding mapping failed");
+    std::memcpy(mappedLayers, bindings.data(), sizeof(bindings));
+    (*layers)->flush();
+    (*layers)->unmap();
+    auto texture = device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
+        .format = Format::RGBA32Sfloat, .width = 4, .height = 4});
+    require(texture, "Terrain layer probe texture allocation failed");
+    auto view = device.createTextureView(**texture, {.format = Format::RGBA32Sfloat});
+    require(view, "Terrain layer probe texture view failed");
+
+    std::string log;
+    auto shader = compileSlangShaderToSpirv({.moduleName = "OpenPBRClosureProbe",
+        .entryPointName = "openPBRTerrainLayersProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
+    require(shader, "OpenPBR terrain layer probe compile failed: " + log);
+    ComputeKernel kernel;
+    require(kernel.initialize(device, {.spirv = shader->spirv,
+        .parameters = parameterAbi<OpenPBRProbeParams>(kOpenPBRProbeABI, ParameterTransport::InlinePush)}, log), log);
+    bench::GPUCommands gpu(*device.getQueue(QueueType::Graphics));
+    require(gpu.initialize(device), "Terrain layer probe commands failed");
+    const TextureBarrierDesc before{.texture = texture->get(), .oldLayout = TextureLayout::Undefined,
+        .newLayout = TextureLayout::TransferDestination, .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
+    require(gpu.commands->synchronize({.textures = {&before, 1}}), "Terrain layer upload barrier failed");
+    require((*upload)->slice().and_then([&](const auto& slice) {
+        return gpu.commands->copyBufferToTexture({.texture = texture->get(), .buffer = slice, .width = 4, .height = 4});
+    }), "Terrain layer texture upload failed");
+    const TextureBarrierDesc after{.texture = texture->get(), .oldLayout = TextureLayout::TransferDestination,
+        .newLayout = TextureLayout::ShaderRead, .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+        .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
+    require(gpu.commands->synchronize({.textures = {&after, 1}}), "Terrain layer texture read barrier failed");
+    ParameterWriter writer(device, registry);
+    OpenPBRProbeParams params{writer.bufferSpan<Float4>(layers->get()), writer.bufferSpan<Float4>(&output),
+        writer.sampledImageHandle(view->get()), writer.buffer(&counters), 0};
+    auto encoded = writer.encode(params, kOpenPBRProbeABI, ParameterTransport::InlinePush);
+    require(encoded, "Terrain layer probe parameter encode failed");
+    require(kernel.dispatch(*gpu.commands, *encoded, 1), "Terrain layer probe dispatch failed");
+    require(gpu.submitAndWait(), "Terrain layer probe GPU execution failed");
+
+    output.invalidate();
+    const auto* mapped = static_cast<const Float4*>(output.map());
+    require(mapped != nullptr, "Terrain layer probe output mapping failed");
+    std::array<Float4, 10> results;
+    std::copy_n(mapped, results.size(), results.begin());
+    output.unmap();
+    const std::array<Float4, 5> expectedWeights{{
+        {0.1f, 0.1f, 0.3f, 0.5f}, {0, 0, 1, 0}, {0.2f, 0.6f, 0.2f, 0}, {0, 0, 1, 0}, {1, 0, 0, 0},
+    }};
+    const std::array<color::RGB, 4> normals{{{0.6f, 0, 0.8f}, {0, 0.8f, 0.6f}, {-0.6f, 0, 0.8f}, {0, -0.6f, 0.8f}}};
+    float maxError = 0;
+    for (size_t lane = 0; lane < expectedWeights.size(); ++lane) {
+        Float4 baseRoughness{};
+        Float4 normal{0, 0, 0, 1};
+        for (size_t i = 0; i < normals.size(); ++i) {
+            const float weight = expectedWeights[lane][i];
+            auto albedo = color::RGB{texels[4 + i][0], texels[4 + i][1], texels[4 + i][2]};
+            if (i != 1) {
+                for (float& channel : albedo) { channel = color::decodeSRGB(channel); }
+            }
+            albedo = color::fromLinearRec709(albedo);
+            for (size_t channel = 0; channel < 3; ++channel) {
+                baseRoughness[channel] += weight * albedo[channel];
+                normal[channel] += weight * normals[i][channel];
+            }
+            baseRoughness[3] += weight * texels[12 + i][0];
+        }
+        const auto length = std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+        for (size_t channel = 0; channel < 3; ++channel) { normal[channel] /= length; }
+        for (size_t channel = 0; channel < 4; ++channel) {
+            const auto colorError = std::abs(results[lane * 2][channel] - baseRoughness[channel]);
+            const auto normalError = std::abs(results[lane * 2 + 1][channel] - normal[channel]);
+            require(colorError <= 2e-6f && normalError <= 2e-6f,
+                "Terrain layer blend differs at case " + std::to_string(lane) + " channel " + std::to_string(channel));
+            maxError = std::max({maxError, colorError, normalError});
+        }
+    }
+    std::ofstream report(context.outputDirectory / "OpenPBRTerrainLayers.txt");
+    report << "cases=5 fourLayer=1 threeLayer=1 zeroDefault=2 alphaOnly=1 maxError=" << maxError << '\n';
 }
 
 void runOpenPBRColorSlots(RHITestContext& context, Device& device, ResourceRegistry& registry,
@@ -687,8 +805,9 @@ public:
             }
             runOpenPBRColorSlots(context, *device, registry, *parameters, *output, *counters, *view);
             runOpenPBRTextureGuard(context, *device, registry, *parameters, *output, *counters, *view);
+            runOpenPBRTerrainLayers(context, *device, registry, *output, *counters);
             require(validationErrors == 0, "Vulkan validation errors");
-            return RHITestResult::pass("Shared production OpenPBR program; 1/8 lights, vendor equivalence, normal mapping, both IOR sides, 64 color-slot and 96 texture-guard cases");
+            return RHITestResult::pass("Shared production OpenPBR program; 1/8 lights, vendor equivalence, 64 color-slot, 96 texture-guard and 5 terrain blend cases");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 private:

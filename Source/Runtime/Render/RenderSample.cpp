@@ -1098,6 +1098,20 @@ public:
     }
 };
 
+class GPUDrivenTerrainMultilayer16x16VSMSample final : public GPUDrivenTerrainBlocks16x16VSMSample {
+public:
+    std::string_view id() const override { return "gpu-driven-terrain-multilayer-16x16-vsm"; }
+    std::string_view name() const override { return "GPUDrivenSample / Terrain Four Layers + VSM"; }
+    std::string_view description() const override
+    {
+        return "Four OpenPBR terrain layers with explicit per-layer textures and global RGBA weights across 256 blocks.";
+    }
+    std::string scenePath() const override
+    {
+        return "Asset/MeshletCache/TerrainMultilayer16x16/terrain_multilayer_16x16.gltf";
+    }
+};
+
 class GPUDrivenTerrainPlacement16x16VSMSample final : public GPUDrivenTerrainBlocks16x16VSMSample {
 public:
     std::string_view id() const override { return "gpu-driven-terrain-placement-16x16-vsm"; }
@@ -1289,6 +1303,12 @@ const RenderSample& gpuDrivenTerrainBlocks16x16VSMSample()
 const RenderSample& gpuDrivenTerrainLayers16x16VSMSample()
 {
     static const GPUDrivenTerrainLayers16x16VSMSample sample;
+    return sample;
+}
+
+const RenderSample& gpuDrivenTerrainMultilayer16x16VSMSample()
+{
+    static const GPUDrivenTerrainMultilayer16x16VSMSample sample;
     return sample;
 }
 
@@ -1491,6 +1511,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &gpuDrivenTerrainBlocks8x8VSMSample(),
         &gpuDrivenTerrainBlocks16x16VSMSample(),
         &gpuDrivenTerrainLayers16x16VSMSample(),
+        &gpuDrivenTerrainMultilayer16x16VSMSample(),
         &gpuDrivenTerrainPlacement16x16VSMSample(),
         &gpuDrivenTerrainRegionsVSMSample(),
         &gpuDrivenRtasVisualizationSample(),

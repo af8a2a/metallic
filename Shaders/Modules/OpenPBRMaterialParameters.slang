@@ -28,6 +28,7 @@ public struct OpenPBRMaterialParameters
     public float4 specular;
     public MaterialTextureInfo specularTexture;
     public MaterialTextureInfo specularColorTexture;
+    public uint terrainLayerOffset;
 };
 
 public OpenPBRMaterialParameters sceneOpenPBRParameters(SceneMaterialData data)
@@ -52,6 +53,7 @@ public OpenPBRMaterialParameters sceneOpenPBRParameters(SceneMaterialData data)
     result.specular = data.specular;
     result.specularTexture = data.specularTexture;
     result.specularColorTexture = data.specularColorTexture;
+    result.terrainLayerOffset = data.terrainLayerBinding.x;
     return result;
 }
 

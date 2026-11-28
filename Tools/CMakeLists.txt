@@ -116,7 +116,7 @@ if(Python3_Interpreter_FOUND)
     endfunction()
 
     function(add_metallic_terrain_vsm_sample bake_target smoke_target sample_id terrain_source output)
-        cmake_parse_arguments(PARSE_ARGV 5 terrain "" "WEIGHT_MAP;HEIGHT_FIELD" "")
+        cmake_parse_arguments(PARSE_ARGV 5 terrain "" "WEIGHT_MAP;LAYER_ASSET;HEIGHT_FIELD" "LAYER_TEXTURES")
         set(lighting "${CMAKE_SOURCE_DIR}/Asset/Terrain/TerrainVSM.metallic_scene.json")
         set(graph "${CMAKE_SOURCE_DIR}/Pipelines/Samples/gpu_driven_terrain_vsm.metallic_graph.json")
         set(stream_asset "${output}.gltf.meshstream.bin")
@@ -129,6 +129,14 @@ if(Python3_Interpreter_FOUND)
                 "${output}_grass_color.png" "${output}_grass_normal.png"
                 "${output}_rock_color.png" "${output}_rock_normal.png")
             set(layer_dependencies "${terrain_WEIGHT_MAP}" "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainLayerTextures.py")
+        endif()
+        if(terrain_LAYER_ASSET)
+            set(layer_args --layer-asset "${terrain_LAYER_ASSET}")
+            set(layer_outputs "${output}.material" "${output}.materialdef" "${output}_layer_weights.png")
+            set(layer_dependencies "${terrain_LAYER_ASSET}" ${terrain_LAYER_TEXTURES}
+                "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainLayerTextures.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/ImportTerrainLayers.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/TerrainLayerAsset.py")
         endif()
         if(terrain_HEIGHT_FIELD)
             list(APPEND layer_args --height-field "${terrain_HEIGHT_FIELD}")
@@ -205,6 +213,30 @@ if(Python3_Interpreter_FOUND)
         gpu-driven-terrain-layers-16x16-vsm "${METALLIC_TERRAIN_BLOCKS_16X16_HEIGHT}"
         "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainLayers16x16/terrain_layers_16x16"
         WEIGHT_MAP "${CMAKE_SOURCE_DIR}/Asset/Terrain/TerrainRockWeight.exr")
+
+    set(terrain_multilayer_dir "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainMultilayer16x16")
+    set(terrain_multilayer_source "${terrain_multilayer_dir}/source")
+    set(terrain_multilayer_asset "${terrain_multilayer_source}/terrain.layers.json")
+    set(terrain_multilayer_textures "${terrain_multilayer_source}/weights.exr")
+    foreach(layer IN ITEMS rock grass gravel snow)
+        foreach(role IN ITEMS baseColor normal roughness)
+            list(APPEND terrain_multilayer_textures "${terrain_multilayer_source}/${layer}_${role}.png")
+        endforeach()
+    endforeach()
+    add_custom_command(
+        OUTPUT "${terrain_multilayer_asset}" ${terrain_multilayer_textures}
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/ExportTerrainMultilayerExample.py"
+            "${CMAKE_SOURCE_DIR}/Asset/Terrain/TerrainRockWeight.exr" --output "${terrain_multilayer_asset}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/Asset/Terrain/TerrainRockWeight.exr"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ExportTerrainMultilayerExample.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainLayerTextures.py" "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py"
+        COMMENT "Generating the four terrain sample layers and RGBA weights"
+        VERBATIM
+    )
+    add_metallic_terrain_vsm_sample(MetallicTerrainMultilayer16x16VSMSample MetallicTerrainMultilayer16x16VSMSmoke
+        gpu-driven-terrain-multilayer-16x16-vsm "${METALLIC_TERRAIN_BLOCKS_16X16_HEIGHT}"
+        "${terrain_multilayer_dir}/terrain_multilayer_16x16"
+        LAYER_ASSET "${terrain_multilayer_asset}" LAYER_TEXTURES ${terrain_multilayer_textures})
 
     add_metallic_terrain_vsm_sample(MetallicTerrainPlacement16x16VSMSample MetallicTerrainPlacement16x16VSMSmoke
         gpu-driven-terrain-placement-16x16-vsm "${METALLIC_TERRAIN_BLOCKS_16X16_HEIGHT}"

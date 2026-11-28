@@ -11,6 +11,7 @@ import ScenePathTypes;
 import SceneSurface;
 import Material;
 import MaterialProgram;
+import MaterialTextureDecode;
 import SurfaceLighting;
 using Metallic;
 using Metallic.Material;
@@ -21,6 +22,36 @@ using Metallic.Tests;
 
 [[vk::push_constant]] ConstantBuffer<ProbeParams> gProbe;
 
+struct TerrainProbeTextureSource : ISceneMaterialTextureSource
+{
+    ProbeParams probe;
+    bool hasTextures(ScenePathTracePush push) { return true; }
+    float4 loadTexture(MaterialTextureInfo info, float2 uv, float4 fallback,
+        ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
+        bool deterministicMip0, inout uint seed, TextureFootprint footprint, out bool sampled)
+    {
+        sampled = true;
+        uint2 texel = uint2(info.textureIndex % 4u, info.textureIndex / 4u);
+        return decodeMaterialTextureSample(resolveUniform(probe.texture).Load(int3(texel, 0)), info.transform0.w);
+    }
+};
+
+[shader("compute")]
+[numthreads(8, 1, 1)]
+void openPBRTerrainLayersProbeMain(uint3 id : SV_DispatchThreadID)
+{
+    uint lane = id.x;
+    if (lane >= 5u) { return; }
+    TerrainProbeTextureSource source;
+    source.probe = gProbe;
+    uint seed = 0u;
+    uint byteOffset = gProbe.parameters.byteOffset + lane * sizeof(TerrainLayerMaterialData);
+    let surface = evaluateTerrainLayerSurface(resolveUniform(gProbe.parameters.resource), byteOffset,
+        HitInfo(), ScenePathTracePush(), RayCone(), float3(0.0, 0.0, -1.0), TextureFootprint(), source, seed);
+    gProbe.output.store(lane * 2u, float4(surface.baseColor, surface.roughness));
+    gProbe.output.store(lane * 2u + 1u, float4(surface.normalTS, surface.enabled ? 1.0 : 0.0));
+}
+
 // Match the scene provider's uniform presence decision while keeping actual
 // texture reads observable through the existing probe counters.
 struct GuardedProbeSource : IOpenPBRMaterialSource
@@ -30,6 +61,7 @@ struct GuardedProbeSource : IOpenPBRMaterialSource
     bool hasTextures(ScenePathTracePush push) { return push.materialTextureCount > 1u; }
     Context context() { return base.context(); }
     OpenPBRMaterialParameters loadParameters(MaterialInstanceRef instance) { return base.loadParameters(instance); }
+    ByteAddressBuffer terrainBindingBuffer() { return base.terrainBindingBuffer(); }
     float4 loadTexture(MaterialTextureInfo info, float2 uv, float4 fallback,
         ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
         bool deterministicMip0, inout uint seed, TextureFootprint footprint, out bool sampled)

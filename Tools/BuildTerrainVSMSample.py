@@ -96,7 +96,10 @@ def append_camera(document: dict, camera: dict) -> None:
 
 
 def build_sample(terrain_path: Path, scene_path: Path, graph_path: Path, output_path: Path,
-                 weight_map: Path | None = None, height_field: Path | None = None) -> None:
+                 weight_map: Path | None = None, height_field: Path | None = None,
+                 layer_asset: Path | None = None) -> None:
+    if weight_map is not None and layer_asset is not None:
+        raise TerrainBuildError("select either a legacy weight map or a terrain layer asset")
     document = json.loads(terrain_path.read_text(encoding="utf-8"))
     scene = json.loads(scene_path.read_text(encoding="utf-8"))
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -158,12 +161,17 @@ def build_sample(terrain_path: Path, scene_path: Path, graph_path: Path, output_
         document["nodes"][0]["name"] = "Houdini Heightfield"
     terrain_material = document["materials"][0]
     terrain_material["name"] = "Terrain Grass"
-    if weight_map is not None:
-        from BuildTerrainLayerTextures import build_layer_material
-
+    if weight_map is not None or layer_asset is not None:
         extras = document["extras"]
-        terrain_metadata = extras.get("metallicTerrainTiles") or extras["metallicTerrainP0"]
-        binding, metadata = build_layer_material(output_path, weight_map, terrain_metadata)
+        if layer_asset is not None:
+            from ImportTerrainLayers import build_terrain_layer_material
+
+            binding, metadata = build_terrain_layer_material(terrain_path, layer_asset, output_path)
+        else:
+            from BuildTerrainLayerTextures import build_layer_material
+
+            terrain_metadata = extras.get("metallicTerrainTiles") or extras["metallicTerrainP0"]
+            binding, metadata = build_layer_material(output_path, weight_map, terrain_metadata)
         terrain_material["name"] = binding["sourceName"]
         extras["metallicTerrainLayers"] = metadata
         scene.setdefault("materials", []).append(binding)
@@ -225,10 +233,12 @@ if __name__ == "__main__":
     parser.add_argument("scene", type=Path)
     parser.add_argument("graph", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--weight-map", type=Path, help="Linear R OpenEXR rock weights aligned to the heightfield")
+    materials = parser.add_mutually_exclusive_group()
+    materials.add_argument("--weight-map", type=Path, help="Linear R OpenEXR rock weights aligned to the heightfield")
+    materials.add_argument("--layer-asset", type=Path, help="Houdini-authored Metallic.TerrainLayers JSON")
     parser.add_argument("--height-field", type=Path, help="Baked source height grid for picking and placement")
     args = parser.parse_args()
     try:
-        build_sample(args.terrain, args.scene, args.graph, args.output, args.weight_map, args.height_field)
-    except TerrainBuildError as error:
+        build_sample(args.terrain, args.scene, args.graph, args.output, args.weight_map, args.height_field, args.layer_asset)
+    except (OSError, ValueError, TerrainBuildError) as error:
         parser.error(str(error))

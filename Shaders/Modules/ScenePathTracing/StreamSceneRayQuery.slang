@@ -59,9 +59,7 @@ public bool streamRayAlphaAccepts(uint instanceIndex, uint clusterId, uint trian
 {
     uint materialIndex;
     if (!streamRayMaterialIndex(instanceIndex, materialIndex)) { return false; }
-    uint count, stride;
-    sceneMaterials().GetDimensions(count, stride);
-    if (materialIndex >= count) { return false; }
+    if (materialIndex >= sceneMaterialCount()) { return false; }
     MaterialCoverageParameters material = sceneMaterialCoverageParameters(loadSceneMaterial(materialIndex));
     if (material.alphaMode < 0.5) { return true; }
     float2 texcoord = streamRayTexcoord(clusterId, triangle, bary);

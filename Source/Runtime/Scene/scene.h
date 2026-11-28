@@ -204,6 +204,23 @@ struct RenderTextureInfo {
     int32_t texCoord = 0;
     std::array<float, 6> uvTransform{1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
     render::TextureColorMetadata colorMetadata{};
+    bool operator==(const RenderTextureInfo&) const = default;
+};
+
+struct RenderTerrainMaterialLayer {
+    std::string name;
+    uint32_t channel = 0;
+    RenderTextureInfo baseColor{.colorMetadata = render::ksRGBColorTexture};
+    RenderTextureInfo normal;
+    RenderTextureInfo roughness;
+    bool operator==(const RenderTerrainMaterialLayer&) const = default;
+};
+
+struct RenderTerrainLayerBindings {
+    RenderTextureInfo weights;
+    uint32_t defaultLayerIndex = 0;
+    std::vector<RenderTerrainMaterialLayer> layers;
+    bool operator==(const RenderTerrainLayerBindings&) const = default;
 };
 
 // World-space projector. Its local volume is [-0.5, 0.5]^3 and XY maps to UV.
@@ -237,6 +254,7 @@ struct RenderMaterial {
     // M2 controlled JSON source; empty means the existing model inputs.
     std::string valueProgram;
     std::array<float, 16> valueParameters{};
+    std::shared_ptr<const RenderTerrainLayerBindings> terrainLayers;
     std::string name;
     float4 baseColorFactor{1.0f, 1.0f, 1.0f, 1.0f};
     float metallicFactor = 1.0f;

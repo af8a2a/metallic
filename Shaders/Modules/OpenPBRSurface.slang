@@ -149,6 +149,7 @@ public interface IOpenPBRMaterialSource : ISceneMaterialTextureSource
     public associatedtype Context : IOpenPBRContext;
     public Context context();
     public OpenPBRMaterialParameters loadParameters(MaterialInstanceRef instance);
+    public ByteAddressBuffer terrainBindingBuffer();
 };
 
 public struct SceneMaterialTextureSource : ISceneMaterialTextureSource
@@ -172,6 +173,7 @@ public struct SceneOpenPBRMaterialSource : IOpenPBRMaterialSource
     {
         return loadSceneOpenPBRMaterial(instance.parameterOffset / kSceneMaterialRecordBytes);
     }
+    public ByteAddressBuffer terrainBindingBuffer() { return sceneMaterialBuffer(); }
     public float4 loadTexture(MaterialTextureInfo textureInfo, float2 uv, float4 fallback,
         ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
         bool deterministicMip0, inout uint seed, TextureFootprint footprint, out bool sampled)
@@ -194,19 +196,9 @@ public void updateSceneSurfaceHit(inout HitInfo hit, SurfaceMaterialContext cont
     hit.materialIndex = materialIndex;
 }
 
-public void resolveSceneSurfaceNormal<TSource : ISceneMaterialTextureSource>(
-    inout HitInfo hit, MaterialTextureInfo normalTexture, float normalScale,
-    ScenePathTracePush push, RayCone rayCone, float3 rayDirection, bool deterministicMip0,
-    bool faceForwardNormal, bool applyDebugNormalOverrides, TextureFootprint footprint,
-    TSource source, inout uint seed, out float4 normalSample)
+internal void applySceneSurfaceNormalSample(inout HitInfo hit, inout float4 normalSample, float normalScale,
+    ScenePathTracePush push, float3 rayDirection, bool faceForwardNormal, bool applyDebugNormalOverrides)
 {
-    normalSample = float4(0.5, 0.5, 1.0, 1.0);
-    if (source.hasTextures(push)) {
-        bool sampled;
-        normalSample = source.loadTexture(normalTexture, hit.texcoord,
-            normalSample, push, rayCone, hit, rayDirection,
-            deterministicMip0, seed, footprint, sampled);
-    }
     if (applyDebugNormalOverrides && (openPbrDebugFlag(push, kOpenPBRDebugDisableNormalMap) ||
         openPbrDebugFlag(push, kOpenPBRDebugDisableMaterialTextures))) {
         normalSample = float4(0.5, 0.5, 1.0, 1.0);
@@ -230,6 +222,73 @@ public void resolveSceneSurfaceNormal<TSource : ISceneMaterialTextureSource>(
     }
 }
 
+public void resolveSceneSurfaceNormal<TSource : ISceneMaterialTextureSource>(
+    inout HitInfo hit, MaterialTextureInfo normalTexture, float normalScale,
+    ScenePathTracePush push, RayCone rayCone, float3 rayDirection, bool deterministicMip0,
+    bool faceForwardNormal, bool applyDebugNormalOverrides, TextureFootprint footprint,
+    TSource source, inout uint seed, out float4 normalSample)
+{
+    normalSample = float4(0.5, 0.5, 1.0, 1.0);
+    if (source.hasTextures(push)) {
+        bool sampled;
+        normalSample = source.loadTexture(normalTexture, hit.texcoord,
+            normalSample, push, rayCone, hit, rayDirection,
+            deterministicMip0, seed, footprint, sampled);
+    }
+    applySceneSurfaceNormalSample(hit, normalSample, normalScale, push, rayDirection,
+        faceForwardNormal, applyDebugNormalOverrides);
+}
+
+public struct TerrainLayerSurfaceValues
+{
+    public float3 baseColor;
+    public float roughness;
+    public float3 normalTS;
+    public bool enabled;
+};
+
+public TerrainLayerSurfaceValues evaluateTerrainLayerSurface<TSource : ISceneMaterialTextureSource>(
+    ByteAddressBuffer layerMaterials, uint byteOffset, HitInfo hit, ScenePathTracePush push, RayCone rayCone,
+    float3 rayDirection, TextureFootprint footprint, TSource source, inout uint seed)
+{
+    let bindings = layerMaterials.Load<TerrainLayerMaterialHeader>(byteOffset);
+    bool sampled;
+    float4 sampledWeights = source.loadTexture(bindings.weights, hit.texcoord, float4(0.0),
+        push, rayCone, hit, rayDirection, false, seed, footprint, sampled);
+    float4 layerWeights = float4(0.0);
+    for (uint i = 0u; i < bindings.settings.x; ++i) {
+        layerWeights[i] = max(sampledWeights[bindings.channels[i]], 0.0);
+    }
+    float total = dot(layerWeights, float4(1.0));
+    if (total > 0.0) {
+        layerWeights /= total;
+    } else {
+        layerWeights[bindings.settings.y] = 1.0;
+    }
+
+    TerrainLayerSurfaceValues values = {};
+    values.enabled = true;
+    const float3 neutralNormal = float3(0.0, 0.0, 1.0);
+    for (uint i = 0u; i < bindings.settings.x; ++i) {
+        float weight = layerWeights[i];
+        if (weight == 0.0) { continue; }
+        let layer = layerMaterials.Load<TerrainLayerTextureBindings>(
+            byteOffset + sizeof(TerrainLayerMaterialHeader) + i * sizeof(TerrainLayerTextureBindings));
+        float4 colorSample = source.loadTexture(layer.baseColor, hit.texcoord, float4(1.0),
+            push, rayCone, hit, rayDirection, false, seed, footprint, sampled);
+        values.baseColor += weight * (sampled ? materialTextureColor(colorSample.rgb, layer.baseColor.transform0.w)
+            : float3(1.0));
+        float4 normalSample = source.loadTexture(layer.normal, hit.texcoord, float4(0.5, 0.5, 1.0, 1.0),
+            push, rayCone, hit, rayDirection, false, seed, footprint, sampled);
+        values.normalTS += weight * Metallic.SceneSurface.safeNormalize(normalSample.xyz * 2.0 - 1.0, neutralNormal);
+        float4 roughnessSample = source.loadTexture(layer.roughness, hit.texcoord, float4(1.0),
+            push, rayCone, hit, rayDirection, false, seed, footprint, sampled);
+        values.roughness += weight * roughnessSample.r;
+    }
+    values.normalTS = Metallic.SceneSurface.safeNormalize(values.normalTS, neutralNormal);
+    return values;
+}
+
 internal float3 modulateSceneMaterialColor(float3 workingFactor, float3 textureSample,
     MaterialTextureInfo textureInfo, bool sampled, bool disableTextures)
 {
@@ -247,7 +306,8 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
     float3 rayDirection,
     inout uint seed, TSource source, TextureFootprint footprint, float3 authoredNormal, bool faceForwardNormal,
     int fixedMetalness = -1, bool opaquePrimary = false, uint2 rasterPixel = uint2(0),
-    uint rasterSourceMaterial = 0xffffffffu)
+    uint rasterSourceMaterial = 0xffffffffu,
+    TerrainLayerSurfaceValues terrain = {})
 {
     bool deterministicGlassTextures = !opaquePrimary && materialNeedsDeterministicTextureMip0(material);
 #if METALLIC_CUSTOM_MATERIALS
@@ -365,6 +425,10 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
     if ((surface.overrideMask & 4u) != 0u) { roughness = clamp(material.params.y, 0.001, 1.0); }
     if ((surface.overrideMask & 8u) != 0u) { emissive = material.emissive.rgb; }
 #endif
+    if (terrain.enabled) {
+        baseColor = saturate(terrain.baseColor);
+        roughness = clamp(terrain.roughness, 0.001, 1.0);
+    }
     if (fixedMetalness >= 0) { metallic = float(fixedMetalness); }
     if (opaquePrimary) { transmission = 0.0; }
 #if METALLIC_REALTIME_DEFERRED
@@ -498,13 +562,23 @@ public struct OpenPBRMaterialProgramImpl<TSource : IOpenPBRMaterialSource> : ISc
         if (materialNeedsRayFootprint(source.hasTextures(push), deterministicMip0)) {
             context.footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, context.footprint);
         }
-        resolveSceneSurfaceNormal(hit, material.normalTexture, material.textureParams.x, push,
-            rayCone, rayDirection, deterministicMip0, faceForwardNormal,
-            applyDebugNormalOverrides, context.footprint, source, seed, normalSample);
+        TerrainLayerSurfaceValues terrain = {};
+        if (material.terrainLayerOffset != 0u && !openPbrDebugFlag(push, kOpenPBRDebugDisableMaterialTextures)) {
+            terrain = evaluateTerrainLayerSurface(source.terrainBindingBuffer(), material.terrainLayerOffset, hit,
+                push, rayCone, rayDirection, context.footprint, source, seed);
+            normalSample = openPbrDebugFlag(push, kOpenPBRDebugDisableNormalMap)
+                ? float4(0.5, 0.5, 1.0, 1.0) : float4(terrain.normalTS * 0.5 + 0.5, 1.0);
+            applySceneSurfaceNormalSample(hit, normalSample, 1.0, push, rayDirection,
+                faceForwardNormal, applyDebugNormalOverrides);
+        } else {
+            resolveSceneSurfaceNormal(hit, material.normalTexture, material.textureParams.x, push,
+                rayCone, rayDirection, deterministicMip0, faceForwardNormal,
+                applyDebugNormalOverrides, context.footprint, source, seed, normalSample);
+        }
         SurfaceMaterialResult<Closure> result = (SurfaceMaterialResult<Closure>)0;
         result.closure = resolveOpenPBRInputsResolved(hit, material, push, rayCone, rayDirection, seed, source,
             context.footprint, context.shadingNormalWS, faceForwardNormal, fixedMetalness, opaquePrimary,
-            rasterPixel, rasterSourceMaterial);
+            rasterPixel, rasterSourceMaterial, terrain);
         result.emission = result.closure.inputs.emission_luminance * result.closure.inputs.emission_color;
         result.flags = 0u;
         summary = summarizeOpenPBRSurface(result.closure, material.emissive.w != 0.0);

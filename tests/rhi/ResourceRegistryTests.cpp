@@ -2436,7 +2436,8 @@ public:
         }
         // Undefined missing/truncated records are deliberately not read. The
         // experiment retains the original complete-record/valid-index contract.
-        static_assert(sizeof(SceneMaterialData) == 720);
+        constexpr uint32_t kFrozenRecordBytes = 720;
+        static_assert(offsetof(SceneMaterialData, terrainLayerBinding) == kFrozenRecordBytes);
         static_assert(offsetof(SceneMaterialData, textureParams) + 8 == 56);
         static_assert(offsetof(SceneMaterialData, rtxcrHairBaseColor) == 112);
         static_assert(offsetof(SceneMaterialData, baseColorTexture) == 176);
@@ -2486,7 +2487,7 @@ public:
         auto& device = *fixture;
         auto& queue = *device.getQueue(QueueType::Graphics);
         std::unique_ptr<Buffer> input, output;
-        REG_REQUIRE(device.createBuffer({.size = sizeof(records), .structureStride = sizeof(SceneMaterialData),
+        REG_REQUIRE(device.createBuffer({.size = records.size() * kFrozenRecordBytes, .structureStride = kFrozenRecordBytes,
             .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback,
             .queueAccess = QueueAccessBits::Graphics}).transform([&](auto value) { input = std::move(value); }));
         REG_REQUIRE(device.createBuffer({.size = sizeof(expected) * 2, .structureStride = 4,
@@ -2494,7 +2495,9 @@ public:
             .queueAccess = QueueAccessBits::Graphics}).transform([&](auto value) { output = std::move(value); }));
         void* data = input->map();
         REG_CHECK(data);
-        std::memcpy(data, records.data(), sizeof(records));
+        for (size_t i = 0; i < records.size(); ++i) {
+            std::memcpy(static_cast<std::byte*>(data) + i * kFrozenRecordBytes, &records[i], kFrozenRecordBytes);
+        }
         input->flush(); input->unmap();
         const std::string source = root.string();
         const std::string modules = (root / "Modules").string();

@@ -78,6 +78,7 @@ using ScenePathTraceGPUMaterial = SceneMaterialData;
 
 struct ScenePathTraceGPUScene {
     std::vector<ScenePathTraceGPUMaterial> materials;
+    std::vector<TerrainLayerMaterialData> terrainLayers;
 };
 
 struct ScenePathTraceTextureMipUpload {
@@ -968,6 +969,54 @@ std::vector<ScenePathTraceGPUMaterial> buildGpuMaterials(
     return materials;
 }
 
+Result<> buildGpuTerrainBindings(const scene::Scene& loadedScene, const std::vector<uint32_t>& textureIndexMap,
+    const std::vector<ScenePathTraceMaterialTexture>& textures, std::span<ScenePathTraceGPUMaterial> materials,
+    std::vector<TerrainLayerMaterialData>& bindings, std::string& log)
+{
+    const auto makeTexture = [&](const scene::RenderTextureInfo& info, std::string_view label, bool normal = false) {
+        auto texture = makeGpuTextureInfo(info, textureIndexMap, log, label);
+        if (texture.textureIndex < textures.size()) { stampTextureFormat(texture, textures[texture.textureIndex], normal); }
+        return texture;
+    };
+    for (size_t materialIndex = 0; materialIndex < loadedScene.materials().size(); ++materialIndex) {
+        const auto& authored = loadedScene.materials()[materialIndex].terrainLayers;
+        if (!authored) { continue; }
+        const size_t offset = materials.size_bytes() + bindings.size() * sizeof(TerrainLayerMaterialData);
+        if (offset > UINT32_MAX - sizeof(TerrainLayerMaterialData)) {
+            appendLogBlock(log, "Terrain layer bindings exceed scene material buffer address space");
+            return makeError(Error::InvalidArgument);
+        }
+        auto& binding = bindings.emplace_back();
+        binding.weights = makeTexture(authored->weights, "terrain weights");
+        binding.settings[0] = static_cast<uint32_t>(authored->layers.size());
+        binding.settings[1] = authored->defaultLayerIndex;
+        for (size_t i = 0; i < authored->layers.size(); ++i) {
+            const auto& layer = authored->layers[i];
+            binding.channels[i] = layer.channel;
+            binding.layers[i] = {
+                .baseColor = makeTexture(layer.baseColor, "terrain base color"),
+                .normal = makeTexture(layer.normal, "terrain normal", true),
+                .roughness = makeTexture(layer.roughness, "terrain roughness"),
+            };
+        }
+        materials[materialIndex].terrainLayerBinding[0] = static_cast<uint32_t>(offset);
+    }
+    if (!bindings.empty()) { materials[0].terrainLayerBinding[1] = static_cast<uint32_t>(materials.size()); }
+    return {};
+}
+
+std::span<const std::byte> materialUploadBytes(const MaterialGeneration& generation,
+    std::span<const TerrainLayerMaterialData> terrainBindings, std::vector<std::byte>& combined)
+{
+    const auto materialBytes = std::as_bytes(generation.parameters());
+    if (terrainBindings.empty()) { return materialBytes; }
+    const auto terrainBytes = std::as_bytes(terrainBindings);
+    combined.resize(materialBytes.size() + terrainBytes.size());
+    std::memcpy(combined.data(), materialBytes.data(), materialBytes.size());
+    std::memcpy(combined.data() + materialBytes.size(), terrainBytes.data(), terrainBytes.size());
+    return combined;
+}
+
 std::vector<bool> referencedMaterialTextures(const scene::Scene& loadedScene)
 {
     std::vector<bool> referenced(loadedScene.textures().size(), loadedScene.hasStreamGeometry());
@@ -988,6 +1037,14 @@ std::vector<bool> referencedMaterialTextures(const scene::Scene& loadedScene)
         mark(material.specularTexture);
         mark(material.specularColorTexture);
         mark(material.displacementTexture);
+        if (const auto& bindings = material.terrainLayers) {
+            mark(bindings->weights);
+            for (const auto& layer : bindings->layers) {
+                mark(layer.baseColor);
+                mark(layer.normal);
+                mark(layer.roughness);
+            }
+        }
     }
     for (const auto& decal : loadedScene.decals()) {
         markIndex(decal.baseColorTexture);
@@ -996,9 +1053,12 @@ std::vector<bool> referencedMaterialTextures(const scene::Scene& loadedScene)
     return referenced;
 }
 
-std::vector<std::array<int32_t, 23>> materialResourceLayout(const scene::Scene& loadedScene)
+constexpr size_t kStandardMaterialLayoutEntries = 23;
+using MaterialResourceLayout = std::array<int32_t, kStandardMaterialLayoutEntries + 1 + 3 * kMaxTerrainMaterialLayers>;
+
+std::vector<MaterialResourceLayout> materialResourceLayout(const scene::Scene& loadedScene)
 {
-    std::vector<std::array<int32_t, 23>> layout;
+    std::vector<MaterialResourceLayout> layout;
     layout.reserve(loadedScene.materials().size());
     for (const scene::RenderMaterial& material : loadedScene.materials()) {
         // Resource binding changes require a fresh texture/material snapshot.
@@ -1028,6 +1088,17 @@ std::vector<std::array<int32_t, 23>> materialResourceLayout(const scene::Scene& 
             material.alphaMode == "MASK" && !material.valueProgram.empty() ? 1 : 0,
             material.displacementTexture.textureIndex,
         });
+        auto& slots = layout.back();
+        auto textureEntry = slots.begin() + kStandardMaterialLayoutEntries;
+        std::fill(textureEntry, slots.end(), scene::kInvalidSceneIndex);
+        if (const auto& bindings = material.terrainLayers) {
+            *textureEntry++ = bindings->weights.textureIndex;
+            for (const auto& layer : bindings->layers) {
+                *textureEntry++ = layer.baseColor.textureIndex;
+                *textureEntry++ = layer.normal.textureIndex;
+                *textureEntry++ = layer.roughness.textureIndex;
+            }
+        }
     }
     return layout;
 }
@@ -2569,7 +2640,7 @@ struct ScenePathTraceResources::Impl {
     uint64_t sourceGeometryTransformRevision = 0;
     uint64_t sourceVisibilityRevision = 0;
     uint64_t sourceMaterialRevision = 0;
-    std::vector<std::array<int32_t, 23>> sourceMaterialResourceLayout;
+    std::vector<MaterialResourceLayout> sourceMaterialResourceLayout;
     std::unique_ptr<Buffer> materialBuffer;
     std::shared_ptr<MaterialBindingGeneration> materialBinding;
     std::shared_ptr<const MaterialGeneration> pendingMaterialGeneration;
@@ -2788,6 +2859,12 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
         case Impl::AsyncPrepareStage::GPUPayload:
             impl_->asyncGpuScene.materials = buildGpuMaterials(*impl_->asyncScene,
                 impl_->textureIndexMap, log);
+            result = buildGpuTerrainBindings(*impl_->asyncScene, impl_->textureIndexMap, impl_->materialTextures,
+                impl_->asyncGpuScene.materials, impl_->asyncGpuScene.terrainLayers, log);
+            if (!result) {
+                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
+                return result.transform([&] { return std::move(complete); });
+            }
             impl_->asyncBufferStep = 0;
             impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Buffers;
             continue;
@@ -2800,6 +2877,7 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
             uint32_t stride = 0;
             std::unique_ptr<Buffer>* destination = nullptr;
             const char* label = nullptr;
+            std::vector<std::byte> combinedMaterialPayload;
             switch (impl_->asyncBufferStep) {
             case 0: {
                 stampTextureFormats(impl_->asyncGpuScene.materials,impl_->materialTextures);
@@ -2811,8 +2889,10 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
                     impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
                     return makeError(Error::InvalidArgument);
                 }
-                data = impl_->pendingMaterialGeneration->parameters().data();
-                byteSize = impl_->asyncGpuScene.materials.size() * sizeof(ScenePathTraceGPUMaterial);
+                const auto bytes = materialUploadBytes(*impl_->pendingMaterialGeneration,
+                    impl_->asyncGpuScene.terrainLayers, combinedMaterialPayload);
+                data = bytes.data();
+                byteSize = bytes.size_bytes();
                 stride = sizeof(ScenePathTraceGPUMaterial);
                 destination = &impl_->materialBuffer;
                 label = "ScenePathTracePass materials";
@@ -2990,6 +3070,10 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
             impl_->textureIndexMap,
             log);
         stampTextureFormats(materials,impl_->materialTextures);
+        std::vector<TerrainLayerMaterialData> terrainBindings;
+        auto terrainResult = buildGpuTerrainBindings(*boundScene, impl_->textureIndexMap, impl_->materialTextures,
+            materials, terrainBindings, log);
+        if (!terrainResult) { return terrainResult; }
         std::string materialLog;
         auto candidate = MaterialGeneration::create(materials, boundScene->materialRevision(), materialLog, boundScene->materials());
         if (!candidate) {
@@ -2999,10 +3083,12 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
         // Build both halves before publication. An allocation or mapping failure
         // must not replace the previous buffer while retaining its old revision.
         std::unique_ptr<Buffer> candidateBuffer;
+        std::vector<std::byte> combinedMaterialPayload;
+        const auto bytes = materialUploadBytes(*candidate, terrainBindings, combinedMaterialPayload);
         const Result<> result = uploadStorageBuffer(
             *impl_->device,
-            candidate->parameters().data(),
-            static_cast<uint64_t>(materials.size() * sizeof(ScenePathTraceGPUMaterial)),
+            bytes.data(),
+            bytes.size_bytes(),
             sizeof(ScenePathTraceGPUMaterial),
             candidateBuffer,
             log,

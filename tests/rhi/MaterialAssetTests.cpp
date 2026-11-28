@@ -173,7 +173,7 @@ public:
                 return RHITestResult::fail("Semantic texture URI did not reach the production GPU upload: " + log);
             }
         }
-        return RHITestResult::pass("All OpenPBR asset fields preserved the 720-byte payload; resident/material-only uploads share existing programs");
+        return RHITestResult::pass("All OpenPBR asset fields preserved the scene material payload; resident/material-only uploads share existing programs");
     }
 };
 METALLIC_REGISTER_RHI_TEST(MaterialAssetUploadTest);

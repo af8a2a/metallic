@@ -20,6 +20,7 @@ struct MaterialBinningDesc {
     Buffer* instances = nullptr;
     Buffer* materials = nullptr;
     Buffer* shadingMaterials = nullptr;
+    uint32_t shadingMaterialCount = 0;
     uint32_t width = 0;
     uint32_t height = 0;
     // Dense active executable slots; slot zero is the background program.

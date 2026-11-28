@@ -54,6 +54,7 @@ struct MaterialInstance
     std::optional<std::string> parent;
     nlohmann::json parameters = nlohmann::json::object();
     nlohmann::json resources = nlohmann::json::object();
+    nlohmann::json terrainLayers; // Optional complete terrain binding override.
     nlohmann::json features = nlohmann::json::object();
     nlohmann::json featurePolicies = nlohmann::json::object();
     nlohmann::json valueParameters = nlohmann::json::object();
@@ -65,6 +66,7 @@ struct ResolvedMaterialInstance
     std::string definitionUri;
     nlohmann::json parameters;
     nlohmann::json resources;
+    nlohmann::json terrainLayers;
     nlohmann::json features;
     nlohmann::json valueParameters;
     MaterialFeaturePolicies featurePolicies;

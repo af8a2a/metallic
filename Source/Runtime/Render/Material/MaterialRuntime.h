@@ -23,7 +23,7 @@ enum class MaterialEvaluationTarget : uint32_t { SurfaceRayHit, RayHitWithFiber,
 // Stable shader IDs. CPU input normalization accepts zero; GPU publications
 // always carry an explicit ID so shader models need no parameter inference.
 enum class MaterialProgramId : uint32_t { OpenPBRComposite = 1, RTXCRChiang = 2, SingleSlab = 3, DualSlab = 4 };
-enum class MaterialParameterType : uint32_t { Float4, Texture, Float, UInt };
+enum class MaterialParameterType : uint32_t { Float4, Texture, Float, UInt, UInt4 };
 
 struct MaterialParameterSchema
 {
@@ -88,7 +88,7 @@ struct MaterialInstance
 };
 
 // Version of the scene upload transport, independent of shader model types.
-inline constexpr uint64_t kSceneMaterialABI = 0x4d41544c00000001ull;
+inline constexpr uint64_t kSceneMaterialABI = 0x4d41544c00000002ull;
 
 std::span<const MaterialProgram> builtinMaterialPrograms();
 const MaterialProgram* findMaterialProgram(MaterialProgramId id);

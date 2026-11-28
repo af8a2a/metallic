@@ -70,6 +70,7 @@ void materialRuntimeProbeMain(uint3 id : SV_DispatchThreadID)
     { uint2 v = uint2(asuint(m.specularColorTexture.sourceLodTerm), m.specularColorTexture.sourceMipCount); for (uint i = 0; i < 2; ++i) { output[cursor++] = v[i]; } }
     { uint4 v = asuint(m.specularColorTexture.transform0); for (uint i = 0; i < 4; ++i) { output[cursor++] = v[i]; } }
     { uint4 v = asuint(m.specularColorTexture.transform1); for (uint i = 0; i < 4; ++i) { output[cursor++] = v[i]; } }
+    { uint4 v = m.terrainLayerBinding; for (uint i = 0; i < 4; ++i) { output[cursor++] = v[i]; } }
 #ifndef MATERIAL_PROBE_REVISION
 #define MATERIAL_PROBE_REVISION 0
 #endif

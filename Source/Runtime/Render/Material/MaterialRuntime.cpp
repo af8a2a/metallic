@@ -28,7 +28,7 @@ constexpr std::array kParameters{
     MATERIAL_FIELD(transmissionTexture, Texture), MATERIAL_FIELD(thicknessTexture, Texture),
     MATERIAL_FIELD(diffuseTransmissionTexture, Texture), MATERIAL_FIELD(diffuseTransmissionColorTexture, Texture),
     MATERIAL_FIELD(specular, Float4), MATERIAL_FIELD(specularTexture, Texture),
-    MATERIAL_FIELD(specularColorTexture, Texture),
+    MATERIAL_FIELD(specularColorTexture, Texture), MATERIAL_FIELD(terrainLayerBinding, UInt4),
 };
 #undef MATERIAL_FIELD
 
@@ -109,7 +109,8 @@ bool validateMaterialSchema(const MaterialSchema& schema, std::string& diagnosti
         const auto& field = schema.parameters[i];
         uint32_t size = 0;
         switch (field.type) {
-        case MaterialParameterType::Float4: size = 16; break;
+        case MaterialParameterType::Float4:
+        case MaterialParameterType::UInt4: size = 16; break;
         case MaterialParameterType::Texture: size = sizeof(SceneMaterialData::TextureInfo); break;
         case MaterialParameterType::Float:
         case MaterialParameterType::UInt: size = 4; break;

@@ -23,6 +23,7 @@ TOOLS = Path(__file__).resolve().parents[2] / "Tools"
 sys.path.insert(0, str(TOOLS))
 from BuildTerrainLayerTextures import build_layer_material
 from BuildTerrainMesh import TerrainBuildError
+from BuildTerrainVSMSample import build_sample
 from ImportTerrainLayers import import_terrain_layers
 from TerrainLayerAsset import load_terrain_layer_asset, read_layer_weights
 
@@ -220,6 +221,55 @@ class TerrainLayerAssetTests(unittest.TestCase):
         weight_map = material["resources"]["occlusionTexture"]
         self.assertEqual("asset://legacy_weight.png", weight_map["uri"])
         self.assertEqual([0.25, 0, 0.125, 0, 0.25, 0.125], weight_map["transform"])
+
+    def test_sample_binds_four_layers_with_private_linear_and_color_resources(self):
+        height_path = self.root / "height.exr"
+        terrain_path = self.root / "terrain.gltf"
+        output = self.root / "baked" / "terrain.gltf"
+        self.write_exr({"Y": [0, 1, 2, 3]}, path=height_path)
+        self.planes["G"] = [1, 1, 0, 1]
+        self.write_exr(self.planes)
+        template = self.document["layers"][0]
+        self.document["layers"].append({**template, "name": "clay", "channel": "G"})
+        self.load()
+        bake = subprocess.run([
+            sys.executable, "-B", str(TOOLS / "BuildTerrainMesh.py"), str(height_path),
+            "--output", str(terrain_path), "--horizontal-size", "30", "--flip-z",
+        ], capture_output=True, text=True)
+        self.assertEqual(0, bake.returncode, bake.stdout + bake.stderr)
+        lighting = self.root / "lighting.json"
+        lighting.write_text(json.dumps({"world": {"environment": {"path": "environment.hdr"}}}), encoding="utf-8")
+        build_sample(terrain_path, lighting,
+                     TOOLS.parent / "Pipelines/Samples/gpu_driven_terrain_vsm.metallic_graph.json", output,
+                     layer_asset=self.path)
+
+        sidecar = json.loads(output.with_suffix(".metallic_scene.json").read_text(encoding="utf-8"))
+        binding, = sidecar["materials"]
+        self.assertEqual(0, binding["materialIndex"])
+        self.assertEqual({"uri": "asset://terrain.material", "root": "."}, binding["materialAsset"])
+        definition = json.loads(output.with_suffix(".materialdef").read_text(encoding="utf-8"))
+        self.assertEqual("OpenPBR.TerrainLayers", definition["implementation"])
+        material = json.loads(output.with_suffix(".material").read_text(encoding="utf-8"))
+        self.assertNotIn("resources", material)
+        terrain_layers = material["terrainLayers"]
+        self.assertEqual("bedrock", terrain_layers["defaultLayer"])
+        self.assertEqual(["B", "A", "R", "G"], [layer["channel"] for layer in terrain_layers["layers"]])
+        weights = terrain_layers["weights"]
+        self.assertEqual({"uri": "asset://terrain_layer_weights.png", "transform": [0.25, 0, 0.125, 0, 0.25, 0.125]},
+                         weights)
+        with Image.open(output.parent / weights["uri"].removeprefix("asset://")) as image:
+            self.assertEqual("RGBA", image.mode)
+            rgba = np.asarray(image)
+            np.testing.assert_array_equal(rgba.sum(axis=-1), np.full((4, 4), 255))
+            np.testing.assert_array_equal(rgba[0, 0], [0, 0, 0, 255])
+        first = terrain_layers["layers"][0]
+        for role, texture in (("baseColor", "color.png"), ("normal", "normal.png"), ("roughness", "roughness.png")):
+            resource = first[role]
+            self.assertEqual([10, 0, -5, 0, 6, -3], resource["transform"])
+            self.assertEqual("srgb" if role == "baseColor" else None, resource.get("colorSpace"))
+            texture_uri = resource["uri"].removeprefix("asset://")
+            self.assertEqual(Path(texture_uri).name, texture_uri)
+            self.assertEqual((self.root / "textures" / texture).read_bytes(), (output.parent / texture_uri).read_bytes())
 
 
 if __name__ == "__main__":

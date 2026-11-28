@@ -54,8 +54,9 @@ Result<MaterialBinningResult> MaterialBinning::record(
     const uint64_t tileCount = columns * rows;
     const bool sparse = desc.programBinCount != 0;
     const uint32_t binCount = sparse ? desc.programBinCount : kMaterialClassCount;
+    const uint64_t shadingMaterialBytes = uint64_t(desc.shadingMaterialCount) * sizeof(SceneMaterialData);
     if (sparse && (binCount > kMaxMaterialProgramBins || desc.materialProgramBins.empty() ||
-        desc.shadingMaterials == nullptr || desc.materialProgramBins.size() != desc.shadingMaterials->desc().size / sizeof(SceneMaterialData) ||
+        desc.materialProgramBins.size() != desc.shadingMaterialCount ||
         std::any_of(desc.materialProgramBins.begin(), desc.materialProgramBins.end(),
             [binCount](uint32_t bin) { return bin == 0 || bin >= binCount; }))) {
         log = "Program binning requires a complete instance-to-active-program table; slot zero is reserved for background";
@@ -64,7 +65,8 @@ Result<MaterialBinningResult> MaterialBinning::record(
     if (frame == nullptr || !frame->recording() || !commands.recording() || desc.visibility == nullptr ||
         (desc.streamRecords == nullptr || desc.streamGroups == nullptr) ||
         desc.instances == nullptr || desc.materials == nullptr ||
-        desc.shadingMaterials == nullptr || desc.shadingMaterials->desc().size == 0 ||
+        desc.shadingMaterials == nullptr || shadingMaterialBytes == 0 ||
+        shadingMaterialBytes > desc.shadingMaterials->desc().size ||
         tileCount == 0 || tileCount > UINT32_MAX / (sparse ? 32u : kMaterialClassCount) ||
         uint64_t(desc.width) * desc.height > UINT32_MAX || columns > 65535 || rows > 65535) {
         log = "Material classification requires a recording frame, valid scene materials and bounded non-empty tile dimensions";
@@ -235,7 +237,8 @@ Result<MaterialBinningResult> MaterialBinning::record(
     const MaterialBinningParams params{
         .visibility = writer.sampledImage(desc.visibility),
         .instances = writer.bufferSpan(desc.instances, 160, 16),
-        .materials = writer.bufferSpan(desc.materials, 560, 16), .shadingMaterials = writer.bufferSpan(desc.shadingMaterials, sizeof(SceneMaterialData), 16),
+        .materials = writer.bufferSpan(desc.materials, 560, 16),
+        .shadingMaterials = writer.bufferSpan(desc.shadingMaterials, {0, shadingMaterialBytes}, sizeof(SceneMaterialData), 16),
         .bins = writer.bufferSpan(buffers[0].get(), 8, 8), .tiles = writer.bufferSpan(buffers[1].get(), 8, 8),
         .arguments = writer.bufferSpan(buffers[2].get(), 4, 4),
         .streamRecords = desc.streamRecords ? writer.bufferSpan(desc.streamRecords, 4, 4) : GPUBufferSpan{},

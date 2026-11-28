@@ -91,6 +91,60 @@ Json texture(Json value)
     return value;
 }
 
+Json terrainTexture(const Json& source, bool color)
+{
+    auto value = texture(source);
+    require(!value.is_null() && value.at("texCoord") == 0, "Terrain textures require UV0 and a texture resource");
+    require(color || !value.contains("colorSpace"), "Terrain weight, normal and roughness are linear data textures");
+    return value;
+}
+
+constexpr std::string_view kTerrainChannels = "RGBA";
+constexpr std::string_view kTerrainImplementation = "OpenPBR.TerrainLayers";
+
+Json terrainLayers(Json value)
+{
+    if (value.is_null()) { return value; }
+    keys(value, {"weights", "defaultLayer", "layers"});
+    value["weights"] = terrainTexture(value.at("weights"), false);
+    auto& layers = value.at("layers");
+    require(layers.is_array() && !layers.empty() && layers.size() <= kTerrainChannels.size(),
+        "Terrain material requires one to four layers");
+    std::set<std::string> names;
+    std::set<char> channels;
+    for (auto& layer : layers) {
+        keys(layer, {"name", "channel", "baseColor", "normal", "roughness"});
+        const auto name = layer.at("name").get<std::string>();
+        require(!name.empty() && names.insert(name).second, "Terrain layer names must be nonempty and unique");
+        const auto channel = layer.at("channel").get<std::string>();
+        require(channel.size() == 1 && kTerrainChannels.find(channel[0]) != std::string_view::npos &&
+            channels.insert(channel[0]).second, "Terrain layers require unique R, G, B or A channels");
+        layer["baseColor"] = terrainTexture(layer.at("baseColor"), true);
+        layer["normal"] = terrainTexture(layer.at("normal"), false);
+        layer["roughness"] = terrainTexture(layer.at("roughness"), false);
+    }
+    require(names.contains(value.at("defaultLayer").get<std::string>()), "Terrain defaultLayer must name a declared layer");
+    return value;
+}
+
+scene::RenderTextureInfo lowerTexture(const Json& value, const MaterialResourceResolver& resolver,
+    render::TextureColorMetadata metadata)
+{
+    scene::RenderTextureInfo result{.colorMetadata = metadata};
+    if (value.is_null()) { return result; }
+    require(bool(resolver), "Material texture resolver is missing");
+    const auto uri = value.at("uri").get<std::string>();
+    result.textureIndex = resolver(uri);
+    require(result.textureIndex >= 0, "Unresolved texture: " + uri);
+    result.texCoord = value.at("texCoord").get<int32_t>();
+    result.uvTransform = value.at("transform").get<std::array<float, 6>>();
+    if (value.contains("colorSpace")) {
+        require(result.colorMetadata.semantic == render::TextureSemantic::Color, "Data textures cannot declare colorSpace");
+        require(render::parseColorSpace(value["colorSpace"].get<std::string>(), result.colorMetadata.source), "Unsupported colorSpace");
+    }
+    return result;
+}
+
 Json validate(const MaterialPropertyDesc& descriptor, Json value)
 {
     switch (descriptor.type) {
@@ -137,6 +191,7 @@ void apply(const MaterialInstance& instance, ResolvedMaterialInstance& result)
         "Material instance/definition version mismatch; explicit migration required");
     overlay(result.definition.schema.parameters, instance.parameters, result.parameters);
     overlay(result.definition.schema.resources, instance.resources, result.resources);
+    if (!instance.terrainLayers.is_null()) { result.terrainLayers = instance.terrainLayers; }
     overlay(result.definition.schema.features, instance.features, result.features);
     for (const auto& [slot, value] : instance.valueParameters.items()) { result.valueParameters[slot] = value; }
     std::string error;
@@ -160,6 +215,7 @@ void validateStructure(const MaterialInstance& instance)
     require(!instance.parent || (instance.parent->starts_with("asset://") && instance.parent->ends_with(".material")), "Invalid material parent URI");
     require(instance.parameters.is_object() && instance.resources.is_object() && instance.features.is_object(), "Material overrides must be objects");
     validateValueParameters(instance.valueParameters);
+    (void)terrainLayers(instance.terrainLayers);
     auto schema = defaultOpenPBRDefinition().schema;
     // The definition URI is resolved later. Structural parsing accepts known
     // fields from both domains; apply() enforces the resolved definition schema.
@@ -176,7 +232,8 @@ void validateStructure(const MaterialInstance& instance)
 
 MaterialInstance instanceFromJson(Json document)
 {
-    keys(document, {"type", "version", "definitionVersion", "definition", "parent", "parameters", "resources", "features", "featurePolicies", "valueParameters"});
+    keys(document, {"type", "version", "definitionVersion", "definition", "parent", "parameters", "resources",
+        "terrainLayers", "features", "featurePolicies", "valueParameters"});
     require(document.at("type") == "Metallic.MaterialInstance", "Wrong material asset type");
     require(document.at("version").is_number_unsigned() || document.at("version").is_number_integer(), "Invalid instance version");
     const auto version = document.at("version").get<int64_t>();
@@ -196,6 +253,7 @@ MaterialInstance instanceFromJson(Json document)
     if (document.contains("parent") && !document["parent"].is_null()) { result.parent = document["parent"].get<std::string>(); }
     result.parameters = document.value("parameters", Json::object());
     result.resources = document.value("resources", Json::object());
+    result.terrainLayers = document.value("terrainLayers", Json());
     result.features = document.value("features", Json::object());
     result.featurePolicies = document.value("featurePolicies", Json::object());
     result.valueParameters = document.value("valueParameters", Json::object());
@@ -256,9 +314,10 @@ bool deserializeMaterialDefinition(std::string_view text, MaterialDefinition& ou
         if (candidate.implementation == "OpenPBRComposite.Legacy") {
             candidate.implementation = "OpenPBRComposite.Surface";
         }
-        require(candidate.implementation == "OpenPBRComposite.Surface" || candidate.implementation == "Slab.Surface" ||
+        require(candidate.implementation == "OpenPBRComposite.Surface" || candidate.implementation == kTerrainImplementation ||
+            candidate.implementation == "Slab.Surface" ||
             candidate.implementation == "OpenPBR.Value" || fiber, "Unsupported material implementation");
-        if (!fiber && candidate.implementation != "OpenPBRComposite.Surface") {
+        if (candidate.implementation == "OpenPBR.Value" || candidate.implementation == "Slab.Surface") {
             require(document.contains("surfaceProgram") && document["surfaceProgram"].is_object(), "Program definition requires surfaceProgram");
             candidate.surfaceProgram = document["surfaceProgram"].dump();
             require(render::MaterialValueIR::parse(candidate.surfaceProgram).closure().has_value() == (candidate.implementation == "Slab.Surface"),
@@ -278,6 +337,8 @@ bool deserializeMaterialDefinition(std::string_view text, MaterialDefinition& ou
         }
         require(!fiber || (candidate.valueParameters.empty() && candidate.featurePolicies == MaterialFeaturePolicies{}),
             "Fiber does not support Surface Value IR or Surface feature policies");
+        require(candidate.implementation != kTerrainImplementation || candidate.valueParameters.empty(),
+            "Terrain layer materials do not use Value parameter slots");
         const auto update = [&](auto& schema, const char* group) {
             auto resolved = defaults(schema);
             overlay(schema, values.value(group, Json::object()), resolved);
@@ -314,11 +375,13 @@ bool deserializeMaterialInstance(std::string_view text, MaterialInstance& output
 std::string serializeMaterialInstance(const MaterialInstance& instance)
 {
     validateStructure(instance);
-    return Json{{"type", "Metallic.MaterialInstance"}, {"version", instance.version},
+    Json document{{"type", "Metallic.MaterialInstance"}, {"version", instance.version},
         {"definitionVersion", instance.definitionVersion}, {"definition", instance.definition},
         {"parent", instance.parent ? Json(*instance.parent) : Json(nullptr)}, {"parameters", instance.parameters},
         {"resources", instance.resources}, {"features", instance.features}, {"featurePolicies", instance.featurePolicies},
-        {"valueParameters", instance.valueParameters}}.dump(4) + '\n';
+        {"valueParameters", instance.valueParameters}};
+    if (!instance.terrainLayers.is_null()) { document["terrainLayers"] = instance.terrainLayers; }
+    return document.dump(4) + '\n';
 }
 
 bool upgradeMaterial(Json& document, uint32_t versionFrom, uint32_t versionTo, std::string& error)
@@ -458,12 +521,16 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
     scene::RenderMaterial& output, std::string& error)
 {
     return attempt(error, [&] {
+        const bool terrain = instance.definition.implementation == kTerrainImplementation;
+        require(terrain == !instance.terrainLayers.is_null(),
+            "Terrain layer bindings must be supplied for an OpenPBR.TerrainLayers definition");
         if (instance.definition.implementation == "RTXCRChiang.DOTS") {
             require(instance.definition.surfaceProgram.empty() && instance.valueParameters.empty() && output.valueProgram.empty(),
                 "Fiber does not support Surface Value/Closure IR");
             require(instance.resources.empty() && instance.featurePolicies == MaterialFeaturePolicies{},
                 "Fiber does not support Surface resources or feature policies");
             auto candidate = output;
+            candidate.terrainLayers.reset();
             candidate.rtxcrHair = true;
             candidate.alphaMode = "OPAQUE";
             candidate.unlit = false;
@@ -480,9 +547,14 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
         }
         const bool slab = instance.definition.implementation == "Slab.Surface";
         const bool value = instance.definition.implementation == "OpenPBR.Value";
-        require(slab || value || instance.definition.implementation == "OpenPBRComposite.Surface", "Unsupported material implementation");
+        require(slab || value || terrain || instance.definition.implementation == "OpenPBRComposite.Surface", "Unsupported material implementation");
         require(!output.rtxcrHair, "OpenPBR asset cannot replace a Fiber material");
         auto candidate = output;
+        candidate.terrainLayers.reset();
+        if (terrain) {
+            candidate.valueProgram.clear();
+            candidate.valueParameters = {};
+        }
         if (slab || value) {
             require(render::MaterialValueIR::parse(instance.definition.surfaceProgram).closure().has_value() == slab, "Definition Closure IR mismatch");
             candidate.valueProgram = instance.definition.surfaceProgram;
@@ -513,22 +585,30 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
                 candidate.diffuseTransmissionFactor == 0, "IR assets require lit opaque/MASK Surface; transmission requires explicit OpenPBR attenuationColor");
             require(!ir.outputs().contains("coverage") || candidate.alphaMode == "MASK", "Coverage assets require alphaMode mask");
         }
+        if (terrain) {
+            require(!candidate.unlit && candidate.alphaMode == "OPAQUE" && candidate.transmissionFactor == 0 &&
+                candidate.diffuseTransmissionFactor == 0 && instance.valueParameters.empty(),
+                "Terrain layers require lit opaque OpenPBR");
+            const auto resolved = terrainLayers(instance.terrainLayers);
+            auto bindings = std::make_shared<scene::RenderTerrainLayerBindings>();
+            bindings->weights = lowerTexture(resolved.at("weights"), resolver, {});
+            const auto defaultLayer = resolved.at("defaultLayer").get<std::string>();
+            for (const auto& source : resolved.at("layers")) {
+                const auto name = source.at("name").get<std::string>();
+                if (name == defaultLayer) { bindings->defaultLayerIndex = static_cast<uint32_t>(bindings->layers.size()); }
+                bindings->layers.push_back({
+                    .name = name,
+                    .channel = static_cast<uint32_t>(kTerrainChannels.find(source.at("channel").get<std::string>())),
+                    .baseColor = lowerTexture(source.at("baseColor"), resolver, render::ksRGBColorTexture),
+                    .normal = lowerTexture(source.at("normal"), resolver, {}),
+                    .roughness = lowerTexture(source.at("roughness"), resolver, {}),
+                });
+            }
+            candidate.terrainLayers = std::move(bindings);
+        }
         const scene::RenderMaterial textureDefaults;
         for (const auto& [name, member] : detail::kTextures) {
-            auto& info = candidate.*member;
-            info = {};
-            info.colorMetadata = (textureDefaults.*member).colorMetadata;
-            const auto value = texture(instance.resources.at(name));
-            if (value.is_null()) { continue; }
-            require(bool(resolver), "Material texture resolver is missing");
-            info.textureIndex = resolver(value.at("uri").get<std::string>());
-            require(info.textureIndex >= 0, "Unresolved texture: " + value.at("uri").get<std::string>());
-            info.texCoord = value.at("texCoord").get<int32_t>();
-            info.uvTransform = value.at("transform").get<std::array<float, 6>>();
-            if (value.contains("colorSpace")) {
-                require(info.colorMetadata.semantic == render::TextureSemantic::Color, "Data textures cannot declare colorSpace");
-                require(render::parseColorSpace(value["colorSpace"].get<std::string>(), info.colorMetadata.source), "Unsupported colorSpace");
-            }
+            candidate.*member = lowerTexture(texture(instance.resources.at(name)), resolver, (textureDefaults.*member).colorMetadata);
         }
         require(scene::validMaterialProperties(candidate), "Resolved material is invalid");
         output = std::move(candidate);
@@ -562,6 +642,8 @@ bool createMaterialInstance(const scene::RenderMaterial& source, std::string def
             return;
         }
         require(!source.rtxcrHair && scene::validMaterialProperties(source), "Invalid OpenPBR source material");
+        require((definition.implementation == kTerrainImplementation) == bool(source.terrainLayers),
+            "Terrain bindings require an OpenPBR.TerrainLayers definition");
         require(definition.surfaceProgram.empty() ? source.valueProgram.empty() : (!source.valueProgram.empty() &&
             render::MaterialValueIR::parse(source.valueProgram).canonical() == render::MaterialValueIR::parse(definition.surfaceProgram).canonical()),
             "Custom Value Program code must belong to the material definition");
@@ -584,16 +666,36 @@ bool createMaterialInstance(const scene::RenderMaterial& source, std::string def
             parameters[field.name] = {color.x, color.y, color.z};
         }
         Json resources = Json::object();
-        for (const auto& [name, member] : detail::kTextures) {
-            const auto& info = source.*member;
-            resources[name] = nullptr;
-            if (info.textureIndex < 0) { continue; }
+        const auto encodeTexture = [&](std::string_view slot, const scene::RenderTextureInfo& info) -> Json {
+            if (info.textureIndex < 0) { return nullptr; }
             require(bool(encoder), "Material resource encoder is missing");
-            resources[name] = texture({{"uri", encoder(name, info.textureIndex)},
+            auto result = texture({{"uri", encoder(slot, info.textureIndex)},
                 {"texCoord", info.texCoord}, {"transform", info.uvTransform}});
             if (info.colorMetadata.semantic == render::TextureSemantic::Color) {
-                resources[name]["colorSpace"] = render::colorSpaceName(info.colorMetadata.source);
+                result["colorSpace"] = render::colorSpaceName(info.colorMetadata.source);
             }
+            return result;
+        };
+        for (const auto& [name, member] : detail::kTextures) {
+            resources[name] = encodeTexture(name, source.*member);
+        }
+        if (source.terrainLayers) {
+            const auto& bindings = *source.terrainLayers;
+            Json layers = Json::array();
+            for (const auto& layer : bindings.layers) {
+                const auto prefix = "terrainLayers." + layer.name + ".";
+                layers.push_back({
+                    {"name", layer.name}, {"channel", kTerrainChannels.substr(layer.channel, 1)},
+                    {"baseColor", encodeTexture(prefix + "baseColor", layer.baseColor)},
+                    {"normal", encodeTexture(prefix + "normal", layer.normal)},
+                    {"roughness", encodeTexture(prefix + "roughness", layer.roughness)},
+                });
+            }
+            candidate.terrainLayers = {
+                {"weights", encodeTexture("terrainLayers.weights", bindings.weights)},
+                {"defaultLayer", bindings.layers[bindings.defaultLayerIndex].name},
+                {"layers", std::move(layers)},
+            };
         }
         const Json features = {{"alphaMode", source.alphaMode == "OPAQUE" ? "opaque" : source.alphaMode == "MASK" ? "mask" : "blend"},
             {"doubleSided", source.doubleSided}, {"unlit", source.unlit}};

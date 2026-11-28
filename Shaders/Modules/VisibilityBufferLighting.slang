@@ -417,6 +417,7 @@ public struct DeferredOpenPBRMaterialSource : IOpenPBRMaterialSource
     {
         return loadSceneOpenPBRMaterial(instance.parameterOffset / kSceneMaterialRecordBytes);
     }
+    public ByteAddressBuffer terrainBindingBuffer() { return sceneMaterialBuffer(); }
     public float4 loadTexture(MaterialTextureInfo textureInfo, float2 uv, float4 fallback,
         ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
         bool deterministicMip0, inout uint seed, TextureFootprint footprint, out bool sampled)

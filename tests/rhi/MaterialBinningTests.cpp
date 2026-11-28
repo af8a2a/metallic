@@ -142,12 +142,14 @@ public:
         }
         render::MaterialBinningResult bins;
         std::string log;
+        auto* shadingMaterials = context.inputBuffer("shadingMaterials").buffer();
         auto result = binning_.record(*device_, commands, {
             .visibility = context.inputTexture("visibility").view(),
             .streamRecords = context.inputBuffer("records").buffer(), .streamGroups = context.inputBuffer("groups").buffer(),
             .instances = context.inputBuffer("instances").buffer(),
             .materials = context.inputBuffer("materials").buffer(),
-            .shadingMaterials = context.inputBuffer("shadingMaterials").buffer(),
+            .shadingMaterials = shadingMaterials,
+            .shadingMaterialCount = uint32_t(shadingMaterials->desc().size / sizeof(render::SceneMaterialData)),
             .width = push[0], .height = push[1]}, log).transform([&](auto value) { bins = std::move(value); });
         if (!result) { return result; }
         if (typed_) { return executeTyped(context, bins, push, readbackGroups); }
@@ -456,7 +458,8 @@ public:
         auto& commands = context.commandBuffer();
         const uint32_t phase = uint32_t(context.frameIndex() % 4);
         // Mapping changes are instance data. They never compile/create a Program.
-        std::vector<uint32_t> mapping(context.inputBuffer("shadingMaterials").buffer()->desc().size / sizeof(render::SceneMaterialData));
+        auto* shadingMaterials = context.inputBuffer("shadingMaterials").buffer();
+        std::vector<uint32_t> mapping(shadingMaterials->desc().size / sizeof(SceneMaterialData));
         for (uint32_t i = 0; i < mapping.size(); ++i) {
             mapping[i] = count_ == 5 ? (i == 1 || i == 2 ? 3 : 1 + (i + phase) % 4) : 1 + (i + phase) % (count_ - 1);
         }
@@ -468,7 +471,7 @@ public:
             auto rejected = binning_.record(*device_, commands, {
                 .visibility = context.inputTexture("visibility").view(), .streamRecords = context.inputBuffer("records").buffer(), .streamGroups = context.inputBuffer("groups").buffer(),
                 .instances = context.inputBuffer("instances").buffer(), .materials = context.inputBuffer("materials").buffer(),
-                .shadingMaterials = context.inputBuffer("shadingMaterials").buffer(),
+                .shadingMaterials = shadingMaterials, .shadingMaterialCount = uint32_t(mapping.size()),
                 .width = context.width(), .height = context.height(), .materialProgramBins = invalid, .programBinCount = count_}, log);
             if (!hasError(rejected, Error::InvalidArgument)) { return makeError(Error::Failure); }
         }
@@ -477,7 +480,7 @@ public:
             auto result = binning_.record(*device_, commands, {
                 .visibility = context.inputTexture("visibility").view(), .streamRecords = context.inputBuffer("records").buffer(), .streamGroups = context.inputBuffer("groups").buffer(),
                 .instances = context.inputBuffer("instances").buffer(), .materials = context.inputBuffer("materials").buffer(),
-                .shadingMaterials = context.inputBuffer("shadingMaterials").buffer(),
+                .shadingMaterials = shadingMaterials, .shadingMaterialCount = uint32_t(mapping.size()),
                 .width = context.width(), .height = context.height(),
                 .materialProgramBins = sparse_ ? std::span<const uint32_t>(mapping) : std::span<const uint32_t>{},
                 .programBinCount = sparse_ ? count_ : 0,

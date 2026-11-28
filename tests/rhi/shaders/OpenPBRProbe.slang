@@ -89,6 +89,7 @@ public struct ProbeSource : IOpenPBRMaterialSource
     public typealias Context = ProbeOpenPBRContext;
     public bool hasTextures(ScenePathTracePush push) { return true; }
     public Context context() { Context result; result.probe = probe; return result; }
+    public ByteAddressBuffer terrainBindingBuffer() { return resolveUniform(probe.parameters.resource); }
     public OpenPBRMaterialParameters loadParameters(MaterialInstanceRef instance)
     {
         countStage(probe, 0);

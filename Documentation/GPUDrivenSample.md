@@ -162,7 +162,7 @@ python -B Tools/Perf/PrepareTerrainStreamingAcceptance.py --tiles-per-axis 16
 ```powershell
 cmake --build build-relwithdebinfo --target MetallicTerrainLayers16x16VSMSample
 cmake --build build-relwithdebinfo --target MetallicTerrainLayers16x16VSMSmoke
-python -B Tools/Perf/TerrainLayerAcceptance.py run --executable build-ci/tests/MetallicRHITests.exe
+cmake --build build-ci --target MetallicTerrainLayerRegression
 ```
 
 在编辑器选择 **GPUDrivenSample / Terrain Rock and Grass + VSM**。样例使用原 `Asset/simple_terrain_height.exr` 高度图和 `Asset/Terrain/TerrainRockWeight.exr`。权重图的线性 R 通道为岩石比例，草地比例为 `1 - R`。导出自己的权重时沿用高度图的数据窗口和行方向，像素值保持在 `[0, 1]`。`BuildTerrainVSMSample.py --weight-map <EXR>` 将它绑定到地形材质，随高度图应用 `flipZ`，并镜像扩展边缘供 mip 采样。
@@ -176,7 +176,7 @@ python -B Tools/ExportTerrainWeight.py Asset/simple_terrain_height.exr `
 
 分块 glTF 的全局 `TEXCOORD_0` 对应高度场的世界 XZ 坐标。材质资源变换将它换算为草地每 2 世界单位、岩石每 6 世界单位的重复坐标。两层底色按线性颜色混合，法线解码后在共同的切线空间混合并归一化，线性粗糙度存于各层法线贴图的 alpha。三个结果进入同一套 OpenPBR 着色。VSM 样例仍与普通网格共用 Visibility Buffer 和光照图。
 
-验收在 `(11,3)` 和 `(11,4)` 的共享边上检查同一条岩石带。近景、远景和 272 页飞行的实际混合 LOD 帧均采集底色、法线、粗糙度和最终着色，结果写入 `build/terrain-layer-acceptance/`。
+双层自动回归在 `(11,3)` 和 `(11,4)` 的共享边上检查同一条岩石带。近景、远景和 272 页飞行的实际混合 LOD 帧均采集底色、法线、粗糙度和最终着色。CMake 目标将每次运行的结果写入 `build-ci/tests/terrain-layer-regression/` 下独立的目录。直接执行 `TerrainLayerAcceptance.py run` 时，默认仍使用双层样例。
 
 第 84 帧在 272 页满额时采到 87 对材质带内的 LOD 2/3 跨边像素。近景、远景和混合 LOD 的底色与粗糙度均通过世界坐标参考比较，两层法线均产生了可测的映射结果。另对烘焙页解码，480 条共享边和 768 次 LOD 细化替换的世界位置、法线、UV0 和切线均与源数据一致。
 
@@ -207,7 +207,28 @@ python -B Tools/ImportTerrainLayers.py Asset/MeshletCache/TerrainBlocks16x16/ter
 python -B tests/tools/TestTerrainLayerAsset.py -v
 ```
 
-导入会在每个像素归一化已声明的权重，未声明的通道置零，已声明的权重全为零时令默认层占满。输出清单和镜像边缘的线性 RGBA8 权重图。四个字节逐像素合计为 255，A 通道仍是权重。清单记录全局权重 UV 变换和各层的世界平铺变换，标明底色按 sRGB 读取、法线与粗糙度按线性读取，供多层 OpenPBR 合成接入。现有岩石和草地样例继续通过 `BuildTerrainVSMSample.py --weight-map` 使用 `R / (1 - R)` 权重。
+导入会在每个像素归一化已声明的权重，未声明的通道置零，已声明的权重全为零时令默认层占满。输出清单和镜像边缘的线性 RGBA8 权重图。四个字节逐像素合计为 255，A 通道仍是权重。清单记录全局权重 UV 变换和各层的世界平铺变换，标明底色按 sRGB 读取、法线与粗糙度按线性读取。
+
+```powershell
+cmake --build build-relwithdebinfo --target MetallicTerrainMultilayer16x16VSMSample
+cmake --build build-relwithdebinfo --target MetallicTerrainMultilayer16x16VSMSmoke
+```
+
+在编辑器选择 **GPUDrivenSample / Terrain Four Layers + VSM**。样例生成岩石、草地、砾石和雪四层，并在原材质带旁加入四层交叠区。为自己的地形生成材质时，将同一份 Houdini `Metallic.TerrainLayers` JSON 传给 `BuildTerrainVSMSample.py --layer-asset`，导入权重并在场景中绑定 `OpenPBR.TerrainLayers` 材质。旧的 `--weight-map` 入口继续使用 `R / (1 - R)` 权重。
+
+`OpenPBR.TerrainLayers` 在材质实例的 `terrainLayers` 中显式绑定 `weights` 和 `defaultLayer`，并在每层声明 `name`、`channel`、`baseColor`、`normal` 和 `roughness`。贴图使用常规材质资源 URI 和 UV 变换。运行时在采样后对已声明的权重再次归一化，全零时选择默认层。底色按工作空间线性混合，切线空间法线解码后加权并归一化，粗糙度读取各层贴图的 R 并沿用双层样例的线性加权语义。
+
+四层自动回归沿用双层的机位和飞行路线，在 `(11,3)` 与 `(11,4)` 的共享边检查第 84 帧（272 页、混合 LOD）、第 94 帧（近景）和第 104 帧（远景）的底色、法线与粗糙度连续性。回归要求共享边两侧都有四层参与，还会根据抓帧的地表深度和相机重建纹理采样范围，比较滤波后的世界坐标参考和接缝残差。以下目标会构建样例与 `MetallicRHITests` 并运行回归，输出保存在 `build-ci/tests/terrain-multilayer-regression/`。各次运行独立保存抓帧、Vulkan 检查及 `TerrainLayerAcceptance.json`。
+
+```powershell
+cmake --build build-ci --target MetallicTerrainMultilayerRegression
+```
+
+如果已构建两个样例和 `MetallicRHITests`，可以由 CTest 依次执行双层和四层回归。
+
+```powershell
+ctest --test-dir build-ci -R '^MetallicTerrain(Layer|Multilayer)Regression$' --output-on-failure
+```
 
 ### 地表拾取与摆放
 

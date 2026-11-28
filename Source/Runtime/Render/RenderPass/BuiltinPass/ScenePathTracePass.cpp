@@ -2261,6 +2261,7 @@ public:
                     .streamGroups = deferredStream->activeGroupBuffer,
                     .instances = deferredViews->instances.buffer, .materials = deferredViews->materials.buffer,
                     .shadingMaterials = sceneResources_.materialBuffer(),
+                    .shadingMaterialCount = static_cast<uint32_t>(sceneResources_.materialGeneration()->parameters().size()),
                     .width = push.width, .height = push.height,
                     .materialProgramBins = sparsePrograms ? std::span<const uint32_t>(materialInstanceProgramBins_) : std::span<const uint32_t>{},
                     .programBinCount = sparsePrograms ? uint32_t(materialProgramBins_.size()) : 0u,

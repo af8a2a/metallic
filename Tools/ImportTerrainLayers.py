@@ -15,7 +15,7 @@ import numpy as np
 from PIL import Image
 
 from BuildTerrainLayerTextures import mirror_weight_map, weight_uv_transform
-from BuildTerrainMesh import TerrainBuildError
+from BuildTerrainMesh import TerrainBuildError, write_atomic
 from TerrainLayerAsset import load_terrain_layer_asset, read_layer_weights
 
 
@@ -47,7 +47,8 @@ def encode_weight_png(weights: np.ndarray) -> bytes:
         return stream.getvalue()
 
 
-def import_terrain_layers(terrain_path: Path, asset_path: Path, output: Path) -> None:
+def prepare_terrain_layer_import(terrain_path: Path, asset_path: Path, output: Path,
+                                 weight_file: str | None = None) -> tuple[dict, bytes]:
     terrain_path = terrain_path.resolve()
     output = output.resolve()
     terrain = load_terrain_grid(terrain_path)
@@ -59,8 +60,9 @@ def import_terrain_layers(terrain_path: Path, asset_path: Path, output: Path) ->
 
     weights = read_layer_weights(asset, terrain)
     png = encode_weight_png(weights)
-    # Name the payload by content so an interrupted reimport leaves the previous asset usable.
-    weight_file = f"{output.stem}.weights-{hashlib.sha256(png).hexdigest()[:16]}.png"
+    if weight_file is None:
+        # Name the payload by content so an interrupted reimport leaves the previous asset usable.
+        weight_file = f"{output.stem}.weights-{hashlib.sha256(png).hexdigest()[:16]}.png"
     weight_output = output.with_name(weight_file)
     if weight_output in sources:
         raise TerrainBuildError("the imported weight texture must have a separate output path")
@@ -101,6 +103,13 @@ def import_terrain_layers(terrain_path: Path, asset_path: Path, output: Path) ->
         },
         "layers": layers,
     }
+    return document, png
+
+
+def import_terrain_layers(terrain_path: Path, asset_path: Path, output: Path) -> None:
+    output = output.resolve()
+    document, png = prepare_terrain_layer_import(terrain_path, asset_path, output)
+    weight_file = document["weightMap"]["path"]
     encoded = (json.dumps(document, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output.parent) as staging:
@@ -108,8 +117,59 @@ def import_terrain_layers(terrain_path: Path, asset_path: Path, output: Path) ->
         pending_manifest = Path(staging) / output.name
         pending_weights.write_bytes(png)
         pending_manifest.write_bytes(encoded)
-        pending_weights.replace(weight_output)
+        pending_weights.replace(output.with_name(weight_file))
         pending_manifest.replace(output)
+
+
+def build_terrain_layer_material(terrain_path: Path, asset_path: Path, output: Path) -> tuple[dict, dict]:
+    output = output.resolve()
+    definition = output.with_suffix(".materialdef")
+    instance = output.with_suffix(".material")
+    if definition == asset_path.resolve():
+        raise TerrainBuildError("the material definition must have a separate output path")
+    weight_file = f"{output.stem}_layer_weights.png"
+    imported, png = prepare_terrain_layer_import(terrain_path, asset_path, instance, weight_file)
+
+    def resource(source: dict, transform: list, role: str) -> dict:
+        path = (output.parent / source["path"]).resolve()
+        if not path.is_relative_to(output.parent):
+            # MaterialAssetLibrary resolves all resources inside its declared asset root.
+            content = path.read_bytes()
+            local_name = f"{output.stem}_layer_{hashlib.sha256(content).hexdigest()[:16]}{path.suffix.lower()}"
+            path = output.with_name(local_name)
+            write_atomic(path, content)
+        binding = {"uri": "asset://" + path.relative_to(output.parent).as_posix(), "transform": transform}
+        if role == "baseColor":
+            binding["colorSpace"] = source["colorSpace"]
+        return binding
+
+    roles = ("baseColor", "normal", "roughness")
+    layers = []
+    for layer in imported["layers"]:
+        bindings = {role: resource(layer[role], layer["uvTransform"], role) for role in roles}
+        layers.append({"name": layer["name"], "channel": layer["channel"], **bindings})
+    material_def = {"type": "Metallic.MaterialDefinition", "version": 1, "definitionVersion": 1,
+                    "implementation": "OpenPBR.TerrainLayers", "defaults": {}}
+    material_instance = {
+        "type": "Metallic.MaterialInstance", "version": 1, "definitionVersion": 1,
+        "definition": "asset://" + definition.name,
+        "parameters": {"metalness": 0}, "features": {"doubleSided": True},
+        "terrainLayers": {
+            "weights": {"uri": "asset://" + weight_file, "transform": imported["weightMap"]["uvTransform"]},
+            "defaultLayer": imported["defaultLayer"], "layers": layers,
+        },
+    }
+    write_atomic(output.with_name(weight_file), png)
+    for path, document in ((definition, material_def), (instance, material_instance)):
+        write_atomic(path, (json.dumps(document, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8"))
+
+    scene_binding = {"sourceId": "main", "materialIndex": 0, "sourceName": "Terrain Multilayer",
+                     "materialAsset": {"uri": "asset://" + instance.name, "root": "."}}
+    metadata = {
+        "defaultLayer": imported["defaultLayer"], "weightResolution": imported["terrain"]["sourceResolution"],
+        "layers": [{key: layer[key] for key in ("name", "channel", "worldTileSize")} for layer in imported["layers"]],
+    }
+    return scene_binding, metadata
 
 
 def main() -> None:

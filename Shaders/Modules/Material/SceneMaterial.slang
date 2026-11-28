@@ -16,6 +16,26 @@ public struct MaterialTextureInfo
     public float4 transform1;
 };
 
+public struct TerrainLayerTextureBindings
+{
+    public MaterialTextureInfo baseColor;
+    public MaterialTextureInfo normal;
+    public MaterialTextureInfo roughness;
+};
+
+public struct TerrainLayerMaterialHeader
+{
+    public MaterialTextureInfo weights;
+    public uint4 settings; // x: layer count, y: default layer index
+    public uint4 channels;
+};
+
+public struct TerrainLayerMaterialData
+{
+    public TerrainLayerMaterialHeader header;
+    public TerrainLayerTextureBindings layers[4];
+};
+
 public struct SceneMaterialData
 {
     public float4 baseColor;
@@ -41,6 +61,7 @@ public struct SceneMaterialData
     public float4 specular;
     public MaterialTextureInfo specularTexture;
     public MaterialTextureInfo specularColorTexture;
+    public uint4 terrainLayerBinding; // x: byte offset into the material buffer, zero if absent
 };
 
 // Value expressions consume authoring inputs and texture slots, independently

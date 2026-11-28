@@ -46,6 +46,26 @@ struct SceneMaterialData
     float specular[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     TextureInfo specularTexture;
     TextureInfo specularColorTexture;
+    // x is the terrain sidecar byte offset (0 means no terrain layer material).
+    // y of record zero holds the material count when the buffer has a sidecar.
+    uint32_t terrainLayerBinding[4] = {};
+};
+
+inline constexpr size_t kMaxTerrainMaterialLayers = 4;
+
+struct TerrainLayerTextureBindings
+{
+    SceneMaterialData::TextureInfo baseColor;
+    SceneMaterialData::TextureInfo normal;
+    SceneMaterialData::TextureInfo roughness;
+};
+
+struct alignas(16) TerrainLayerMaterialData
+{
+    SceneMaterialData::TextureInfo weights;
+    uint32_t settings[4] = {}; // layer count, default layer index, reserved, reserved
+    uint32_t channels[kMaxTerrainMaterialLayers] = {};
+    TerrainLayerTextureBindings layers[kMaxTerrainMaterialLayers];
 };
 
 static_assert(std::is_trivially_copyable_v<SceneMaterialData>);
@@ -55,8 +75,15 @@ static_assert(offsetof(SceneMaterialData::TextureInfo, sourceLodTerm) == 8);
 static_assert(offsetof(SceneMaterialData::TextureInfo, sourceMipCount) == 12);
 static_assert(offsetof(SceneMaterialData::TextureInfo, transform0) == 16);
 static_assert(offsetof(SceneMaterialData::TextureInfo, transform1) == 32);
-static_assert(sizeof(SceneMaterialData) == 720);
+static_assert(sizeof(SceneMaterialData) == 736);
 static_assert(offsetof(SceneMaterialData, baseColorTexture) == 176);
 static_assert(offsetof(SceneMaterialData, specular) == 608);
+static_assert(offsetof(SceneMaterialData, terrainLayerBinding) == 720);
+static_assert(std::is_trivially_copyable_v<TerrainLayerMaterialData>);
+static_assert(sizeof(TerrainLayerMaterialData) == 656);
+static_assert(sizeof(TerrainLayerTextureBindings) == 144);
+static_assert(offsetof(TerrainLayerMaterialData, settings) == 48);
+static_assert(offsetof(TerrainLayerMaterialData, channels) == 64);
+static_assert(offsetof(TerrainLayerMaterialData, layers) == 80);
 
 } // namespace metallic::render

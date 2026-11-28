@@ -3516,6 +3516,16 @@ bool Scene::compose(
             rebaseTexture(material.specularTexture);
             rebaseTexture(material.specularColorTexture);
             rebaseTexture(material.displacementTexture);
+            if (material.terrainLayers) {
+                auto bindings = std::make_shared<RenderTerrainLayerBindings>(*material.terrainLayers);
+                rebaseTexture(bindings->weights);
+                for (auto& layer : bindings->layers) {
+                    rebaseTexture(layer.baseColor);
+                    rebaseTexture(layer.normal);
+                    rebaseTexture(layer.roughness);
+                }
+                material.terrainLayers = std::move(bindings);
+            }
             composed.materials_.push_back(std::move(material));
         }
         for (RenderPrimitive primitive : source.renderPrimitives()) {
@@ -5199,6 +5209,11 @@ bool validMaterialProperties(const RenderMaterial& properties)
     const auto unit = [](float value) { return std::isfinite(value) && value >= 0.0f && value <= 1.0f; };
     const auto positive = [](float value) { return std::isfinite(value) && value >= 0.0f; };
     const auto color = [&](const float3& value) { return unit(value.x) && unit(value.y) && unit(value.z); };
+    if (properties.terrainLayers && (properties.rtxcrHair || properties.unlit || properties.alphaMode != "OPAQUE" ||
+        properties.transmissionFactor != 0.0f || properties.diffuseTransmissionFactor != 0.0f ||
+        !properties.valueProgram.empty())) {
+        return false;
+    }
     if (properties.rtxcrHair && (!properties.valueProgram.empty() ||
         !std::all_of(material::detail::kFiberScalars.begin(), material::detail::kFiberScalars.end(), [&](const auto& field) {
             const auto value = properties.*field.member;
@@ -5377,18 +5392,44 @@ bool Scene::applyMaterialInstance(int32_t materialIndex, const material::Resolve
         return pending.resolve(*this, library.pathFor(uri), uri);
     };
     if (!material::lowerMaterialInstance(instance, resolver, candidate, error)) { return false; }
+    const auto validTextureIndex = [&](int32_t index) {
+        return index >= -1 && (index < 0 || size_t(index) < textures_.size() + pending.textures.size());
+    };
     bool changedTextures = false;
     for (const auto& [name, member] : material::detail::kTextures) {
         const auto& a = materials_[materialIndex].*member;
         const auto& b = candidate.*member;
-        if (b.textureIndex < -1 || (b.textureIndex >= 0 && size_t(b.textureIndex) >= textures_.size() + pending.textures.size())) {
+        if (!validTextureIndex(b.textureIndex)) {
             error = "Material texture does not belong to this scene";
             return false;
         }
         changedTextures |= a.textureIndex != b.textureIndex;
     }
+    const auto& previousTerrain = materials_[materialIndex].terrainLayers;
+    const auto& nextTerrain = candidate.terrainLayers;
+    const bool changedTerrain = previousTerrain != nextTerrain &&
+        (!previousTerrain || !nextTerrain || *previousTerrain != *nextTerrain);
+    if (changedTerrain) {
+        const auto terrainTextureIndices = [](const auto& bindings) {
+            std::vector<int32_t> indices;
+            if (bindings) {
+                indices.reserve(1 + 3 * bindings->layers.size());
+                indices.push_back(bindings->weights.textureIndex);
+                for (const auto& layer : bindings->layers) {
+                    indices.insert(indices.end(), {layer.baseColor.textureIndex, layer.normal.textureIndex, layer.roughness.textureIndex});
+                }
+            }
+            return indices;
+        };
+        const auto nextIndices = terrainTextureIndices(nextTerrain);
+        if (!std::ranges::all_of(nextIndices, validTextureIndex)) {
+            error = "Terrain material texture does not belong to this scene";
+            return false;
+        }
+        changedTextures |= terrainTextureIndices(previousTerrain) != nextIndices;
+    }
     pending.publish(images_, textures_);
-    bool changed = !materialPropertiesEqual(materials_[materialIndex], candidate);
+    bool changed = changedTerrain || !materialPropertiesEqual(materials_[materialIndex], candidate);
     for (const auto& [name, member] : material::detail::kTextures) {
         const auto& a = materials_[materialIndex].*member;
         const auto& b = candidate.*member;

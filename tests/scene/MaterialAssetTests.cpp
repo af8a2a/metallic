@@ -466,6 +466,75 @@ TEST_F(MaterialAssets, TextureSemanticsComeFromTheSlotRatherThanExistingMetadata
     EXPECT_NE(error.find("Data textures"), std::string::npos);
 }
 
+TEST_F(MaterialAssets, TerrainLayerBindingsRoundTripAndKeepTextureSemantics)
+{
+    definition.implementation = "OpenPBR.TerrainLayers";
+    write("Terrain.materialdef", serializeMaterialDefinition(definition));
+    MaterialAssetLibrary library(root);
+    auto parent = instance();
+    parent.definition = "asset://Terrain.materialdef";
+    parent.terrainLayers = {
+        {"weights", {{"uri", "asset://0.png"}, {"transform", {0.48, 0, 0.01, 0, 0.48, 0.01}}}},
+        {"defaultLayer", "grass"},
+        {"layers", Json::array({
+            {{"name", "snow"}, {"channel", "A"}, {"baseColor", "asset://1.png"},
+                {"normal", "asset://2.png"}, {"roughness", "asset://3.png"}},
+            {{"name", "grass"}, {"channel", "G"},
+                {"baseColor", {{"uri", "asset://4.png"}, {"transform", {5, 0, -2.5, 0, 9, -4.5}},
+                    {"colorSpace", "lin_rec709"}}},
+                {"normal", "asset://5.png"}, {"roughness", "asset://6.png"}},
+        })},
+    };
+    ASSERT_TRUE(library.save("asset://ParentTerrain.material", parent, error)) << error;
+    MaterialInstance child;
+    child.definition = parent.definition;
+    child.parent = "asset://ParentTerrain.material";
+    const auto resolver = [](std::string_view uri) { return static_cast<int32_t>(uri[8] - '0'); };
+    ResolvedMaterialInstance resolved;
+    ASSERT_TRUE(library.resolve(child, resolved, error)) << error;
+    scene::RenderMaterial sceneMaterial;
+    ASSERT_TRUE(lowerMaterialInstance(resolved, resolver, sceneMaterial, error)) << error;
+    ASSERT_TRUE(sceneMaterial.terrainLayers);
+    const auto& bindings = *sceneMaterial.terrainLayers;
+    ASSERT_EQ(bindings.layers.size(), 2u);
+    EXPECT_EQ(bindings.defaultLayerIndex, 1u);
+    EXPECT_EQ(bindings.weights.textureIndex, 0);
+    EXPECT_EQ(bindings.weights.colorMetadata.semantic, render::TextureSemantic::Data);
+    EXPECT_EQ(bindings.layers[0].channel, 3u);
+    EXPECT_EQ(bindings.layers[0].baseColor.colorMetadata, render::ksRGBColorTexture);
+    EXPECT_EQ(bindings.layers[1].channel, 1u);
+    EXPECT_EQ(bindings.layers[1].baseColor.uvTransform, (std::array<float, 6>{5, 0, -2.5f, 0, 9, -4.5f}));
+    EXPECT_EQ(bindings.layers[1].baseColor.colorMetadata.semantic, render::TextureSemantic::Color);
+    EXPECT_EQ(bindings.layers[1].baseColor.colorMetadata.source, render::kLinearRec709);
+    EXPECT_EQ(bindings.layers[1].normal.colorMetadata.semantic, render::TextureSemantic::Data);
+    EXPECT_EQ(bindings.layers[1].roughness.textureIndex, 6);
+    EXPECT_EQ(sceneMaterial.occlusionTexture.textureIndex, scene::kInvalidSceneIndex);
+    auto incompatible = sceneMaterial;
+    incompatible.alphaMode = "BLEND";
+    EXPECT_FALSE(scene::validMaterialProperties(incompatible));
+
+    MaterialInstance exported;
+    ASSERT_TRUE(createMaterialInstance(sceneMaterial, parent.definition, resolved.definition,
+        [](std::string_view, int32_t index) { return "asset://" + std::to_string(index) + ".png"; }, exported, error))
+        << error;
+    MaterialInstance decoded;
+    ASSERT_TRUE(deserializeMaterialInstance(serializeMaterialInstance(exported), decoded, error)) << error;
+    ASSERT_TRUE(library.resolve(decoded, resolved, error)) << error;
+    scene::RenderMaterial reloaded;
+    ASSERT_TRUE(lowerMaterialInstance(resolved, resolver, reloaded, error)) << error;
+    ASSERT_TRUE(reloaded.terrainLayers);
+    EXPECT_EQ(*reloaded.terrainLayers, bindings);
+
+    parent.terrainLayers["layers"][1]["channel"] = "A";
+    EXPECT_FALSE(library.resolve(parent, resolved, error));
+    parent.terrainLayers["layers"][1]["channel"] = "G";
+    parent.terrainLayers["defaultLayer"] = "missing";
+    EXPECT_FALSE(library.resolve(parent, resolved, error));
+    parent.terrainLayers["defaultLayer"] = "grass";
+    parent.terrainLayers["weights"] = {{"uri", "asset://0.png"}, {"colorSpace", "srgb"}};
+    EXPECT_FALSE(library.resolve(parent, resolved, error));
+}
+
 TEST_F(MaterialAssets, RejectsCyclesMissingParentsAndDefinitionMismatch)
 {
     MaterialAssetLibrary library(root);
@@ -675,6 +744,55 @@ TEST_F(MaterialAssets, TexturePublicationAndMissingResourceAreTransactional)
     ASSERT_TRUE(document.reloadMaterialAsset(0, error)) << error;
     EXPECT_EQ(document.resourceIdentity(), published);
     EXPECT_EQ(document.textures().size(), count + 1);
+}
+
+TEST_F(MaterialAssets, TerrainLayerTexturePublicationIsTransactional)
+{
+    scene::SceneDocument document;
+    loadScene(document);
+    ASSERT_TRUE(document.valid());
+    definition.implementation = "OpenPBR.TerrainLayers";
+    write("Terrain.materialdef", serializeMaterialDefinition(definition));
+    auto asset = instance();
+    asset.definition = "asset://Terrain.materialdef";
+    asset.terrainLayers = {
+        {"weights", "asset://Weights.png"}, {"defaultLayer", "rock"},
+        {"layers", Json::array({
+            {{"name", "rock"}, {"channel", "B"}, {"baseColor", "asset://Rock.png"},
+                {"normal", "asset://Normal.png"}, {"roughness", "asset://Roughness.png"}},
+        })},
+    };
+    write("Weights.png", "CPU resource identity fixture");
+    write("Rock.png", "CPU resource identity fixture");
+    write("Normal.png", "CPU resource identity fixture");
+    MaterialAssetLibrary library(root);
+    ASSERT_TRUE(library.save("asset://Terrain.material", asset, error)) << error;
+    const auto identity = document.resourceIdentity();
+    const auto count = document.textures().size();
+    EXPECT_FALSE(document.setMaterialAsset(0, "asset://Terrain.material", root, error));
+    EXPECT_EQ(document.resourceIdentity(), identity);
+    EXPECT_EQ(document.textures().size(), count);
+    EXPECT_FALSE(document.materials()[0].terrainLayers);
+
+    write("Roughness.png", "CPU resource identity fixture");
+    ASSERT_TRUE(document.setMaterialAsset(0, "asset://Terrain.material", root, error)) << error;
+    EXPECT_NE(document.resourceIdentity(), identity);
+    EXPECT_EQ(document.textures().size(), count + 4);
+    const auto published = document.resourceIdentity();
+    const auto revision = document.materialRevision();
+    const auto bindings = document.materials()[0].terrainLayers;
+    ASSERT_TRUE(bindings);
+    ASSERT_TRUE(document.reloadMaterialAsset(0, error)) << error;
+    EXPECT_EQ(document.resourceIdentity(), published);
+    EXPECT_EQ(document.materialRevision(), revision);
+
+    asset.terrainLayers["layers"][0]["channel"] = "A";
+    ASSERT_TRUE(library.save("asset://Terrain.material", asset, error)) << error;
+    ASSERT_TRUE(document.reloadMaterialAsset(0, error)) << error;
+    ASSERT_TRUE(document.materials()[0].terrainLayers);
+    EXPECT_EQ(document.materials()[0].terrainLayers->layers[0].channel, 3u);
+    EXPECT_EQ(document.resourceIdentity(), published);
+    EXPECT_GT(document.materialRevision(), revision);
 }
 
 } // namespace

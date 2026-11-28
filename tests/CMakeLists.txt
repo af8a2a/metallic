@@ -884,6 +884,30 @@ if(Python3_Interpreter_FOUND)
         MetallicTerrainBlocks4x4VSMSample terrain-streaming-regression 600)
     add_metallic_terrain_streaming_regression(MetallicTerrain8x8StreamingRegression 8
         MetallicTerrainBlocks8x8VSMSample terrain-streaming-regression-8x8 1200)
+    function(add_metallic_terrain_layer_regression name variant sample output_root)
+        if(NOT TARGET ${sample})
+            return()
+        endif()
+        set(command
+            "${Python3_EXECUTABLE}" -B "${CMAKE_SOURCE_DIR}/Tools/Perf/TerrainLayerAcceptance.py" run
+            --variant ${variant}
+            --executable "$<TARGET_FILE:MetallicRHITests>"
+            --output-root "${CMAKE_CURRENT_BINARY_DIR}/${output_root}")
+        add_custom_target(${name}
+            COMMAND ${command}
+            DEPENDS MetallicRHITests ${sample}
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            USES_TERMINAL
+            VERBATIM)
+        add_test(NAME ${name} COMMAND ${command})
+        set_tests_properties(${name} PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "rhi;terrain"
+            RESOURCE_LOCK MetallicGPU TIMEOUT 1800)
+    endfunction()
+    add_metallic_terrain_layer_regression(MetallicTerrainLayerRegression legacy
+        MetallicTerrainLayers16x16VSMSample terrain-layer-regression)
+    add_metallic_terrain_layer_regression(MetallicTerrainMultilayerRegression multilayer
+        MetallicTerrainMultilayer16x16VSMSample terrain-multilayer-regression)
     if(TARGET MetallicTerrainRegionsSample)
         set(terrain_region_regression
             "${Python3_EXECUTABLE}" -B "${CMAKE_SOURCE_DIR}/Tools/Perf/TerrainRegionStreamingAcceptance.py" run

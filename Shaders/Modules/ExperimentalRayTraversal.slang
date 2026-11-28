@@ -22,9 +22,7 @@ public bool alphaAccepts(uint instance, uint cluster, uint triangle, float2 bary
 {
     uint materialIndex;
     if (!streamRayMaterialIndex(instance, materialIndex)) { return false; }
-    uint count, stride;
-    sceneMaterials().GetDimensions(count, stride);
-    if (materialIndex >= count) { return false; }
+    if (materialIndex >= sceneMaterialCount()) { return false; }
     let material = sceneMaterialCoverageParameters(loadSceneMaterial(materialIndex));
     if (material.alphaMode < 0.5) { return true; }
     HitInfo hit;

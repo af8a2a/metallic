@@ -58,16 +58,26 @@ public struct PathTraceInstance
 
 
 #if SHARC_UPDATE
-public StructuredBuffer<SceneMaterialData> sceneMaterials()
+internal ResourceHandle<ByteAddressBuffer> sceneMaterialBufferHandle()
 {
-    return resolveBuffer<StructuredBuffer<SceneMaterialData>>(getSceneResourceParameters().materials);
+    return getSceneResourceParameters().materials;
 }
 #else
-public StructuredBuffer<SceneMaterialData> sceneMaterials()
+internal ResourceHandle<ByteAddressBuffer> sceneMaterialBufferHandle()
 {
-    return resolveBuffer<StructuredBuffer<SceneMaterialData>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneMaterialsOffset));
+    return getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneMaterialsOffset);
 }
 #endif
+
+public StructuredBuffer<SceneMaterialData> sceneMaterials()
+{
+    return resolveBuffer<StructuredBuffer<SceneMaterialData>>(sceneMaterialBufferHandle());
+}
+
+public ByteAddressBuffer sceneMaterialBuffer()
+{
+    return resolveUniform(sceneMaterialBufferHandle());
+}
 
 #if SHARC_UPDATE
 public RWTexture2D<float4> sceneHistoryCurrent()
@@ -217,6 +227,16 @@ public static const uint kEnvironmentModeDisabled = 2u;
 public SceneMaterialData loadSceneMaterial(uint materialIndex)
 {
     return sceneMaterials()[materialIndex];
+}
+
+public uint sceneMaterialCount()
+{
+    uint bufferCount, stride;
+    sceneMaterials().GetDimensions(bufferCount, stride);
+    if (bufferCount == 0u) { return 0u; }
+    // The material array can be followed by optional terrain binding records.
+    uint materialCount = sceneMaterials()[0].terrainLayerBinding.y;
+    return materialCount != 0u ? materialCount : bufferCount;
 }
 
 public OpenPBRMaterialParameters loadSceneOpenPBRMaterial(uint materialIndex)
