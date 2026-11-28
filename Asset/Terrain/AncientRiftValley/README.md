@@ -26,3 +26,23 @@
 `TerrainAsset.json` 记录材质路径、通道、平铺尺度和 4×4 区域切分窗口。每区 250 m × 250 m，使用含端点的 513² 个样本。可从全局 EXR 按窗口裁切；全部 24 条共享边的高度和八层权重已逐样本比对。`Verification.json` 包含工程重开复算、EXR 和贴图检查结果。
 
 Metallic 的 **Ancient Rift Valley 4x4 + VSM** 样例使用完整 16 区、两张权重图和八层 OpenPBR 材质。红砂岩和浅色盖层的 `triplanar` 设置随材质导入，中央 2×2 样例保留 XZ 基线。
+
+## Metallic 日光样例
+
+**Ancient Rift Valley 4x4 Daylight** 复用同一份 16 区地形、八层材质和三平面陡壁投影。`Daylight.json` 生成单独的场景文档 `ancient_rift_valley_4x4_daylight.metallic_scene.json`。调整日光、云层或曝光只需重新生成这份文档。
+
+太阳取犹他州 Moab 附近（北纬 38.58°、西经 109.58°）2026 年 6 月 21 日上午 10:00 MDT 的天文位置。时间固定在 16:00 UTC，太阳高度约 45°，方位约 95°（从正北顺时针）。物理大气使用正式太阳光谱，体积云位于 1.85–3.00 km，基础曝光为 EV100 14 并开启自动曝光。样例沿用正式 Lumen 屏幕追踪和后处理，并保留物理天空的漫反射来照亮背光岩壁。流式地形尚无离线距离场和表面卡，屏幕外地形的几何反弹未覆盖。
+
+在已配置的 `build-dev` 构建目录生成样例，再从 **Open Render Graph Editor → Graph Editor Settings → Built-in Sample** 选择 **GPUDrivenSample / Ancient Rift Valley 4x4 Daylight**。
+
+```powershell
+cmake --build build-dev --target MetallicAncientRiftValley4x4DaylightSample Metallic
+.\build-dev\Source\Metallic.exe
+```
+
+命令行 smoke 使用相同的内建样例 ID。
+
+```powershell
+$env:METALLIC_SMOKE_TEST_SAMPLE = 'gpu-driven-ancient-rift-valley-4x4-daylight'
+.\build-dev\Source\Metallic.exe --smoke-test
+```

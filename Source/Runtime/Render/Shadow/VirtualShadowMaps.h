@@ -94,6 +94,8 @@ struct VirtualShadowMapSettings
     bool compactBuild = false; // Experimental cluster candidate compaction and indirect fine build.
     bool pageWindowRaster = false; // Share directional fine geometry across bounded page windows.
     bool clusterPageRaster = false; // Pack fine work into masked cluster/page mesh groups.
+    bool packedRasterWork = false; // Limit stored hardware cluster/page records instead of triangle/page pairs.
+    bool packedCoarseRaster = false;
     bool clusterHybridRaster = false; // Route eligible fine cluster/page work to software depth rasterization.
     bool twoPassHZB = false; // Defer history-occluded fine tickets and retest after the main raster.
     bool hierarchyHZB = false; // Defer directional instance subtrees before fine-page Build.

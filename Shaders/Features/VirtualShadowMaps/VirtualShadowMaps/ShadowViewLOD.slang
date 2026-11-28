@@ -230,7 +230,7 @@ bool vsmLODSelected(ShadowPush push, uint triangleIndex, uint view)
 #endif
 }
 
-bool vsmLODSelectedRange(ShadowPush push, uint firstTriangle, uint view)
+bool vsmLODSelectedRange(ShadowPush push, uint firstTriangle, uint view, uint slotCount = 64u)
 {
 #if !VSM_GPU_LOD
     return true;
@@ -243,8 +243,8 @@ bool vsmLODSelectedRange(ShadowPush push, uint firstTriangle, uint view)
         resolveUniform(ResourceHandle<StructuredBuffer<VirtualShadowMapLODClusterGPU>>(context.clusters));
     StructuredBuffer<uint> selected = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(context.selected));
     // Authored resident triangles and appended meshlets retain their exact
-    // ordering; a 64-slot Build group may straddle several LOD cluster ranges.
-    uint end = firstTriangle + min(64u, push.triangleCount - firstTriangle);
+    // ordering; a packed slot range may straddle several LOD cluster ranges.
+    uint end = firstTriangle + min(slotCount, push.triangleCount - firstTriangle);
     uint triangle = firstTriangle;
     while (triangle < end) {
         uint index = triangleClusters[triangle];

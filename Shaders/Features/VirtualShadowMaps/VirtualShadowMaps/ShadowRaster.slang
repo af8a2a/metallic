@@ -20,6 +20,9 @@ implementing VirtualShadowMaps;
 #ifndef VSM_CLUSTER_HYBRID_RASTER
 #define VSM_CLUSTER_HYBRID_RASTER 0
 #endif
+#ifndef VSM_PACKED_COARSE_RASTER
+#define VSM_PACKED_COARSE_RASTER 0
+#endif
 
 #if VSM_SHARED_PHYSICAL_POOL
 struct ShadowAtlasPrimitive
@@ -356,9 +359,9 @@ void vsmRasterMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     }
 }
 
-#if VSM_CLUSTER_PAGE_RASTER
-// A Build ticket is one nonempty 16-slot quarter of an original 64-triangle
-// cluster. Six clip planes can expand each source triangle to nine vertices.
+#if VSM_CLUSTER_PAGE_RASTER || VSM_PACKED_COARSE_RASTER
+// A packed ticket covers one nonempty 16-slot range. Six clip planes can
+// expand each source triangle to nine vertices.
 groupshared uint g_vsmPackedOffsets[17];
 
 [shader("mesh")]
@@ -381,8 +384,17 @@ void vsmRasterPackedMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex
 #if VSM_BATCHED_BUILD_RASTER
     ShadowPush push = vsmBatchJob(batchPush, drawIndex).push;
 #endif
-    StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
     uint packedIndex = push.workBase + group.x;
+#if VSM_PACKED_COARSE_RASTER
+    StructuredBuffer<uint> coarseWork = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(
+        vsmCacheMetadata(push, kVSMCoarseRasterQueue)));
+    const uint firstTriangle = coarseWork[1u + packedIndex];
+    const uint virtualPage = push.totalPages - 1u;
+    const bool active = firstTriangle + lane < push.triangleCount;
+    const bool skipInteriorClip = false;
+    const uint groupCounter = kVSMWorkRasterCoarseGroups;
+#else
+    StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
 #if VSM_CLUSTER_HYBRID_RASTER || VSM_TWO_PASS_HZB
     ByteAddressBuffer queue = resolveUniform(ResourceHandle<ByteAddressBuffer>(push.workItems));
     uint ticketIndex;
@@ -413,12 +425,18 @@ void vsmRasterPackedMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex
 #if VSM_CLUSTER_HYBRID_RASTER
     slotMask &= hardwareMask;
 #endif
+    const uint firstTriangle = ticket.x + quarter;
+    const uint virtualPage = ticket.y;
+    const bool active = (slotMask & (1u << lane)) != 0u;
+    const bool skipInteriorClip = true;
+    const uint groupCounter = kVSMWorkRasterFineGroups;
+#endif
     ShadowClipVertex polygon[9];
     uint vertexCount = 0u, material = 0u, physicalPage = 0u;
     float4 bounds = float4(0.0);
     if (lane < 16u) {
-        if ((slotMask & (1u << lane)) != 0u) {
-            vertexCount = vsmRasterPolygon(ticket.x + quarter + lane, ticket.y, push, true,
+        if (active) {
+            vertexCount = vsmRasterPolygon(firstTriangle + lane, virtualPage, push, skipInteriorClip,
                 polygon, material, physicalPage, bounds);
         }
         // A packed sum gives both output offsets; max total 144 cannot carry.
@@ -433,7 +451,7 @@ void vsmRasterPackedMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex
             sum += counts;
         }
         g_vsmPackedOffsets[16] = sum;
-        vsmWorkAdd(push, kVSMWorkRasterFineGroups, 1u);
+        vsmWorkAdd(push, groupCounter, 1u);
         vsmRecordRasterOutput(push, sum >> 16u);
     }
     GroupMemoryBarrierWithGroupSync();

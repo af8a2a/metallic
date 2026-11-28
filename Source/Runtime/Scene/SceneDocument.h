@@ -92,7 +92,13 @@ public:
     bool sidecarLoaded() const { return sidecarLoaded_; }
     bool hasEnvironmentSettings() const { return hasEnvironmentSettings_; }
 
+    struct StreamGeometrySource {
+        std::filesystem::path path;
+        bool requiresSourceTriangles = false;
+    };
+
     static std::filesystem::path sidecarPathForSource(const std::filesystem::path& sourcePath);
+    static StreamGeometrySource streamGeometrySource(const std::filesystem::path& path);
 
 private:
     bool loadInternal(

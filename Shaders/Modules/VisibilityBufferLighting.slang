@@ -238,6 +238,11 @@ internal float3 shadeSceneVisibilitySurfaceRadiance<TProgram : ISceneSurfaceMate
     const bool hasEnvironment = push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0;
     const bool isOpaque = (MATERIAL_CLASS >= 1 && MATERIAL_CLASS <= 3) || opaquePrimary || (summary.transmissionWeight <= 0.0);
     const bool replaceDiffuse = kExportLumenReceivers && isOpaque;
+#if METALLIC_DEFERRED_RETAIN_ENVIRONMENT_DIFFUSE
+    const bool useEnvironmentDiffuse = hasEnvironment;
+#else
+    const bool useEnvironmentDiffuse = hasEnvironment && !replaceDiffuse;
+#endif
     if (hasEnvironment || replaceDiffuse) {
         float3 normal = hit.normal;
         float roughness = saturate(summary.roughness);
@@ -278,7 +283,8 @@ internal float3 shadeSceneVisibilitySurfaceRadiance<TProgram : ISceneSurfaceMate
 #if METALLIC_DEFERRED_LUMEN_AO_ALBEDO
             receiver.diffuseAlbedo = float3(diffuseColor);
 #endif
-        } else {
+        }
+        if (useEnvironmentDiffuse) {
             diffuse = environmentDiffuseIrradiance(normal, push) / kPi * float3(diffuseColor);
         }
 #elif MATERIAL_CLASS == 2
@@ -304,7 +310,8 @@ internal float3 shadeSceneVisibilitySurfaceRadiance<TProgram : ISceneSurfaceMate
 #if METALLIC_DEFERRED_LUMEN_AO_ALBEDO
                 receiver.diffuseAlbedo = float3(diffuseColor);
 #endif
-            } else {
+            }
+            if (useEnvironmentDiffuse) {
                 diffuse = environmentDiffuseIrradiance(normal, push) / kPi * float3(diffuseColor);
             }
         }

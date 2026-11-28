@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/RenderGraph/RenderGraphNode.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
+#include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Scene/SceneLoad.h"
 
 namespace metallic::editor {
@@ -21,13 +22,16 @@ inline scene::SceneLoadOptions streamSceneLoadOptions(const render::RenderGraph&
         if (!isStreamSceneProducer(node)) { continue; }
         auto properties = node.properties;
         properties.merge_patch(node.runtimeProperties);
-        options.streamAssetPath = scene::meshletStreamAssetPathFor(sourcePath);
+        const auto geometrySourcePath = scene::SceneDocument::streamGeometrySource(sourcePath).path;
+        if (geometrySourcePath.empty()) { break; }
+        options.streamAssetPath = scene::meshletStreamAssetPathFor(geometrySourcePath);
         auto previousSource = std::filesystem::path(properties.value("path", ""));
         if (previousSource.is_relative()) { previousSource = projectDirectory / previousSource; }
+        const auto previousGeometrySource = scene::SceneDocument::streamGeometrySource(previousSource).path;
         std::error_code error;
         // Reloads preserve explicit cache locations; switches must never reuse
         // the previous scene's cache merely because the graph still names it.
-        if (std::filesystem::equivalent(previousSource, sourcePath, error) && !error) {
+        if (std::filesystem::equivalent(previousGeometrySource, geometrySourcePath, error) && !error) {
             const auto configured = properties.value("streamAssetPath", "");
             if (!configured.empty()) {
                 options.streamAssetPath = configured;

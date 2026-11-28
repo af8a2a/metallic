@@ -1026,6 +1026,35 @@ bool readJsonFile(
     return true;
 }
 
+bool readSceneDocumentHeader(const std::filesystem::path& path, nlohmann::json& document, int& version,
+    std::string& error)
+{
+    if (!readJsonFile(path, document, error)) { return false; }
+    if (!document.contains("version") || !document["version"].is_number_integer()) {
+        error = "Scene document has no integer version field.";
+        return false;
+    }
+    version = document.value("version", 0);
+    if (version < kOldestSceneDocumentVersion || version > kSceneDocumentVersion) {
+        error = "Unsupported scene document version in " + path.string();
+        return false;
+    }
+    return true;
+}
+
+bool readSingleSceneSource(const nlohmann::json& document, const std::filesystem::path& path,
+    std::filesystem::path& sourcePath, std::string& error)
+{
+    const auto source = document.find("source");
+    if (source == document.end() || !source->is_string()) {
+        error = "Scene document has no string source field.";
+        return false;
+    }
+    sourcePath = source->get<std::string>();
+    if (sourcePath.is_relative()) { sourcePath = path.parent_path() / sourcePath; }
+    return true;
+}
+
 bool readMatrix(
     const nlohmann::json& value,
     float4x4& matrix,
@@ -1325,6 +1354,23 @@ std::filesystem::path SceneDocument::sidecarPathForSource(
         (sourcePath.stem().string() + std::string(kSceneDocumentSuffix));
 }
 
+SceneDocument::StreamGeometrySource SceneDocument::streamGeometrySource(const std::filesystem::path& path)
+{
+    if (!isSceneDocumentPath(path)) { return {.path = path}; }
+    nlohmann::json document;
+    int version = 0;
+    std::string error;
+    std::filesystem::path sourcePath;
+    if (!readSceneDocumentHeader(path, document, version, error) || version == kSceneDocumentVersion ||
+        !readSingleSceneSource(document, path, sourcePath, error)) {
+        return {};
+    }
+    // Baked distance fields and surface cards validate against the source triangles.
+    const auto world = document.find("world");
+    return {.path = normalizedPath(sourcePath),
+        .requiresSourceTriangles = world != document.end() && world->contains("realtimeGI")};
+}
+
 bool SceneDocument::load(const std::filesystem::path& path)
 {
     return loadInternal(path, {}, false);
@@ -1389,17 +1435,9 @@ bool SceneDocument::loadInternalInPlace(
     if (isSceneDocumentPath(path)) {
         nlohmann::json document;
         std::string error;
-        if (!readJsonFile(path, document, error)) {
+        int version = 0;
+        if (!readSceneDocumentHeader(path, document, version, error)) {
             documentWarning_ = std::move(error);
-            return false;
-        }
-        if (!document.contains("version") || !document["version"].is_number_integer()) {
-            documentWarning_ = "Scene document has no integer version field.";
-            return false;
-        }
-        const int version = document.value("version", 0);
-        if (version < kOldestSceneDocumentVersion || version > kSceneDocumentVersion) {
-            documentWarning_ = "Unsupported scene document version in " + path.string();
             return false;
         }
         if (version == kSceneDocumentVersion) {
@@ -1411,13 +1449,9 @@ bool SceneDocument::loadInternalInPlace(
             documentPath = normalizedPath(path);
             sourcePath = documentPath;
         } else {
-            if (!document.contains("source") || !document["source"].is_string()) {
-                documentWarning_ = "Scene document has no string source field.";
+            if (!readSingleSceneSource(document, path, sourcePath, error)) {
+                documentWarning_ = std::move(error);
                 return false;
-            }
-            sourcePath = document["source"].get<std::string>();
-            if (sourcePath.is_relative()) {
-                sourcePath = path.parent_path() / sourcePath;
             }
             documentPath = path;
         }
@@ -2057,17 +2091,9 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
     nlohmann::json document;
     std::optional<PunctualLight> legacySun;
     std::string error;
-    if (!readJsonFile(path, document, error)) {
+    int version = 0;
+    if (!readSceneDocumentHeader(path, document, version, error)) {
         documentWarning_ = std::move(error);
-        return false;
-    }
-    if (!document.contains("version") || !document["version"].is_number_integer()) {
-        documentWarning_ = "Scene document has no integer version field.";
-        return false;
-    }
-    const int version = document.value("version", 0);
-    if (version < kOldestSceneDocumentVersion || version > kSceneDocumentVersion) {
-        documentWarning_ = "Unsupported scene document version in " + path.string();
         return false;
     }
     if (version == kSceneDocumentVersion) {
@@ -2093,14 +2119,9 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
             }
         }
     } else {
-        if (!document.contains("source") || !document["source"].is_string()) {
-            documentWarning_ = "Scene document has no string source field.";
+        std::filesystem::path declaredSource;
+        if (!readSingleSceneSource(document, path, declaredSource, documentWarning_)) {
             return false;
-        }
-
-        std::filesystem::path declaredSource = document["source"].get<std::string>();
-        if (declaredSource.is_relative()) {
-            declaredSource = path.parent_path() / declaredSource;
         }
         if (normalizedPath(declaredSource) != normalizedPath(sourcePath_)) {
             documentWarning_ = "Scene document source does not match the loaded asset.";

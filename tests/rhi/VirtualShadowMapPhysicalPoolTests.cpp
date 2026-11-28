@@ -261,6 +261,7 @@ struct PoolFaceSnapshot
     uint64_t instanceClusterTickets = 0;
     uint64_t hardwarePrimitives = 0;
     uint64_t hardwareFineGroups = 0;
+    uint64_t coarseGroups = 0;
 };
 
 struct PoolSnapshot
@@ -287,7 +288,7 @@ std::map<std::string, uint64_t> poolRecordingCommands(const CPUProfileRecorder& 
     return counts;
 }
 
-void requireUniqueOwners(const PoolSnapshot& snapshot, uint32_t budget)
+void requireUniqueOwners(const PoolSnapshot& snapshot, uint32_t budget, bool allowWorkOverflow = false)
 {
     std::set<uint32_t> owners;
     uint32_t grants = 0;
@@ -302,7 +303,8 @@ void requireUniqueOwners(const PoolSnapshot& snapshot, uint32_t budget)
         requirePool((face.pages.back()[1] & 3u) == 3u, "Missing complete coarse coverage");
         requirePool(resident == face.stats[1] + 1u && face.stats[12] == resident, "GPU grant differs from resident pages");
         requirePool(face.stats[0] == face.stats[1] + face.stats[2], "Requested/admitted/rejected accounting differs");
-        requirePool(face.stats[5] == 0u && face.stats[9] == 0u, "Shared raster overflow or uninitialized coarse query");
+        requirePool((allowWorkOverflow || face.stats[5] == 0u) && face.stats[9] == 0u,
+            "Shared raster overflow or uninitialized coarse query");
         grants += face.stats[12];
     }
     requirePool(grants <= budget, "Shared allocations exceed the physical budget");
@@ -385,7 +387,8 @@ float compareRasterDepth(const PoolSnapshot& actual, const PoolSnapshot& hardwar
     return maxError;
 }
 
-enum class PoolScenario { Allocation, HybridRaster, TwoPassHZB, HierarchyHZB, UnifiedMark, CasterChanges, ActiveViews, DistantLights, LightCacheRecovery };
+enum class PoolScenario { Allocation, HybridRaster, TwoPassHZB, HierarchyHZB, UnifiedMark, CasterChanges,
+    ActiveViews, DistantLights, LightCacheRecovery, PackedCoarseRaster };
 
 class VirtualShadowMapPhysicalPoolTest : public RHITest
 {
@@ -399,6 +402,7 @@ public:
             scenario == PoolScenario::ActiveViews ? "virtual_shadow_map_active_views" :
             scenario == PoolScenario::DistantLights ? "virtual_shadow_map_distant_lights" :
             scenario == PoolScenario::LightCacheRecovery ? "virtual_shadow_map_light_cache_recovery" :
+            scenario == PoolScenario::PackedCoarseRaster ? "virtual_shadow_map_packed_coarse_raster" :
             scenario == PoolScenario::CasterChanges ? "virtual_shadow_map_shared_caster_changes" : "virtual_shadow_map_physical_pool";
         type = RHITestType::Rendering;
     }
@@ -413,12 +417,14 @@ public:
         const bool activeViews = scenario_ == PoolScenario::ActiveViews;
         const bool distantLights = scenario_ == PoolScenario::DistantLights;
         const bool lightCacheRecovery = scenario_ == PoolScenario::LightCacheRecovery;
+        const bool packedCoarse = scenario_ == PoolScenario::PackedCoarseRaster;
         const auto directory = std::filesystem::absolute(context.outputDirectory / (unifiedMark ? "VirtualShadowMapUnifiedMark" :
             hierarchyHZB ? "VirtualShadowMapHierarchyHZB" : twoPass ? "VirtualShadowMapTwoPassHZB" :
             hybrid ? "VirtualShadowMapClusterHybridRaster" : casterChanges ? "VirtualShadowMapSharedCasterChanges" :
             activeViews ? "VirtualShadowMapActiveViews" :
             distantLights ? "VirtualShadowMapDistantLights" :
             lightCacheRecovery ? "VirtualShadowMapLightCacheRecovery" :
+            packedCoarse ? "VirtualShadowMapPackedCoarseRaster" :
             "VirtualShadowMapPhysicalPool"));
         Json report{{"passed", false}, {"frames", Json::array()}};
         bench::ValidationRecorder validation;
@@ -426,8 +432,10 @@ public:
         try {
             requirePool(VirtualShadowMapSettings{}.batchBuildRaster, "Shared Build/Raster batching must default on");
             scene::SceneDocument scene;
-            requirePool(scene.load((hybrid || twoPass || hierarchyHZB) ?
-                writeClusterFixture(directory, twoPass || hierarchyHZB, hierarchyHZB) : writePoolFixture(directory, casterChanges)), "Load pool scene");
+            requirePool(scene.load((hybrid || twoPass || hierarchyHZB || packedCoarse) ?
+                writeClusterFixture(directory, twoPass || hierarchyHZB, hierarchyHZB,
+                    packedCoarse ? HybridTriangleMix::Masked : HybridTriangleMix::None) : writePoolFixture(directory, casterChanges)),
+                "Load pool scene");
             auto created = createDevice({.applicationName = "VSM shared physical pool",
                 .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true, .enableMeshShader = true,
@@ -445,6 +453,9 @@ public:
             }
             if (activeViews && !device.capabilities().computeSubgroupBallotArithmetic) {
                 return RHITestResult::skip("Fine view compaction requires subgroup ballot/arithmetic");
+            }
+            if (packedCoarse && !device.capabilities().computeSubgroupBallotArithmetic) {
+                return RHITestResult::skip("Coarse raster packing requires subgroup ballot/arithmetic");
             }
             PoolCommands gpu(device);
             RenderView camera;
@@ -475,7 +486,7 @@ public:
             requirePool(gpu.commands->synchronize({.textures = {&depthEnd, 1}}), "Pool depth ready");
             gpu.finish();
 
-            const uint32_t variants = unifiedMark || hierarchyHZB ? 1u : twoPass ? 4u : 2u;
+            const uint32_t variants = unifiedMark || hierarchyHZB || packedCoarse ? 1u : twoPass ? 4u : 2u;
             for (uint32_t variant = 0; variant < variants; ++variant) {
                 const bool hybridHZB = twoPass && variant == 1u;
                 const bool standaloneHZB = twoPass && variant == 2u;
@@ -497,11 +508,18 @@ public:
                                   bool standalone = false) {
                     gpu.begin();
                     std::string log;
-                    auto casters = casterCache.prepare(device, *gpu.commands, scene, nullptr, log,
-                        {.instanceBuild = settings.instanceBuild, .hierarchyHZB = hierarchyHZB});
+                    const VirtualShadowMapCasterSettings casterSettings{.instanceBuild = settings.instanceBuild,
+                        .hierarchyHZB = hierarchyHZB};
+                    auto casters = casterCache.prepare(device, *gpu.commands, scene, nullptr, log, casterSettings);
                     requirePool(casters, "Prepare shared pool casters: " + log);
                     requirePool(!settings.instanceBuild || casters->instanceTable != UINT32_MAX,
                         "Instance Build test did not publish an instance table");
+                    if (settings.shadowLOD) {
+                        casters = casterCache.prepareGPUShadowLOD(device, *gpu.commands, scene, nullptr, *casters, casterSettings, log);
+                        requirePool(casters, "Prepare shared pool caster GPU LOD: " + log);
+                        requirePool(casters->gpuLOD && casters->gpuLOD->context.clusterCount > 0,
+                            "Packed coarse test did not produce an automatic shadow LOD hierarchy");
+                    }
                     // A compact point light occupies the last six input faces and one output layer.
                     const uint32_t pointStart = uint32_t(specs.size()) - (pointGroup ? 6u : 0u);
                     const uint32_t layers = pointStart + uint32_t(pointGroup);
@@ -519,7 +537,8 @@ public:
                             .sourceSlot = specs[index].sourceSlot});
                     }
                     auto frameSettings = settings;
-                    frameSettings.forceRedraw = force && !unifiedMark && !hierarchyHZB && !activeViews;
+                    frameSettings.forceRedraw = settings.forceRedraw || (force && !unifiedMark && !hierarchyHZB && !activeViews);
+                    if (packedCoarse) { frameSettings.packedCoarseRaster = !force; }
                     if (hierarchyHZB) { frameSettings.hierarchyHZB = !force; }
                     if (unifiedMark) { frameSettings.unifiedMark = !force; }
                     if (activeViews) { frameSettings.compactShadowViews = !force; }
@@ -609,6 +628,7 @@ public:
                         face.pages.resize((*results)[index].clipmapCount * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis + 1u);
                         offsets.push_back(bytes);
                         bytes += sizeof(face.stats) + face.pages.size() * sizeof(Page) + sizeof(face.cache);
+                        if (packedCoarse) { bytes += sizeof(face.coarseGroups); }
                         if (activeViews) { bytes += sizeof(face.activeViews); }
                         if (hybrid) {
                             bytes += sizeof(face.hybrid) + sizeof(face.hybridRouting) +
@@ -664,6 +684,10 @@ public:
                             std::pair{(*results)[index].cacheDiagnostics, uint64_t(sizeof(face.cache))}}) {
                             copyCounterRange(buffer, 0, size);
                         }
+                        if (packedCoarse) {
+                            copyCounterRange((*results)[index].statistics, sizeof(face.stats) + sizeof(uint64_t) * kVSMWorkRasterCoarseGroups,
+                                sizeof(face.coarseGroups));
+                        }
                         if (activeViews) {
                             static_assert(kVSMActiveInitialBuildRows == kVSMActiveFineViewMask + 1u);
                             copyCounterRange((*results)[index].cacheDiagnostics, sizeof(uint32_t) * kVSMActiveFineViewMask,
@@ -717,6 +741,10 @@ public:
                         std::memcpy(face.stats.data(), data + offsets[index], sizeof(face.stats));
                         std::memcpy(face.pages.data(), data + offsets[index] + sizeof(face.stats), face.pages.size() * sizeof(Page));
                         std::memcpy(face.cache.data(), data + offsets[index] + sizeof(face.stats) + face.pages.size() * sizeof(Page), sizeof(face.cache));
+                        if (packedCoarse) {
+                            std::memcpy(&face.coarseGroups, data + offsets[index] + sizeof(face.stats) + face.pages.size() * sizeof(Page) +
+                                sizeof(face.cache), sizeof(face.coarseGroups));
+                        }
                         if (activeViews) {
                             std::memcpy(face.activeViews.data(), data + offsets[index] + sizeof(face.stats) +
                                 face.pages.size() * sizeof(Page) + sizeof(face.cache), sizeof(face.activeViews));
@@ -749,10 +777,65 @@ public:
                         face.visibility.assign(data + offset, data + offset + kPixels);
                     }
                     (*readback)->unmap();
-                    if (!standalone) { requireUniqueOwners(snapshot, budget); }
+                    if (!standalone) { requireUniqueOwners(snapshot, budget, packedCoarse && settings.maxWorkItems == 1); }
                     requirePool((snapshot.memory.staticAtlasBytes != 0) == layered, "Layered shared atlas memory missing or double counted");
                     return snapshot;
                 };
+                if (packedCoarse) {
+                    settings.pageSize = 64;
+                    settings.collectGPUWork = true;
+                    VirtualShadowMapLight sun;
+                    sun.direction = {0, 0, -1};
+                    const std::array faces{PoolFace{0, sun}};
+                    constexpr uint32_t kBudget = 256;
+                    const auto coarseDepth = [](const PoolSnapshot& image) {
+                        const uint32_t slot = image.faces.at(0).pages.back()[0];
+                        std::vector<uint32_t> texels(image.pageSize * image.pageSize);
+                        for (uint32_t y = 0; y < image.pageSize; ++y) {
+                            for (uint32_t x = 0; x < image.pageSize; ++x) {
+                                texels[y * image.pageSize + x] = poolPageTexel(image, slot, x, y);
+                            }
+                        }
+                        return texels;
+                    };
+                    const auto compare = [&](const char* phase, bool expectWarm, bool expectOverflow) {
+                        validation.phase(phase);
+                        const auto packed = record(faces, kBudget, false);
+                        const auto scalar = record(faces, kBudget, true);
+                        const auto& actual = packed.faces.at(0);
+                        const auto& reference = scalar.faces.at(0);
+                        const auto actualDepth = coarseDepth(packed);
+                        const bool equalDepth = actualDepth == coarseDepth(scalar);
+                        const bool equalVisibility = actual.visibility == reference.visibility;
+                        report["frames"].push_back({{"phase", phase}, {"equalCoarseD32", equalDepth}, {"equalVisibility", equalVisibility},
+                            {"packedCoarseGroups", actual.coarseGroups}, {"scalarCoarseGroups", reference.coarseGroups},
+                            {"packedStatistics", actual.stats}, {"scalarStatistics", reference.stats}});
+                        save();
+                        requirePool(equalDepth && equalVisibility && std::ranges::any_of(actualDepth, [](uint32_t z) { return z != 0; }),
+                            std::string(phase) + ": packed coarse depth or projected visibility differs from scalar redraw");
+                        requirePool(reference.coarseGroups > 0 && (expectWarm ? actual.coarseGroups == 0 :
+                            actual.coarseGroups > 0 && actual.coarseGroups < reference.coarseGroups),
+                            std::string(phase) + ": packed coarse submission did not reuse or reduce workgroups");
+                        if (expectOverflow) {
+                            requirePool(actual.stats[5] > 0 && reference.stats[5] > 0 && actual.stats[24] == 0 && reference.stats[24] == 0 &&
+                                actual.stats[7] == actual.stats[6] && reference.stats[7] == reference.stats[6] && actual.stats[6] > 0,
+                                "Fine overflow did not resolve receivers using the valid coarse page");
+                        } else {
+                            requirePool(actual.stats[5] == 0 && reference.stats[5] == 0 && actual.stats[24] > 0,
+                                "Normal packed coarse comparison did not retain fine-page coverage");
+                        }
+                    };
+                    compare("Cold", false, false);
+                    compare("Cached", true, false);
+                    settings.forceRedraw = true;
+                    settings.maxWorkItems = 1;
+                    compare("FineOverflow", false, true);
+                    settings.maxWorkItems = 65535;
+                    compare("ForcedRecovery", false, false);
+                    settings.shadowLOD = true;
+                    compare("AutomaticShadowLOD", false, false);
+                    continue;
+                }
                 if (lightCacheRecovery) {
                     VirtualShadowMapLight sun;
                     sun.direction = {1, 0, -1};
@@ -1893,6 +1976,7 @@ public:
             report["passed"] = true; save();
             return RHITestResult::pass(unifiedMark ? "View Mark matched per-face requests, receiver masks, cached pages and shadow images" :
                 activeViews ? "Fine view compaction preserved cached pages, resident D32 and point visibility" :
+                packedCoarse ? "Packed coarse raster preserved D32 and projected visibility on cache reuse and fine overflow" :
                 distantLights ? "Distant local lights used one cached page per face and matched coarse-only depth and point filtering" :
                 lightCacheRecovery ? "Returning lights reused clean depth and rebuilt casters or reclaimed physical pages" :
                 casterChanges ? "Caster change lists were built once per snapshot pair and preserved per-face invalidation" :
@@ -1910,6 +1994,12 @@ private:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapPhysicalPoolTest);
+class VirtualShadowMapPackedCoarseRasterTest final : public VirtualShadowMapPhysicalPoolTest
+{
+public:
+    VirtualShadowMapPackedCoarseRasterTest() : VirtualShadowMapPhysicalPoolTest(PoolScenario::PackedCoarseRaster) {}
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapPackedCoarseRasterTest);
 class VirtualShadowMapClusterHybridRasterTest final : public VirtualShadowMapPhysicalPoolTest
 {
 public:

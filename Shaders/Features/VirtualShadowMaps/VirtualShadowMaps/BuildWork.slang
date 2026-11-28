@@ -20,25 +20,61 @@ implementing VirtualShadowMaps;
 #ifndef VSM_CLUSTER_PAGE_RASTER
 #define VSM_CLUSTER_PAGE_RASTER 0
 #endif
+#ifndef VSM_PACKED_RASTER_WORK
+#define VSM_PACKED_RASTER_WORK 0
+#endif
 #ifndef VSM_INSTANCE_BUILD
 #define VSM_INSTANCE_BUILD 0
 #endif
 #ifndef VSM_BATCHED_BUILD_RASTER
 #define VSM_BATCHED_BUILD_RASTER 0
 #endif
+#ifndef VSM_PACKED_COARSE_RASTER
+#define VSM_PACKED_COARSE_RASTER 0
+#endif
+
+#if VSM_PACKED_COARSE_RASTER
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vsmBuildCoarseWorkMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform ShadowPush batchPush)
+{
+    ShadowPush push;
+    if (!vsmBatchComputePush(group, batchPush, push)) { return; }
+    const uint firstTriangle = (group.x * 64u + lane) * kVSMCoarseRasterSlotsPerTicket;
+    const uint coarseView = push.clipmapCount;
+    float3 minimum, maximum;
+    const bool drawable = firstTriangle < push.triangleCount &&
+        vsmLODSelectedRange(push, firstTriangle, coarseView, kVSMCoarseRasterSlotsPerTicket) &&
+        loadVirtualShadowMapClusterBounds(push.geometry, firstTriangle, minimum, maximum);
+    const uint prefix = WavePrefixCountBits(drawable);
+    const uint count = WaveActiveCountBits(drawable);
+    if (count == 0u) { return; }
+
+    RWStructuredBuffer<uint> queue = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(
+        vsmCacheMetadata(push, kVSMCoarseRasterQueue)));
+    uint first = 0u;
+    // The queue has one slot for each possible 16-triangle range. Each lane
+    // owns one range and can emit at most one ticket.
+    if (WaveIsFirstLane()) { InterlockedAdd(queue[0], count, first); }
+    first = WaveReadLaneFirst(first);
+    if (drawable) { queue[1u + first + prefix] = firstTriangle; }
+}
+#endif
 
 #if VSM_CLUSTER_PAGE_RASTER
 static const uint kVSMClusterPageTableSize = 512u;
 static const uint kVSMClusterPageTableMask = kVSMClusterPageTableSize - 1u;
 static const uint kVSMClusterPageTablePasses = kVSMClusterPageTableSize / 64u;
-groupshared uint g_vsmClusterPageKey[kVSMClusterPageTableSize];
+groupshared Atomic<uint> g_vsmClusterPageKey[kVSMClusterPageTableSize];
 groupshared uint g_vsmClusterPageMaskLo[kVSMClusterPageTableSize];
 groupshared uint g_vsmClusterPageMaskHi[kVSMClusterPageTableSize];
 groupshared uint g_vsmClusterUsedSlots[kVSMClusterPageTableSize];
 groupshared uint g_vsmClusterUsedCount[2];
 groupshared uint g_vsmClusterTotalTris[2];
 groupshared uint g_vsmClusterTotalTickets[2];
+#if !VSM_PACKED_RASTER_WORK
 groupshared uint g_vsmClusterBaseTri;
+#endif
 groupshared uint g_vsmClusterBaseTicket;
 
 bool vsmTryInsertClusterPage(uint page, uint lane, uint parity)
@@ -48,11 +84,11 @@ bool vsmTryInsertClusterPage(uint page, uint lane, uint parity)
     bool high = lane >= 32u;
     for (uint probe = 0u; probe < 16u; ++probe) {
         uint idx = (slot + probe) & kVSMClusterPageTableMask;
-        uint cur = g_vsmClusterPageKey[idx];
+        uint cur = g_vsmClusterPageKey[idx].load(MemoryOrder.Relaxed);
         if (cur != page) {
             if (cur == 0xffffffffu) {
-                uint prev;
-                InterlockedCompareExchange(g_vsmClusterPageKey[idx], 0xffffffffu, page, prev);
+                uint prev = g_vsmClusterPageKey[idx].compareExchange(0xffffffffu, page,
+                    MemoryOrder.Relaxed, MemoryOrder.Relaxed);
                 if (prev == 0xffffffffu) {
                     uint pos;
                     InterlockedAdd(g_vsmClusterUsedCount[parity], 1u, pos);
@@ -74,14 +110,20 @@ bool vsmTryInsertClusterPage(uint page, uint lane, uint parity)
 void vsmEmitSingleClusterPage(uint page, uint lane, uint firstTriangle, ShadowPush push)
 {
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
+    RWStructuredBuffer<uint4> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.workItems));
+    uint ticket;
+#if VSM_PACKED_RASTER_WORK
+    InterlockedAdd(statistics[3], 1u);
+    InterlockedAdd(work[0].x, 1u, ticket);
+    if (ticket < push.workCapacity) {
+#else
     uint first;
     InterlockedAdd(statistics[3], 1u, first);
     if (first < push.workCapacity) {
-        RWStructuredBuffer<uint4> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.workItems));
+        InterlockedAdd(work[0].x, 1u, ticket);
+#endif
         uint bit = 1u << (lane & 31u);
         bool high = lane >= 32u;
-        uint ticket;
-        InterlockedAdd(work[0].x, 1u, ticket);
         work[1u + ticket] = uint4(firstTriangle, page, high ? 0u : bit, high ? bit : 0u);
     } else {
         InterlockedAdd(statistics[5], 1u);
@@ -102,10 +144,16 @@ bool vsmFlushClusterPages(uint firstTriangle, uint lane, uint parity, bool moreL
         myTickets += uint((lo & 0xffffu) != 0u) + uint((lo >> 16u) != 0u) +
             uint((hi & 0xffffu) != 0u) + uint((hi >> 16u) != 0u);
     }
+#if !VSM_PACKED_RASTER_WORK
     uint myTriOffset = 0u;
+#endif
     uint myTicketOffset = 0u;
     if (myTris != 0u) {
+#if VSM_PACKED_RASTER_WORK
+        InterlockedAdd(g_vsmClusterTotalTris[parity], myTris);
+#else
         InterlockedAdd(g_vsmClusterTotalTris[parity], myTris, myTriOffset);
+#endif
         InterlockedAdd(g_vsmClusterTotalTickets[parity], myTickets, myTicketOffset);
     }
     GroupMemoryBarrierWithGroupSync();
@@ -119,6 +167,12 @@ bool vsmFlushClusterPages(uint firstTriangle, uint lane, uint parity, bool moreL
         g_vsmClusterTotalTris[nextParity] = 0u;
         g_vsmClusterTotalTickets[nextParity] = 0u;
         if (totalTris != 0u) {
+#if VSM_PACKED_RASTER_WORK
+            InterlockedAdd(statistics[3], totalTris);
+            uint baseTicket;
+            InterlockedAdd(work[0].x, g_vsmClusterTotalTickets[parity], baseTicket);
+            g_vsmClusterBaseTicket = baseTicket;
+#else
             uint baseTri;
             InterlockedAdd(statistics[3], totalTris, baseTri);
             g_vsmClusterBaseTri = baseTri;
@@ -127,19 +181,48 @@ bool vsmFlushClusterPages(uint firstTriangle, uint lane, uint parity, bool moreL
                 InterlockedAdd(work[0].x, g_vsmClusterTotalTickets[parity], baseTicket);
                 g_vsmClusterBaseTicket = baseTicket;
             }
+#endif
         }
     }
     GroupMemoryBarrierWithGroupSync();
     if (lane < usedCount) {
+#if VSM_PACKED_RASTER_WORK
+        // Reservations count complete masked records. Keep the public counters
+        // in logical triangle/page units, including masks rejected by the queue.
+        uint ticket = g_vsmClusterBaseTicket + myTicketOffset;
+        uint droppedTris = 0u;
+        for (uint pos = lane; pos < usedCount; pos += 64u) {
+            uint s = g_vsmClusterUsedSlots[pos];
+            uint page = g_vsmClusterPageKey[s].load(MemoryOrder.Relaxed);
+            uint lo = g_vsmClusterPageMaskLo[s];
+            uint hi = g_vsmClusterPageMaskHi[s];
+            g_vsmClusterPageKey[s].store(0xffffffffu, MemoryOrder.Relaxed);
+            g_vsmClusterPageMaskLo[s] = 0u;
+            g_vsmClusterPageMaskHi[s] = 0u;
+            [unroll]
+            for (uint q = 0u; q < 4u; ++q) {
+                uint mask = q < 2u ? lo : hi;
+                mask &= (q & 1u) != 0u ? 0xffff0000u : 0xffffu;
+                if (mask == 0u) { continue; }
+                if (ticket < capacity) {
+                    work[1u + ticket] = uint4(firstTriangle, page, q < 2u ? mask : 0u, q >= 2u ? mask : 0u);
+                } else {
+                    droppedTris += countbits(mask);
+                }
+                ++ticket;
+            }
+        }
+        if (droppedTris != 0u) { InterlockedAdd(statistics[5], droppedTris); }
+#else
         uint baseTri = g_vsmClusterBaseTri;
         if (baseTri < capacity && totalTris <= capacity - baseTri) {
             uint cursor = 1u + g_vsmClusterBaseTicket + myTicketOffset;
             for (uint pos = lane; pos < usedCount; pos += 64u) {
                 uint s = g_vsmClusterUsedSlots[pos];
-                uint p = g_vsmClusterPageKey[s];
+                uint p = g_vsmClusterPageKey[s].load(MemoryOrder.Relaxed);
                 uint lo = g_vsmClusterPageMaskLo[s];
                 uint hi = g_vsmClusterPageMaskHi[s];
-                g_vsmClusterPageKey[s] = 0xffffffffu;
+                g_vsmClusterPageKey[s].store(0xffffffffu, MemoryOrder.Relaxed);
                 g_vsmClusterPageMaskLo[s] = 0u;
                 g_vsmClusterPageMaskHi[s] = 0u;
                 uint q0 = lo & 0xffffu;
@@ -155,10 +238,10 @@ bool vsmFlushClusterPages(uint firstTriangle, uint lane, uint parity, bool moreL
             uint triCursor = baseTri + myTriOffset;
             for (uint pos = lane; pos < usedCount; pos += 64u) {
                 uint s = g_vsmClusterUsedSlots[pos];
-                uint p = g_vsmClusterPageKey[s];
+                uint p = g_vsmClusterPageKey[s].load(MemoryOrder.Relaxed);
                 uint lo = g_vsmClusterPageMaskLo[s];
                 uint hi = g_vsmClusterPageMaskHi[s];
-                g_vsmClusterPageKey[s] = 0xffffffffu;
+                g_vsmClusterPageKey[s].store(0xffffffffu, MemoryOrder.Relaxed);
                 g_vsmClusterPageMaskLo[s] = 0u;
                 g_vsmClusterPageMaskHi[s] = 0u;
                 for (uint q = 0u; q < 4u; ++q) {
@@ -180,6 +263,7 @@ bool vsmFlushClusterPages(uint firstTriangle, uint lane, uint parity, bool moreL
                 }
             }
         }
+#endif
     }
     if (moreLevels) {
         GroupMemoryBarrierWithGroupSync();
@@ -355,7 +439,7 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
     }
     for (uint pass = 0u; pass < kVSMClusterPageTablePasses; ++pass) {
         uint s = lane + pass * 64u;
-        g_vsmClusterPageKey[s] = 0xffffffffu;
+        g_vsmClusterPageKey[s].store(0xffffffffu, MemoryOrder.Relaxed);
         g_vsmClusterPageMaskLo[s] = 0u;
         g_vsmClusterPageMaskHi[s] = 0u;
     }

@@ -815,6 +815,7 @@ public:
                 compiledStochasticFiltering_ != boolProperty(properties(), "stochasticTextureFiltering", false) ||
                 compiledExportUpscalerGuides_ != boolProperty(properties(), "exportUpscalerGuides", false) ||
                 compiledExportLumenReceivers_ != boolProperty(properties(), "exportLumenReceivers", false) ||
+                compiledRetainEnvironmentDiffuse_ != boolProperty(properties(), "retainEnvironmentDiffuse", false) ||
                 compiledExportLumenPreviousPosition_ != boolProperty(properties(), "exportLumenPreviousPosition", false) ||
                 compiledExportLumenDiffuseAlbedo_ != boolProperty(properties(), "exportLumenDiffuseAlbedo", false) ||
                 compiledExportLumenSpecular_ != boolProperty(properties(), "exportLumenSpecular", false))) {
@@ -954,6 +955,7 @@ public:
         const bool globalView = visibilityDeferred_ && context.renderView != nullptr &&
             properties().value("sceneBinding", "world") != "asset" && properties().value("viewBinding", "global") != "local";
         const bool exportLumenReceivers = visibilityDeferred_ && boolProperty(properties(), "exportLumenReceivers", false);
+        const bool retainEnvironmentDiffuse = visibilityDeferred_ && boolProperty(properties(), "retainEnvironmentDiffuse", false);
         const bool exportLumenPreviousPosition = visibilityDeferred_ && boolProperty(properties(), "exportLumenPreviousPosition", false);
         const bool exportLumenSpecular = visibilityDeferred_ && boolProperty(properties(), "exportLumenSpecular", false);
         const bool exportLumenDiffuseAlbedo = visibilityDeferred_ && boolProperty(properties(), "exportLumenDiffuseAlbedo", false);
@@ -981,6 +983,7 @@ public:
             "|stochasticTextureFiltering=" + (visibilityDeferred_ && boolProperty(properties(), "stochasticTextureFiltering", false) ? "1" : "0") +
             "|upscalerGuides=" + (boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0") +
             (exportLumenReceivers ? "|lumenReceivers=1" : "") +
+            (retainEnvironmentDiffuse ? "|retainEnvironmentDiffuse=1" : "") +
             (exportLumenPreviousPosition ? "|lumenPreviousPosition=1" : "") +
             (exportLumenSpecular ? "|lumenSpecular=1" : "") +
             (exportLumenDiffuseAlbedo ? "|lumenDiffuseAlbedo=1" : "");
@@ -1260,6 +1263,7 @@ public:
             // multi-sample integrator in its live program. Training is unchanged.
             std::vector<SlangMacroDefine> defines(extraDefines.begin(), extraDefines.end());
             if (exportLumenReceivers) { defines.push_back({"METALLIC_DEFERRED_LUMEN_RECEIVERS", "1"}); }
+            if (retainEnvironmentDiffuse) { defines.push_back({"METALLIC_DEFERRED_RETAIN_ENVIRONMENT_DIFFUSE", "1"}); }
             if (exportLumenPreviousPosition) { defines.push_back({"METALLIC_DEFERRED_LUMEN_PREVIOUS_POSITION", "1"}); }
             if (exportLumenSpecular) { defines.push_back({"METALLIC_DEFERRED_LUMEN_SPECULAR", "1"}); }
             if (exportLumenDiffuseAlbedo) { defines.push_back({"METALLIC_DEFERRED_LUMEN_AO_ALBEDO", "1"}); }
@@ -1516,6 +1520,7 @@ public:
         compiledProgramBinning_ = boolProperty(properties(), "programBinning", true);
         compiledExportUpscalerGuides_ = visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false);
         compiledExportLumenReceivers_ = exportLumenReceivers;
+        compiledRetainEnvironmentDiffuse_ = retainEnvironmentDiffuse;
         compiledExportLumenPreviousPosition_ = exportLumenPreviousPosition;
         compiledExportLumenSpecular_ = exportLumenSpecular;
         compiledExportLumenDiffuseAlbedo_ = exportLumenDiffuseAlbedo;
@@ -3630,6 +3635,7 @@ private:
     bool compiledStochasticFiltering_ = false;
     bool compiledExportUpscalerGuides_ = false;
     bool compiledExportLumenReceivers_ = false;
+    bool compiledRetainEnvironmentDiffuse_ = false;
     bool compiledExportLumenPreviousPosition_ = false;
     bool compiledExportLumenSpecular_ = false;
     bool compiledExportLumenDiffuseAlbedo_ = false;

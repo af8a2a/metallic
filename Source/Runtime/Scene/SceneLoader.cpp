@@ -784,10 +784,11 @@ SceneLoadHandle SceneLoader::request(
 
             bool cachedGeometry = false;
             if (!options.streamAssetPath.empty()) {
+                const auto source = SceneDocument::streamGeometrySource(path);
                 MeshletStreamAsset asset;
                 std::string reason;
-                cachedGeometry = asset.open(options.streamAssetPath, reason) &&
-                    asset.isRuntimeCompatibleForSource(path, reason);
+                cachedGeometry = !source.path.empty() && !source.requiresSourceTriangles &&
+                    asset.open(options.streamAssetPath, reason) && asset.isRuntimeCompatibleForSource(source.path, reason);
             }
             const bool loaded = cachedGeometry
                 ? candidate->loadStreamMetadata(path, callback)

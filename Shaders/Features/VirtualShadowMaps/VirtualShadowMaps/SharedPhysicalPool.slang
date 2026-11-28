@@ -113,7 +113,17 @@ void vsmSharedPoolPhysicalMain(uint lane : SV_GroupIndex, uniform VirtualShadowM
             missingBase += missingFine + missingCoarse;
             statistics[20] = missingFine;
             statistics[16] += missingFine;
-            statistics[21] = job.enabled != 0u && (coarse.w & 2u) != 0u ? 1u : 0u;
+            const bool redrawCoarse = job.enabled != 0u && (coarse.w & 2u) != 0u;
+            statistics[21] = uint(redrawCoarse);
+            const uint coarseQueue = vsmCacheMetadata(job, kVSMCoarseRasterQueue);
+            if (redrawCoarse && coarseQueue != 0xffffffffu) {
+                RWStructuredBuffer<uint> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(coarseQueue));
+                RWStructuredBuffer<uint> cache = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(job.sampleReserved));
+                work[0] = 0u;
+                const uint slotsPerGroup = kVSMCoarseRasterSlotsPerTicket * 64u;
+                cache[kVSMCoarseRasterDispatchGroups] =
+                    job.triangleCount / slotsPerGroup + uint((job.triangleCount % slotsPerGroup) != 0u);
+            }
             if ((job.cacheMode & 32u) != 0u) {
                 // Shared allocation uses the global candidate list. This word
                 // retains the existing static-merge snapshot ABI for Finalize.

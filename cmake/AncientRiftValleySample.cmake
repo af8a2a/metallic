@@ -96,4 +96,21 @@ function(add_metallic_ancient_rift_valley_sample manifest output_directory cook_
     add_custom_target("${target}Sample"
         DEPENDS "${sample}.gltf.meshstream.bin" "${sample}.meshstream.regions.json" "${sample}.metallic_scene.json")
     add_dependencies("${target}Sample" "${target}Materials")
+
+    if(valley_FULL_WORLD)
+        set(daylight "${authoring_directory}/Daylight.json")
+        set(daylight_scene "${sample}_daylight.metallic_scene.json")
+        add_custom_command(
+            OUTPUT "${daylight_scene}"
+            COMMAND "${Python3_EXECUTABLE}" -B "${tools}/BuildAncientRiftValleyDaylight.py"
+                "${sample}.metallic_scene.json" --lighting "${daylight}" --output "${daylight_scene}"
+            DEPENDS "${sample}.metallic_scene.json" "${daylight}" "${tools}/BuildAncientRiftValleyDaylight.py"
+                "${tools}/BuildTerrainRegions.py" "${tools}/BuildTerrainMesh.py"
+            WORKING_DIRECTORY "${repo}"
+            COMMENT "Authoring the Ancient Rift Valley daylight scene"
+            VERBATIM
+        )
+        add_custom_target("${target}DaylightSample" DEPENDS "${daylight_scene}")
+        add_dependencies("${target}DaylightSample" "${target}Sample")
+    endif()
 endfunction()

@@ -7,6 +7,7 @@
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
@@ -757,9 +758,41 @@ public:
                 save();
                 RenderGraph graph;
                 std::string log;
-                requireAcceptance(loadRenderGraphFromFile(manifestPath.parent_path() / spec.at("graph").get<std::string>(), graph, log), log);
+                const auto graphPath = manifestPath.parent_path() / spec.at("graph").get<std::string>();
+                std::filesystem::path scenePath;
+                if (const auto sampleId = spec.find("builtInSample"); sampleId != spec.end()) {
+                    RenderSampleLoadResult sample;
+                    requireAcceptance(loadBuiltInRenderSample(sampleId->get<std::string>(), sample, log), log);
+                    requireAcceptance(std::filesystem::equivalent(graphPath, sample.graphFilePath),
+                        "Acceptance graph path must match the built-in sample's registered graph");
+                    graph = std::move(sample.graph);
+                    scenePath = root / sample.desc.scenePath;
+                    output["builtInSample"] = sample.desc.id;
+                } else {
+                    requireAcceptance(loadRenderGraphFromFile(graphPath, graph, log), log);
+                }
+                if (!spec.at("scene").is_null()) { scenePath = root / spec.at("scene").get<std::string>(); }
+                output["resolvedScene"] = scenePath.generic_string();
+                if (const auto debugView = spec.find("deferredDebugView"); debugView != spec.end()) {
+                    const auto* deferred = graph.findNode("Deferred");
+                    requireAcceptance(diagnostic && deferred && deferred->type == "VisibilityBufferDeferredPass",
+                        "Deferred debug override requires a diagnostic visibility-buffer case");
+                    auto properties = deferred->properties;
+                    properties["debugView"] = debugView->get<std::string>();
+                    graph.setNodeProperties(deferred->id, std::move(properties));
+                }
                 auto* shadows = graph.findNode("Shadows");
                 requireAcceptance(shadows && shadows->type == "VirtualShadowMapLightsPass", "Acceptance requires a production VSM Lights pass named Shadows");
+                if (const auto packedCoarse = spec.find("packedCoarseRaster"); packedCoarse != spec.end()) {
+                    requireAcceptance(packedCoarse->is_boolean(), "packedCoarseRaster must be a boolean");
+                    graph.setNodeRuntimeProperty(shadows->id, "packedCoarseRaster", packedCoarse->get<bool>());
+                }
+                if (spec.value("shadowWorkDiagnostics", false)) {
+                    requireAcceptance(diagnostic, "Shadow work counters require diagnostic mode");
+                    auto properties = shadows->properties;
+                    properties["benchmarkGPUWork"] = true;
+                    graph.setNodeProperties(shadows->id, std::move(properties));
+                }
                 const bool cpuProfileDiagnostics = shadows->properties.value("benchmarkCPUProfile", false);
                 const bool gpuProfileDiagnostics = shadows->properties.value("benchmarkGPUProfile", false);
                 const bool buildSubstageDiagnostics = shadows->properties.value("benchmarkBuildSubstages", false);
@@ -823,20 +856,21 @@ public:
                 const bool allowBudgetDeferral = spec.value("allowResidentBudgetDeferral", false);
                 const bool requireBudgetDeferral = spec.value("requireResidentBudgetDeferral", allowBudgetDeferral);
                 const uint32_t residentPageLimit = allowBudgetDeferral ? raster->properties.value("maxResidentPages", 0u) : 0u;
-                requireAcceptance(!allowBudgetDeferral || (diagnostic && residentPageLimit != 0),
-                    "Resident budget deferrals require diagnostic mode and an explicit VBuffer page limit");
+                const uint64_t residentByteLimit = allowBudgetDeferral ? raster->properties.value("maxResidentBytes", uint64_t(0)) : 0;
+                requireAcceptance(!allowBudgetDeferral || residentPageLimit != 0,
+                    "Resident budget deferrals require an explicit VBuffer page limit");
                 requireAcceptance(!requireBudgetDeferral || allowBudgetDeferral,
                     "Cannot require resident budget deferrals when they are disabled");
                 bool observedBudgetDeferral = false;
                 const bool worldBinding = raster->properties.value("sceneBinding", std::string("world")) == "world";
                 if (diagnostic) { graph.setNodeRuntimeProperty(rasterId, "benchmarkCaptureSemanticSource", true); }
                 for (const auto& event : spec.value("events", Json::array())) {
-                    requireAcceptance(!event.value("reloadScene", false) || (worldBinding && !spec.at("scene").is_null()),
+                    requireAcceptance(!event.value("reloadScene", false) || (worldBinding && !scenePath.empty()),
                         "reloadScene requires world scene binding and an explicit scene; asset graph reload is not scene handoff");
-                    requireAcceptance(!event.contains("casterTranslations") || (worldBinding && !spec.at("scene").is_null() &&
+                    requireAcceptance(!event.contains("casterTranslations") || (worldBinding && !scenePath.empty() &&
                         event.at("casterTranslations").is_array() && event.at("frame").get<uint32_t>() < frames),
                         "casterTranslations requires a bound world scene, an event array and an in-range frame");
-                    requireAcceptance(!event.contains("sunDirection") || ((spec.contains("lighting") || !spec.at("scene").is_null()) &&
+                    requireAcceptance(!event.contains("sunDirection") || ((spec.contains("lighting") || !scenePath.empty()) &&
                         event.at("frame").get<uint32_t>() < frames), "sunDirection requires a world sun and an in-range frame");
                 }
                 requireAcceptance(!shadows->properties.value("forceRedraw", false), "Acceptance begins with ordinary caching");
@@ -881,11 +915,10 @@ public:
                 preview.bindRenderView(&view);
                 environment::WorldEnvironment world;
                 const auto loadScene = [&]() {
-                    if (spec.at("scene").is_null()) { preview.bindRuntimeScene(nullptr); return; }
+                    if (scenePath.empty()) { preview.bindRuntimeScene(nullptr); return; }
                     auto document = std::make_unique<scene::SceneDocument>();
-                    const auto path = root / spec.at("scene").get<std::string>();
-                    requireAcceptance(spec.value("metadataOnly", false) ? document->loadStreamMetadata(path) : document->load(path),
-                        "Acceptance scene load: " + path.string());
+                    requireAcceptance(spec.value("metadataOnly", false) ? document->loadStreamMetadata(scenePath) : document->load(scenePath),
+                        "Acceptance scene load: " + scenePath.string());
                     requireAcceptance(document->documentWarning().empty(), document->documentWarning());
                     world = document->worldEnvironment();
                     preview.bindRuntimeScene(document.get());
@@ -933,6 +966,12 @@ public:
                         }
                         if (event.contains("camera")) { camera = event.at("camera"); }
                         if (event.value("cameraCut", false)) { view.cameraCut(); }
+                        if (event.contains("packedCoarseRaster")) {
+                            graph.setNodeRuntimeProperty(shadowId, "packedCoarseRaster", event.at("packedCoarseRaster").get<bool>());
+                        }
+                        if (event.contains("forceShadowRedraw")) {
+                            graph.setNodeRuntimeProperty(shadowId, "forceRedraw", event.at("forceShadowRedraw").get<bool>());
+                        }
                         if (event.value("reloadScene", false)) { loadScene(); setLighting(); graph.markDirty(); sceneHandoff = true; }
                         if (event.contains("sunDirection")) {
                             const auto direction = event.at("sunDirection").get<std::array<float, 3>>();
@@ -1065,7 +1104,9 @@ public:
                         const auto failures = stream["allocationFailures"].get<uint32_t>();
                         const auto deferrals = stream["allocationBudgetDeferrals"].get<uint32_t>();
                         const bool budgetValid = !cappedVBuffer || (stream["maxResidentPages"] == residentPageLimit &&
-                            stream["activePages"].get<uint32_t>() <= residentPageLimit);
+                            stream["activePages"].get<uint32_t>() <= residentPageLimit &&
+                            (residentByteLimit == 0 || (stream["geometryBudgetBytes"] == residentByteLimit &&
+                                stream["geometryUsedBytes"].get<uint64_t>() <= residentByteLimit)));
                         if (stream["loadFailures"] != 0 || stream["requestOverflows"] != 0 || !budgetValid ||
                             failures != (cappedVBuffer ? deferrals : 0u)) {
                             output["frames"].push_back(row);
@@ -1136,12 +1177,14 @@ public:
                         const auto cachedStats = frameStatistics(preview);
                         const auto cachedDepth = receipt.read("VBuffer.depth"), cachedVisibility = receipt.read("VBuffer.visibility");
                         const auto cachedShadows = receipt.read("Shadows.shadows");
+                        const auto cachedShadowTotals = receipt.shadow().at("totals");
                         graph.setNodeRuntimeProperty(shadowId, "forceRedraw", true);
                         requireAcceptance(preview.render(graph, width, height, comparisonOutput, true), preview.lastLog());
                         const auto redrawnHDRReceipt = hdrReceipt(preview);
                         const auto redrawnStats = frameStatistics(preview);
                         const auto redrawnDepth = receipt.read("VBuffer.depth"), redrawnVisibility = receipt.read("VBuffer.visibility");
                         const auto redrawnShadows = receipt.read("Shadows.shadows");
+                        const auto redrawnShadowTotals = receipt.shadow().at("totals");
                         const bool stable = cachedDepth == redrawnDepth && cachedVisibility == redrawnVisibility &&
                             comparisonIdentity(cachedStats) == comparisonIdentity(redrawnStats);
                         uint64_t changed = 0;
@@ -1154,12 +1197,16 @@ public:
                             {"hdrByteEqual", cachedHDR == preview.readbackBytes()},
                             {"cachedHDR", cachedHDRReceipt}, {"redrawnHDR", redrawnHDRReceipt},
                             {"cachedShadowSha256", hashBytes(cachedShadows)}, {"redrawnShadowSha256", hashBytes(redrawnShadows)},
+                            {"cachedShadowTotals", cachedShadowTotals}, {"redrawnShadowTotals", redrawnShadowTotals},
                             {"cachedDepthSha256", hashBytes(cachedDepth)}, {"redrawnDepthSha256", hashBytes(redrawnDepth)},
                             {"cachedStreaming", cachedStats["streaming"]}, {"redrawnStreaming", redrawnStats["streaming"]}});
                         graph.setNodeRuntimeProperty(shadowId, "forceRedraw", false);
                         receipt.captureImages = false;
                         requireAcceptance(cachedHDRReceipt["nonfiniteComponents"] == 0 &&
                             redrawnHDRReceipt["nonfiniteComponents"] == 0, "Nonfinite HDR comparison output");
+                        requireAcceptance(cachedShadowTotals[5] == 0 && redrawnShadowTotals[5] == 0 &&
+                            cachedShadowTotals[9] == 0 && redrawnShadowTotals[9] == 0,
+                            "VSM work overflow or invalid coarse fallback during cache comparison");
                         requireAcceptance(!stable || changed == 0, "Cached/forced shadow mismatch with stable geometry inputs");
                     }
                     if (frame % 16 == 0 || frame + 1 == frames) {

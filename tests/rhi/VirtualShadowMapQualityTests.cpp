@@ -4025,6 +4025,118 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapPhysicalHZBTest);
 
+class VirtualShadowMapPackedRasterWorkTest final : public RHITest
+{
+public:
+    VirtualShadowMapPackedRasterWorkTest()
+    {
+        type = RHITestType::Rendering;
+        name = "virtual_shadow_map_packed_raster_work";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapPackedRasterWork";
+        Json report{{"passed", false}, {"frames", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&] { std::ofstream(directory / "Report.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            registerQualityEvidence();
+            const auto fixture = writeFixture(directory / "Floor", false);
+            scene::SceneDocument scene;
+            require(scene.load(fixture.source), "Load packed raster work fixture");
+            RenderView view;
+            RenderGraphPreviewRenderer preview;
+            configurePreview(preview, scene, view, context, validation);
+            publishSource(scene, preview, Source{"Directional"});
+            evidence = std::make_shared<EvidenceState>();
+            auto graph = makeGraph(fixture, "pcf", true, 8);
+            for (const std::string name : {"Cached", "Compact"}) {
+                const auto* shadow = graph.findNode(name);
+                auto properties = shadow->properties;
+                properties.update({{"compactOutputs", false}, {"benchmarkGPUWork", true}, {"forceRedraw", true},
+                    {"physicalPageBudget", 128}, {"maxPagePoolLoadFactor", 0.0f}, {"packedRasterWork", name == "Compact"}});
+                require(graph.setNodeProperties(shadow->id, std::move(properties)), "Configure packed work comparison");
+                const auto* readback = graph.findNode(name + "Evidence");
+                auto readbackProperties = readback->properties;
+                readbackProperties["captureWork"] = true;
+                require(graph.setNodeProperties(readback->id, std::move(readbackProperties)), "Configure raster work readback");
+                for (const auto* field : {"workload", "buildDiagnostics", "projectionGridDiagnostics"}) {
+                    graph.addEdge(name + "." + field, name + "Evidence." + field);
+                }
+            }
+
+            const auto packedId = graph.findNode("Compact")->id;
+            const auto renderPhase = [&](const char* phase, uint32_t packedLimit) {
+                validation.phase(phase);
+                require(graph.setNodeRuntimeProperty(packedId, "maxWorkItems", packedLimit), "Set packed raster work capacity");
+                require(preview.render(graph, kWidth, kHeight, "CompactEvidence.color"), "Render packed work comparison: " + preview.lastLog());
+            };
+            const auto capture = [&](const char* phase, uint32_t packedLimit, bool expectComplete, bool expectPackedCoarse = false) {
+                const auto scalar = snapshot("Cached", true, false, true);
+                const auto packed = snapshot("Compact", true, false, true);
+                const auto scalarFace = activeEntry(scalar).baseLayer;
+                const auto packedFace = activeEntry(packed).baseLayer;
+                const auto& reference = scalar.statistics[scalarFace];
+                const auto& candidate = packed.statistics[packedFace];
+                const uint64_t tickets = packed.workload[packedFace][kVSMWorkRasterFineGroups];
+                const uint64_t scalarCoarseGroups = scalar.workload[scalarFace][kVSMWorkRasterCoarseGroups];
+                const uint64_t packedCoarseGroups = packed.workload[packedFace][kVSMWorkRasterCoarseGroups];
+                const bool equal = scalar.shadows == packed.shadows;
+                report["frames"].push_back({{"phase", phase}, {"packedLimit", packedLimit}, {"packedTickets", tickets},
+                    {"scalarStatistics", reference}, {"packedStatistics", candidate}, {"equalVisibility", equal},
+                    {"scalarCoarseGroups", scalarCoarseGroups}, {"packedCoarseGroups", packedCoarseGroups}});
+                save();
+                require(scalar.depth == packed.depth && reference[5] == 0 && reference[9] == 0 && reference[24] > 0 &&
+                    reference[6] > reference[7] && reference[3] == candidate[3], "Comparison did not exercise complete scalar fine shadows");
+                require(candidate[4] + candidate[5] == candidate[3] && candidate[9] == 0 && tickets <= packedLimit,
+                    "Packed work counter accounting or resource bound failed");
+                if (expectPackedCoarse) {
+                    require(packedCoarseGroups > 0 && packedCoarseGroups < scalarCoarseGroups,
+                        "Lights pass did not submit packed coarse raster work");
+                }
+                if (expectComplete) {
+                    require(candidate[5] == 0 && candidate[24] == reference[24] && equal && tickets > 1 && tickets < candidate[3],
+                        "Complete packed work differs from scalar work or did not pack triangle/page pairs");
+                } else {
+                    require(candidate[5] > 0 && candidate[7] == candidate[6],
+                        "Packed work overflow did not fall back to complete coarse shadows");
+                }
+                return static_cast<uint32_t>(tickets);
+            };
+
+            constexpr uint32_t kHighCapacity = 131072;
+            renderPhase("HighCapacity", kHighCapacity);
+            // The graph compilation in the first render initializes the subsystem host.
+            if (!preview.subsystemHost()->device()->capabilities().computeSubgroupBallotArithmetic) {
+                return RHITestResult::skip("Packed shadow raster work requires compute subgroup ballot/arithmetic");
+            }
+            const uint32_t ticketCount = capture("HighCapacity", kHighCapacity, true);
+            renderPhase("PackedFitsBelowScalarDemand", ticketCount);
+            capture("PackedFitsBelowScalarDemand", ticketCount, true);
+            renderPhase("PackedOverflow", 1);
+            capture("PackedOverflow", 1, false);
+            renderPhase("PackedRecovery", ticketCount);
+            capture("PackedRecovery", ticketCount, true);
+            require(graph.setNodeRuntimeProperty(packedId, "packedCoarseRaster", true), "Enable Lights pass coarse packing");
+            renderPhase("PackedCoarseAndFine", ticketCount);
+            capture("PackedCoarseAndFine", ticketCount, true, true);
+            report["validation"] = validation.snapshot();
+            require(!validation.failed(), "Packed raster work Vulkan validation error");
+            report["passed"] = true;
+            save();
+            return RHITestResult::pass("Tight packed VSM work matches complete scalar shadows and recovers after real ticket overflow");
+        } catch (const std::exception& error) {
+            report["error"] = error.what();
+            report["validation"] = validation.snapshot();
+            save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapPackedRasterWorkTest);
+
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapQualityTest);
 
 } // namespace

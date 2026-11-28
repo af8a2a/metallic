@@ -245,7 +245,7 @@ if(Python3_Interpreter_FOUND)
         COMMENT "Rendering the Ancient Rift Valley 4x4 smoke frame"
         VERBATIM
     )
-    add_custom_target(MetallicPCGWorld DEPENDS LookDev MetallicTerrainRegionsSample)
+    add_custom_target(MetallicPCGWorld DEPENDS LookDev MetallicAncientRiftValley4x4DaylightSample)
     add_custom_target(MetallicTerrainRegionsSmoke
         COMMAND ${CMAKE_COMMAND} -E env METALLIC_SMOKE_TEST_HIDDEN=1
             METALLIC_SMOKE_TEST_TERRAIN_ROAM=1

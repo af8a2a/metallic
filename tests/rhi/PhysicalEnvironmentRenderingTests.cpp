@@ -1,4 +1,7 @@
 #include "RHITest.h"
+#include "Runtime/Render/Core/ResourceSynchronization.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Scene/SceneDocument.h"
@@ -11,6 +14,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <limits>
+#include <numbers>
 
 namespace metallic::tests {
 namespace {
@@ -452,6 +456,225 @@ public:
     PhysicalEnvironmentSharcHistoryTest() : PhysicalEnvironmentHistoryTest(true) {}
 };
 METALLIC_REGISTER_RHI_TEST(PhysicalEnvironmentSharcHistoryTest);
+
+class AncientRiftValleyExposureReadback final : public render::IRenderDebugObserver {
+public:
+    explicit AncientRiftValleyExposureReadback(render::RenderGraphPreviewRenderer& preview) : preview_(preview)
+    {
+        preview_.setDebugObserver(this);
+    }
+
+    ~AncientRiftValleyExposureReadback() override
+    {
+        preview_.setDebugObserver(nullptr);
+        if (readback_) { (void)device_->waitIdle(); }
+    }
+
+    bool detailedSnapshots() const override { return false; }
+    void compiled(debug::DebugValue) override {}
+    void endExecution(bool) override {}
+    void beginExecution(render::Device& device, debug::DebugEvidenceStamp, render::RenderSubsystemHost*) override
+    {
+        device_ = &device;
+    }
+
+    void boundary(render::CommandBuffer& commands, std::string_view checkpoint, uint32_t, std::string_view pass,
+        std::span<const render::DebugResourceBinding> resources, const debug::DebugValue&) override
+    {
+        using namespace render;
+        if (!capture || pass != "AutoExposure" || checkpoint != "AfterPass") { return; }
+        const auto source = std::ranges::find(resources, "AutoExposure.exposure", &DebugResourceBinding::id);
+        if (source == resources.end() || !source->buffer) { return; }
+        if (!readback_ && !device_->createBuffer({.size = sizeof(Values), .usage = BufferUsageBits::TransferDestination,
+                .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto value) { readback_ = std::move(value); })) {
+            return;
+        }
+        BufferBarrierDesc barrier{.buffer = source->buffer,
+            .before = resourceSyncScope(source->state, PipelineStageBits::AllCommands),
+            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+            .range = {.offset = source->offset, .size = sizeof(Values)}};
+        if (!commands.synchronize({.buffers = {&barrier, 1}})) { return; }
+        const auto copied = source->buffer->slice({source->offset, sizeof(Values)}).and_then([&](const auto& from) {
+            return readback_->slice().and_then([&](const auto& to) { return commands.copyBuffer(from, to); });
+        });
+        std::swap(barrier.before, barrier.after);
+        captured_ = bool(commands.synchronize({.buffers = {&barrier, 1}})) && bool(copied);
+    }
+
+    using Values = std::array<float, 4>;
+    std::optional<Values> readAfterFrame()
+    {
+        if (!std::exchange(captured_, false)) { return std::nullopt; }
+        readback_->invalidate();
+        const void* data = readback_->map();
+        if (!data) { return std::nullopt; }
+        Values values;
+        std::memcpy(values.data(), data, sizeof(values));
+        readback_->unmap();
+        return values;
+    }
+    bool capture = false;
+
+private:
+    render::RenderGraphPreviewRenderer& preview_;
+    render::Device* device_ = nullptr;
+    std::unique_ptr<render::Buffer> readback_;
+    bool captured_ = false;
+};
+
+class AncientRiftValleyDaylightTest final : public RHITest {
+public:
+    AncientRiftValleyDaylightTest() { name = "ancient_rift_valley_daylight"; type = RHITestType::Rendering; }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        if (std::getenv("METALLIC_ANCIENT_RIFT_VALLEY_DAYLIGHT") == nullptr) {
+            return RHITestResult::skip("Set METALLIC_ANCIENT_RIFT_VALLEY_DAYLIGHT to exercise the cooked 16-region sample");
+        }
+        constexpr uint32_t kWidth = 1280, kHeight = 720, kWarmupFrames = 40;
+        const auto root = std::filesystem::path(PROJECT_SOURCE_DIR);
+        RenderSampleLoadResult sample;
+        std::string log;
+        if (!loadBuiltInRenderSample("gpu-driven-ancient-rift-valley-4x4-daylight", sample, log)) {
+            return RHITestResult::fail(log);
+        }
+        scene::SceneDocument document;
+        if (!document.loadStreamMetadata(root / sample.desc.scenePath) || !document.documentWarning().empty()) {
+            return RHITestResult::fail(document.lastLoadResult().error + document.documentWarning());
+        }
+        const auto world = document.worldEnvironment().snapshot();
+        const auto& sun = world.celestial[static_cast<size_t>(environment::CelestialLightIndex::Sun)];
+        const auto& exposureSettings = document.lighting().autoExposure;
+        if (!document.hasStreamGeometry() || document.renderPrimitives().size() != 256 ||
+            world.source != environment::EnvironmentSource::PhysicalAtmosphere || !sun.enabled || sun.direction.y >= 0.0f ||
+            !world.weather.cloudEnabled || !exposureSettings.enabled) {
+            return RHITestResult::fail("Expected the complete streamed terrain with physical daylight, clouds and automatic exposure");
+        }
+
+        const auto source = RenderGraphProperties::parse(std::ifstream(document.sourcePath()));
+        const auto previewSettings = RenderGraphProperties::parse(std::ifstream(root /
+            "Asset/Terrain/AncientRiftValley/Preview/RenderSettings.json"));
+        const auto& canyon = previewSettings.at("cameras").at("CanyonVista");
+        const double canyonFov = 2.0 * std::atan(18.0 / canyon.at("lensMillimeters").get<double>() * kHeight / kWidth)
+            * 180.0 / std::numbers::pi;
+        const std::array<std::pair<const char*, RenderGraphProperties>, 2> cameras{{
+            {"CanyonVista", {{"projection", "perspective"}, {"eye", canyon.at("eye")}, {"center", canyon.at("target")},
+                {"up", {0.0, 1.0, 0.0}}, {"fovDegrees", canyonFov}, {"znear", 0.5}, {"zfar", 3500.0}}},
+            {"WorldOverview", source.at("extras").at("metallicTerrainRegions").at("sampleCamera")},
+        }};
+        auto& graph = sample.graph;
+        constexpr auto kFinal = "FinalBlit.color";
+        constexpr auto kExposed = "AutoExposure.color";
+        constexpr auto kIndirect = "Temporal.indirectDiffuse";
+        if (sample.desc.previewOutput != kFinal || !graph.markOutput(kFinal) || !graph.markOutput(kExposed) || !graph.markOutput(kIndirect)) {
+            return RHITestResult::fail("Missing daylight graph capture outputs");
+        }
+        RenderView view;
+        if (!view.setRenderResolution(kWidth, kHeight)) { return RHITestResult::fail("Invalid daylight resolution"); }
+        view.setTemporalJitter(graph.viewProperties().value("temporalJitter", false));
+        RenderGraphPreviewRenderer preview;
+        preview.bindRuntimeScene(&document);
+        preview.bindRenderView(&view);
+        preview.setEnvironment(document.environment());
+        if (!preview.setLighting(document.lighting())) { return RHITestResult::fail("Invalid daylight exposure settings"); }
+        const bool enableStreamline = vulkan::streamlineSdkAvailable();
+        const auto initialized = preview.initialize(context.enableValidation, false, false, false, {}, enableStreamline);
+        if (!initialized) { return RHITestResult::fail("Initialize daylight renderer: " + std::string(toString(initialized))); }
+        AncientRiftValleyExposureReadback exposure(preview);
+        preview.setRawReadbackEnabled(true);
+        auto report = RenderGraphProperties{{"sample", sample.desc.id}, {"resolution", {kWidth, kHeight}},
+            {"sunDirection", {sun.direction.x, sun.direction.y, sun.direction.z}}, {"cloudCoverage", world.weather.cloudCoverage},
+            {"regionCount", graph.findNode("VBuffer")->properties.at("streamRegions").size()}, {"warmupFrames", kWarmupFrames}};
+        for (const auto& [name, camera] : cameras) {
+            if (!view.setCameraProperties(camera)) { return RHITestResult::fail(std::string("Invalid camera: ") + name); }
+            view.cameraCut();
+            for (uint32_t frame = 0; frame < kWarmupFrames; ++frame) {
+                if (!preview.render(graph, kWidth, kHeight, kFinal, false)) {
+                    return RHITestResult::fail(std::string(name) + ": " + preview.lastLog());
+                }
+            }
+            exposure.capture = true;
+            preview.setExecutionCaptureEnabled(true);
+            if (!preview.render(graph, kWidth, kHeight, kFinal)) {
+                return RHITestResult::fail(std::string(name) + ": " + preview.lastLog());
+            }
+            exposure.capture = false;
+            preview.setExecutionCaptureEnabled(false);
+            const auto state = exposure.readAfterFrame();
+            if (!state || !std::ranges::all_of(*state, [](float value) { return std::isfinite(value); }) ||
+                (*state)[0] <= 0.0f || (*state)[3] <= 0.0f ||
+                (*state)[1] < exposureSettings.minEV100 || (*state)[1] > exposureSettings.maxEV100) {
+                return RHITestResult::fail(std::string(name) + ": missing or invalid GPU exposure");
+            }
+            if (!saveRgba8Png(context.outputDirectory / (std::string(name) + ".png"),
+                    reinterpret_cast<const uint8_t*>(preview.pixels().data()), preview.width(), preview.height(), log)) {
+                return RHITestResult::fail(log);
+            }
+            if (std::string_view(name) == "CanyonVista") {
+                if (preview.width() != kWidth || preview.height() != kHeight || preview.pixels().size() != size_t(kWidth) * kHeight) {
+                    return RHITestResult::fail("CanyonVista capture has an unexpected size");
+                }
+                const auto* rgba = reinterpret_cast<const uint8_t*>(preview.pixels().data());
+                uint32_t lit = 0;
+                // Terrain on the left side of this fixed camera is in the canyon wall's shadow.
+                for (uint32_t y = 300; y < 580; ++y) {
+                    for (uint32_t x = 120; x < 270; ++x) {
+                        const auto pixel = (size_t(y) * preview.width() + x) * 4u;
+                        lit += std::max({rgba[pixel], rgba[pixel + 1], rgba[pixel + 2]}) > 12;
+                    }
+                }
+                if (lit * 100u < 95u * (580u - 300u) * (270u - 120u)) {
+                    return RHITestResult::fail("CanyonVista shadowed wall lost physical sky fill");
+                }
+            }
+            const auto snapshot = preview.executionSnapshot();
+            if (!snapshot) { return RHITestResult::fail("Missing daylight execution snapshot"); }
+            auto passes = RenderGraphProperties::object();
+            for (const auto& pass : snapshot->passes) {
+                auto stages = RenderGraphProperties::array();
+                for (const auto& stage : pass.stages) { stages.push_back(stage.name); }
+                passes[pass.name] = std::move(stages);
+            }
+            for (const auto* pass : {"VBuffer", "Shadows", "Deferred", "ScreenTrace", "Gather", "Temporal",
+                    "Reflections", "CloudView", "DLSSSR", "AutoExposure", "ColorGrading", "FinalBlit"}) {
+                if (!passes.contains(pass)) { return RHITestResult::fail(std::string("Daylight did not execute ") + pass); }
+            }
+            if (!std::ranges::any_of(passes.at("CloudView"), [](const auto& stage) { return stage == "Cloud quarter-resolution trace"; })) {
+                return RHITestResult::fail("Daylight did not trace volumetric clouds");
+            }
+            auto& shot = report["cameras"][name];
+            shot = {{"camera", camera}, {"exposureMultiplier", (*state)[0]}, {"adaptedEV100", (*state)[1]},
+                {"targetEV100", (*state)[2]}, {"meteredLuminance", (*state)[3]}, {"passes", std::move(passes)}};
+            for (const auto* output : {kExposed, kIndirect}) {
+                if (!preview.render(graph, kWidth, kHeight, output)) {
+                    return RHITestResult::fail(std::string(name) + ": " + preview.lastLog());
+                }
+                const auto rgba = decodePhysicalEnvironmentHDR(preview);
+                if (rgba.size() != size_t(preview.width()) * preview.height() * 4u ||
+                    !std::ranges::all_of(rgba, [](float value) { return std::isfinite(value); })) {
+                    return RHITestResult::fail(std::string(name) + ": invalid HDR from " + output);
+                }
+                double positiveRGB = 0.0;
+                uint32_t litPixels = 0;
+                for (size_t i = 0; i < rgba.size(); i += 4u) {
+                    const float rgb = std::max({rgba[i], rgba[i + 1], rgba[i + 2]});
+                    if (rgb > 0.0f) { positiveRGB += rgb; ++litPixels; }
+                }
+                if (litPixels == 0) { return RHITestResult::fail(std::string(name) + ": empty HDR from " + output); }
+                shot[output] = {{"width", preview.width()}, {"height", preview.height()},
+                    {"litPixels", litPixels}, {"meanMaxRGB", positiveRGB / (rgba.size() / 4u)}};
+            }
+        }
+        const bool dlss = vulkan::deviceCapabilities(*preview.subsystemHost()->device()).streamlineDlssSr;
+        report["dlssSR"] = dlss;
+        std::ofstream summary(context.outputDirectory / "AncientRiftValleyDaylight.json");
+        summary << report.dump(2) << '\n';
+        if (!summary) { return RHITestResult::fail("Writing daylight capture report failed"); }
+        return RHITestResult::pass(dlss ? "Daylight captures with DLSS-SR" : "Daylight captures at native resolution");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(AncientRiftValleyDaylightTest);
 
 } // namespace
 } // namespace metallic::tests

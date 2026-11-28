@@ -14,11 +14,17 @@ implementing VirtualShadowMaps;
 #ifndef VSM_CLUSTER_PAGE_RASTER
 #define VSM_CLUSTER_PAGE_RASTER 0
 #endif
+#ifndef VSM_PACKED_RASTER_WORK
+#define VSM_PACKED_RASTER_WORK 0
+#endif
 #ifndef VSM_CLUSTER_HYBRID_RASTER
 #define VSM_CLUSTER_HYBRID_RASTER 0
 #endif
 #ifndef VSM_BATCHED_BUILD_RASTER
 #define VSM_BATCHED_BUILD_RASTER 0
+#endif
+#ifndef VSM_PACKED_COARSE_RASTER
+#define VSM_PACKED_COARSE_RASTER 0
 #endif
 
 #if VSM_BATCHED_BUILD_RASTER
@@ -54,11 +60,18 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID,
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
     RWStructuredBuffer<uint> arguments = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.arguments));
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
+#if VSM_PACKED_RASTER_WORK
+    uint count = statistics[3] - statistics[5];
+#else
     uint count = min(statistics[3], push.workCapacity);
+#endif
     uint fineDrawCount = count;
 #if VSM_CLUSTER_PAGE_RASTER || VSM_PAGE_WINDOW_RASTER
     StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
     fineDrawCount = work[0].x;
+#if VSM_PACKED_RASTER_WORK
+    fineDrawCount = min(fineDrawCount, push.workCapacity);
+#endif
 #endif
     if (id.x == 0u) { statistics[4] = count; }
     uint coarsePage = push.totalPages - 1u;
@@ -175,6 +188,13 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID,
         // Every demotion touches the complete coarse static page, even when its
         // previously composed depth is still exact.
         uint drawCount = coarse ? ((redrawCoarse || (mergeFrame && push.enabled != 0u)) ? push.triangleCount : 0u) : fineDrawCount;
+#if VSM_PACKED_COARSE_RASTER
+        if (coarse && redrawCoarse) {
+            StructuredBuffer<uint> coarseWork = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(
+                vsmCacheMetadata(push, kVSMCoarseRasterQueue)));
+            drawCount = coarseWork[0];
+        }
+#endif
         uint dynamicCount = (coarse ? redrawCoarse : statistics[16] != 0u) ? drawCount : 0u;
         if (coarse && mergeFrame && drawCount != 0u) {
             StructuredBuffer<uint> owners = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));

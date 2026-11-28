@@ -45,6 +45,7 @@ VirtualShadowMapSettings shadowSettings(const RenderGraphProperties& properties)
     settings.optimizeProjectionStatistics = boolProperty(&properties, "benchmarkProjectionStatistics", settings.optimizeProjectionStatistics);
     settings.compactBuild = boolProperty(&properties, "benchmarkCompactBuild", settings.compactBuild);
     settings.clusterPageRaster = boolProperty(&properties, "benchmarkClusterPageRaster", settings.clusterPageRaster);
+    settings.packedRasterWork = boolProperty(&properties, "packedRasterWork", settings.packedRasterWork);
     settings.pageWindowRaster = boolProperty(&properties, "benchmarkPageWindowRaster", settings.pageWindowRaster);
     settings.instanceBuild = boolProperty(&properties, "benchmarkInstanceBuild", settings.instanceBuild);
     settings.enabled = boolProperty(&properties, "enabled", true) &&

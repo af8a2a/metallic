@@ -9667,13 +9667,15 @@ void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> 
     pendingSceneLoad_ = {};
     pendingSceneResourcePreparation_ = false;
     pendingSceneResourceProgress_ = {};
+    const auto openedPath = std::move(pendingSceneLoadPath_);
     pendingSceneLoadPath_.clear();
 
     sceneSelection_ = SceneSelection{};
     resetTransformHistory();
-    const std::filesystem::path sourcePath = scene_.sourcePath();
-    copyToBuffer(displayPathForProperty(sourcePath), sceneFilePath_, sizeof(sceneFilePath_));
-    addRecentScenePath(sourcePath);
+    const auto& sourcePath = scene_.sourcePath();
+    const auto& scenePath = openedPath.empty() ? sourcePath : openedPath;
+    copyToBuffer(displayPathForProperty(scenePath), sceneFilePath_, sizeof(sceneFilePath_));
+    addRecentScenePath(scenePath);
     // A same-path reload still replaces the runtime scene identity and may change
     // resident geometry. Force the preview passes to compile against the new scene
     // even when no RenderGraph property needs to change.
@@ -9684,7 +9686,7 @@ void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> 
     applyLoadedSceneCamera();
 
     const scene::SceneStats& stats = scene_.stats();
-    sceneStatus_ = "Loaded " + sourcePath.string() + " (" + std::to_string(stats.renderNodeCount) +
+    sceneStatus_ = "Loaded " + scenePath.string() + " (" + std::to_string(stats.renderNodeCount) +
         " render nodes, " + std::to_string(scene_.nodes().size()) + " scene nodes).";
     if (!scene_.documentWarning().empty()) {
         sceneStatus_ += " Warning: " + scene_.documentWarning();

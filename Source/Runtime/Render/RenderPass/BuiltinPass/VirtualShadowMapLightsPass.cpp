@@ -208,6 +208,8 @@ public:
             runtimeBoolSetting("distantLightSinglePage", "Single Page for Distant Local Lights", false),
             runtimeIntSetting("maxLightCacheAge", "Absent Light Cache Frames", VirtualShadowMapSettings{}.maxLightCacheAge, 0, 65535),
             runtimeBoolSetting("clusterHybridRaster", "Hybrid Shadow Cluster Raster", false),
+            runtimeBoolSetting("packedRasterWork", "Pack Hardware Shadow Raster Work", false),
+            runtimeBoolSetting("packedCoarseRaster", "Pack Coarse Shadow Raster Work", false),
             runtimeBoolSetting("twoPassHZB", "Two-Pass Shadow HZB", false),
             runtimeBoolSetting("hierarchyHZB", "Two-Pass Shadow Caster Hierarchy HZB", false),
             runtimeIntSetting("pageSize", "Page Size", 128, 16, 128),
@@ -414,6 +416,8 @@ public:
         projectionGrid.diagnostics = collectGPUWork_ ? projectionGridDiagnostics.buffer() : nullptr;
         settings.compactBuild = boolProperty(&properties, "benchmarkCompactBuild", settings.compactBuild);
         settings.clusterPageRaster = boolProperty(&properties, "benchmarkClusterPageRaster", settings.clusterPageRaster);
+        settings.packedRasterWork = boolProperty(&properties, "packedRasterWork", settings.packedRasterWork);
+        settings.packedCoarseRaster = boolProperty(&properties, "packedCoarseRaster", settings.packedCoarseRaster);
         settings.pageWindowRaster = boolProperty(&properties, "benchmarkPageWindowRaster", settings.pageWindowRaster);
         settings.instanceBuild = boolProperty(&properties, "benchmarkInstanceBuild", settings.instanceBuild);
         settings.enabled = boolProperty(&properties, "enabled", true) && !boolProperty(&properties, "debugDisableShadows", false);

@@ -1,4 +1,5 @@
 #include "Runtime/Render/RenderSample.h"
+#include "Runtime/Render/AncientRiftValleyDaylightGraph.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 
 #include <algorithm>
@@ -1195,6 +1196,7 @@ public:
         std::string_view scenePath;
         std::string_view bakeTarget;
         bool fullWorld;
+        std::string_view daylightScenePath{};
     };
 
     explicit GPUDrivenAncientRiftValleyVSMSample(Configuration configuration)
@@ -1203,9 +1205,22 @@ public:
     std::string_view id() const override { return configuration_.id; }
     std::string_view name() const override { return configuration_.name; }
     std::string_view description() const override { return configuration_.description; }
-    std::string scenePath() const override { return std::string(configuration_.scenePath); }
+    std::string scenePath() const override
+    {
+        return std::string(isDaylight() ? configuration_.daylightScenePath : configuration_.scenePath);
+    }
+    std::string graphPath() const override
+    {
+        return isDaylight() ? "Pipelines/Samples/sponza_gi_atmosphere.metallic_graph.json" :
+            GPUDrivenTerrainVSMSample::graphPath();
+    }
+    bool requiresStreamline() const override { return isDaylight(); }
     bool configureGraph(RenderGraph& graph, std::string& outMessage) const override
     {
+        if (isDaylight() && !detail::configureAncientRiftValleyDaylightGraph(
+                graph, projectPath(GPUDrivenTerrainVSMSample::graphPath()), outMessage)) {
+            return false;
+        }
         const auto* visibility = graph.findNode("VBuffer");
         const auto* shadows = graph.findNode("Shadows");
         if (visibility == nullptr || visibility->type != "VisibilityBufferPass" ||
@@ -1257,6 +1272,8 @@ public:
             // Extend the far clipmaps while preserving the existing near texel size.
             shadowProperties["clipmapCount"] = 9;
             shadowProperties["physicalPageBudget"] = 1024;
+            shadowProperties["packedRasterWork"] = true;
+            shadowProperties["packedCoarseRaster"] = isDaylight();
         }
         const auto shadowId = shadows->id;
         graph.setNodeProperties(visibility->id, std::move(properties));
@@ -1265,6 +1282,8 @@ public:
     }
 
 private:
+    bool isDaylight() const { return !configuration_.daylightScenePath.empty(); }
+
     Configuration configuration_;
 };
 
@@ -1428,6 +1447,20 @@ const RenderSample& gpuDrivenAncientRiftValley4x4VSMSample()
         .scenePath = "Asset/MeshletCache/AncientRiftValley4x4/ancient_rift_valley_4x4.gltf",
         .bakeTarget = "MetallicAncientRiftValley4x4Sample",
         .fullWorld = true,
+    });
+    return sample;
+}
+
+const RenderSample& gpuDrivenAncientRiftValley4x4DaylightSample()
+{
+    static const GPUDrivenAncientRiftValleyVSMSample sample({
+        .id = "gpu-driven-ancient-rift-valley-4x4-daylight",
+        .name = "GPUDrivenSample / Ancient Rift Valley 4x4 Daylight",
+        .description = "The full Ancient Rift Valley in physical morning daylight with Lumen, volumetric clouds and auto exposure.",
+        .scenePath = "Asset/MeshletCache/AncientRiftValley4x4/ancient_rift_valley_4x4.gltf",
+        .bakeTarget = "MetallicAncientRiftValley4x4DaylightSample",
+        .fullWorld = true,
+        .daylightScenePath = "Asset/MeshletCache/AncientRiftValley4x4/ancient_rift_valley_4x4_daylight.metallic_scene.json",
     });
     return sample;
 }
@@ -1623,6 +1656,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &gpuDrivenTerrainPlacement16x16VSMSample(),
         &gpuDrivenTerrainRegionsVSMSample(),
         &gpuDrivenAncientRiftValley2x2VSMSample(),
+        &gpuDrivenAncientRiftValley4x4DaylightSample(),
         &gpuDrivenAncientRiftValley4x4VSMSample(),
         &gpuDrivenRtasVisualizationSample(),
     };

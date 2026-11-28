@@ -1,0 +1,53 @@
+{
+  "world": {
+    "environment": {
+      "source": "physicalAtmosphere",
+      "enabled": true,
+      "visible": true,
+      "time": {
+        "julianDateUTC": 2461213.1666666665,
+        "paused": true
+      },
+      "astronomy": {
+        "mode": "astronomical",
+        "latitudeDegrees": 38.58,
+        "longitudeDegrees": -109.58
+      },
+      "sun": {
+        "enabled": true,
+        "castShadowsOnAtmosphere": true,
+        "illuminance": 0.0,
+        "topOfAtmosphereIrradiance": [1.474, 1.8504, 1.91198]
+      },
+      "moon": {
+        "enabled": false
+      },
+      "atmosphere": {
+        "aerialPerspectiveStartDepthKm": 0.035
+      },
+      "weather": {
+        "cloudEnabled": true,
+        "cloudCoverage": 0.53,
+        "cloudDensity": 0.8,
+        "cloudBaseAltitudeKm": 1.85,
+        "cloudTopAltitudeKm": 3.0,
+        "cloudExtinctionPerKm": 8.0,
+        "cloudPatternWorldSizeKm": 15.0,
+        "cloudVerticalNoiseWorldSizeKm": 8.0,
+        "cloudPatternOffsetKm": [1.75, -0.9],
+        "cloudShadowExtentKm": 4.0,
+        "aerosolDensity": 0.92,
+        "humidity": 0.18,
+        "windSpeed": 0.0,
+        "noiseSeed": 763
+      }
+    },
+    "lighting": {
+      "exposureEV100": 14.0,
+      "autoExposure": {
+        "enabled": true,
+        "compensation": 0.0
+      }
+    }
+  }
+}

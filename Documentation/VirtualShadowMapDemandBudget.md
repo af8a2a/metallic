@@ -82,6 +82,14 @@ GPU 优先使用全新物理槽，随后按 LRU 回收未请求页。每个槽�
 
 `virtual_shadow_map_light_cache_recovery` 比较物理页、D32 和投影，覆盖空槽优先、真实槽位回收、缺席期间 caster 移动和取消提交。`virtual_shadow_map_local_lights` 从生产图验证全部灯缺席后回归和缓存过期。
 
+## 粗页打包光栅
+
+`VirtualShadowMapLightsPass` 的 `packedCoarseRaster` 由 Ancient Rift Valley 4×4 Daylight 样例启用。它适用于共享物理池中的批量方向光粗页，使用合并缓存并要求设备支持计算 subgroup ballot 和算术操作。分层缓存、位移 caster、超出队列容量或队列内存不足时沿用标量粗页路径。
+
+分配器只为待重绘的粗页启动压缩。计算着色器读取当前粗页视图的 LOD 和几何驻留信息，每 16 个三角槽最多产生一个光栅任务。粗页使用独立队列，和细页工作预算无关。Mesh shader 沿用原有的投影、裁剪和材质遮挡。缓存命中时压缩和粗页光栅的 GPU 派发均为零。
+
+`virtual_shadow_map_packed_coarse_raster` 逐字节对照两条路径的粗页 D32 和投影可见性，覆盖缓存复用、细页溢出、强制恢复和 GPU 自动阴影 LOD。`virtual_shadow_map_packed_raster_work` 验证 Lights Pass 的运行时开关与粗页工作组数。
+
 ## 压缩活跃 shadow view
 
 `VirtualShadowMapLightsPass` 的 `compactShadowViews` 默认关闭，启用时需要共享池、`batchBuildRaster` 和计算 subgroup ballot/arithmetic 支持。跨灯 Build 根据物理页准入和分配结果，在 GPU 上把拥有待重绘驻留细页的 clipmap 或 mip 写入每面的位掩码。静态层增量合并也计入。全缓存命中、只有粗页或全部细页请求被拒绝的灯面不会进入细页 Build。

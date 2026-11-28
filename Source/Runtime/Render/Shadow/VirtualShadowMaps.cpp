@@ -408,7 +408,7 @@ private:
 
 struct ShadowBatchRecordingScratch
 {
-    std::array<ShadowBatchStage, 15> stages;
+    std::array<ShadowBatchStage, 16> stages;
     std::array<std::array<ShadowBatchStage, 2>, 6> layerStages;
 
     void clear()
@@ -548,6 +548,7 @@ struct VirtualShadowMaps::Programs
     bool compactBuild = false;
     bool pageWindowRaster = false;
     bool clusterPageRaster = false;
+    bool packedRasterWork = false;
     bool clusterHybridRaster = false;
     bool twoPassHZB = false;
     bool hierarchyHZB = false;
@@ -570,6 +571,9 @@ struct VirtualShadowMaps::Programs
     std::array<std::unique_ptr<ComputePipeline>, 2> onePassComputes;
     std::unique_ptr<GraphicsPipeline> raster;
     std::unique_ptr<GraphicsPipeline> packedRaster;
+    std::unique_ptr<ShaderModule> coarseWorkShader, coarseRasterShader;
+    std::unique_ptr<ComputePipeline> buildCoarseWork;
+    std::unique_ptr<GraphicsPipeline> packedCoarseRaster;
     std::unique_ptr<GraphicsPipeline> clear;
 };
 
@@ -606,6 +610,7 @@ struct VirtualShadowMaps::Cache
 struct VirtualShadowMaps::ResourcePool
 {
     static constexpr size_t kCasterLayerBufferFirst = 25;
+    static constexpr size_t kCoarseRasterQueue = kCasterLayerBufferFirst + 2 * VirtualShadowMapCasterLayerBindings::kBufferCount;
     struct BufferEntry
     {
         std::shared_ptr<Buffer> buffer;
@@ -618,7 +623,7 @@ struct VirtualShadowMaps::ResourcePool
         uint32_t pageSize = 0;
     };
     Device* device = nullptr;
-    std::array<std::vector<BufferEntry>, kCasterLayerBufferFirst + 2 * VirtualShadowMapCasterLayerBindings::kBufferCount> buffers;
+    std::array<std::vector<BufferEntry>, kCoarseRasterQueue + 1> buffers;
     std::array<std::vector<TextureEntry>, 4> textures;
     std::array<std::shared_ptr<TextureView>, 2> externalViews;
     std::array<VirtualShadowMapCasterLayerCache, 2> casterLayerCaches;
@@ -716,6 +721,7 @@ struct VirtualShadowMaps::State
         std::shared_ptr<Buffer> projectionGrid;
         std::shared_ptr<Buffer> receiverGeometry;
         std::shared_ptr<Buffer> cacheDiagnostics;
+        std::shared_ptr<Buffer> coarseRasterQueue;
         std::shared_ptr<Buffer> hybridDepth, rasterHZB, hierarchyHZBQueue;
         std::shared_ptr<ShadowAtlas> staticAtlas;
         std::shared_ptr<Buffer> staticHZB, staticHZBJobs, clusterVisibility;
@@ -1253,6 +1259,7 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
         for (const auto& state : states) {
             for (size_t index : {1u, 4u, 9u}) { append(state->resources->buffers[index].get()); }
             if (activeViews) { append(state->resources->cacheDiagnostics.get()); }
+            if (state->resources->coarseRasterQueue) { append(state->resources->coarseRasterQueue.get()); }
         }
     };
     preparePublishBarriers(pool.barriers, false);
@@ -1347,7 +1354,7 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
     auto& scratch = pool.batchScratch;
     auto& [hierarchy, initialBuild, indirectBuild, finalize, propagate, hzb, dynamicCull,
         prepareHierarchyHZB, hierarchyHistory, resetHierarchyPost, retestHierarchy, buildHierarchyPost,
-        finalizeHierarchyPost, drawHierarchyPost, propagateHierarchyPost] = scratch.stages;
+        finalizeHierarchyPost, drawHierarchyPost, propagateHierarchyPost, coarseWork] = scratch.stages;
     auto& [raster, classify, historyHZB, currentHZB, retest, postRaster] = scratch.layerStages;
     struct ClearScratch
     {
@@ -1393,6 +1400,11 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
             }
         }
         push.workBase = 0;
+        if (programs.buildCoarseWork) {
+            constexpr uint32_t slotsPerGroup = kVSMCoarseRasterSlotsPerTicket * 64u;
+            const uint32_t groups = uint32_t((uint64_t(push.triangleCount) + slotsPerGroup - 1u) / slotsPerGroup);
+            add(coarseWork, *programs.buildCoarseWork, push, groups, push.sampleReserved, kVSMCoarseRasterDispatchGroups);
+        }
         const uint32_t pageGroups = (push.totalPages + 63u) / 64u;
         add(finalize, *programs.compute[4], push, (std::max(push.totalPages, push.batchCount + push.coarseBatchCount) + 63u) / 64u);
         if (push.clipmapCount != 0) {
@@ -1428,9 +1440,10 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
             const uint32_t rasterLayer = staticPass ? 2u : (work.visibilityBatches ? 4u : 0u);
             const uint32_t drawOffset = work.mergeStatic && !staticPass ? work.mergeDrawOffset : 0u;
             push.rasterCoarse = rasterLayer | 1u;
+            auto& coarsePipeline = programs.packedCoarseRaster ? *programs.packedCoarseRaster : *programs.raster;
             for (uint32_t batch = 0; batch < push.coarseBatchCount; ++batch) {
                 push.workBase = batch * kDrawBatchSize;
-                add(raster[layer], *programs.raster, push, kDrawBatchSize, push.arguments,
+                add(raster[layer], coarsePipeline, push, kDrawBatchSize, push.arguments,
                     (drawOffset + push.batchCount + batch) * 3u);
             }
             push.rasterCoarse = rasterLayer;
@@ -1506,7 +1519,7 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
             }
         }
     };
-    for (auto* stage : {&hierarchy, &finalize, &propagate, &hzb, &dynamicCull,
+    for (auto* stage : {&hierarchy, &finalize, &propagate, &hzb, &dynamicCull, &coarseWork,
              &prepareHierarchyHZB, &hierarchyHistory, &resetHierarchyPost,
              &finalizeHierarchyPost, &propagateHierarchyPost}) { appendStage(*stage, false); }
     for (auto* stage : {&initialBuild, &indirectBuild, &retestHierarchy, &buildHierarchyPost}) {
@@ -1543,7 +1556,7 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
     auto& barriers = pool.barriers;
     const auto buffersReady = [&](std::initializer_list<size_t> indices, bool diagnostics, bool hzbJobs,
         PipelineStageBits stages = PipelineStageBits::ComputeShader,
-        AccessBits access = AccessBits::ShaderRead | AccessBits::ShaderWrite) -> Result<> {
+        AccessBits access = AccessBits::ShaderRead | AccessBits::ShaderWrite, bool coarseQueue = false) -> Result<> {
         barriers.clear();
         auto append = [&](Buffer* buffer) {
             barriers.push_back({.buffer = buffer, .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
@@ -1553,6 +1566,7 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
             for (auto index : indices) { append(state->resources->buffers[index].get()); }
             if (diagnostics) { append(state->resources->cacheDiagnostics.get()); }
             if (hzbJobs && state->resources->staticHZBJobs) { append(state->resources->staticHZBJobs.get()); }
+            if (coarseQueue && state->resources->coarseRasterQueue) { append(state->resources->coarseRasterQueue.get()); }
         }
         return commands.synchronize({.buffers = barriers});
     };
@@ -1645,6 +1659,14 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
         if (auto r = buffersReady({9, 4, 7}, false, false); !r) { return r; }
         buildGpu.next("VSM build indirect");
         if (auto r = compute(indirectBuild); !r) { return r; }
+    }
+    if (!coarseWork.empty()) {
+        buildGpu.next("VSM build coarse work");
+        if (auto r = buffersReady({}, true, false, PipelineStageBits::ComputeShader,
+                AccessBits::ShaderRead | AccessBits::ShaderWrite, true); !r) { return r; }
+        if (auto r = compute(coarseWork); !r) { return r; }
+        if (auto r = buffersReady({}, false, false, PipelineStageBits::ComputeShader | PipelineStageBits::PreRasterization,
+                AccessBits::ShaderRead, true); !r) { return r; }
     }
     buildGpu.next("VSM build finalize sync");
     if (auto r = buffersReady({3, 4}, false, true); !r) { return r; }
@@ -2111,8 +2133,15 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         uint64_t(std::min(casters.triangleCapacity, settings.maxWorkItems)) * 64u;
     const bool pageWindowRaster = !classifyFine && directional && settings.pageWindowRaster &&
         std::has_single_bit(settings.virtualPagesPerAxis) && windowBytes <= (128ull << 20);
-    const bool clusterPageRaster = classifyFine ||
-        (!singlePage && !settings.pageWindowRaster && settings.clusterPageRaster && caps.computeSubgroupBallotArithmetic);
+    const bool hardwareClusterRaster = !singlePage && !settings.pageWindowRaster && caps.computeSubgroupBallotArithmetic;
+    const bool packedRasterWork = hardwareClusterRaster && !classifyFine && settings.packedRasterWork;
+    const uint32_t coarseTickets = uint32_t((uint64_t(casters.triangleCapacity) + kVSMCoarseRasterSlotsPerTicket - 1u) /
+        kVSMCoarseRasterSlotsPerTicket);
+    const uint64_t coarseQueueBytes = (uint64_t(coarseTickets) + 1u) * sizeof(uint32_t);
+    const bool requestPackedCoarseRaster = settings.packedCoarseRaster && enabled && directional && sharedPhysicalPool &&
+        settings.batchBuildRaster && (!settings.cacheEnabled || !settings.cacheLayering) && !classifyFine &&
+        caps.computeSubgroupBallotArithmetic && !casters.displacedGeometry && coarseTickets != 0u && coarseQueueBytes <= (128ull << 20);
+    const bool clusterPageRaster = classifyFine || (hardwareClusterRaster && (settings.clusterPageRaster || packedRasterWork));
     const bool groupedFineRaster = pageWindowRaster || clusterPageRaster;
     const bool dirtyPageHierarchy = !singlePage && (settings.dirtyPageHierarchy || instanceBuild);
     if (light.type == VirtualShadowMapLightType::PointFace && settings.filter != VirtualShadowMapFilter::Hard && !deferProjection) {
@@ -2162,6 +2191,20 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     auto registry = ResourceRegistry::forDevice(device);
     if (!registry) { return std::unexpected(registry.error()); }
     state->registry = *registry;
+    uint32_t coarseQueueHandle = UINT32_MAX;
+    if (requestPackedCoarseRaster) {
+        auto queue = pool_->buffer(ResourcePool::kCoarseRasterQueue, {.size = coarseQueueBytes,
+            .structureStride = sizeof(uint32_t), .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::Device}, completion);
+        auto lease = queue.and_then([&](const auto& buffer) { return state->registry->storageBuffer(*buffer); });
+        if (lease) {
+            state->resources->coarseRasterQueue = std::move(*queue);
+            coarseQueueHandle = lease->shaderIndex();
+            state->leases.push_back(*lease);
+        } else if (lease.error() != Error::OutOfMemory) {
+            return std::unexpected(lease.error());
+        }
+    }
+    const bool packedCoarseRaster = coarseQueueHandle != UINT32_MAX;
     auto& push = state->push;
     push.receiverGeometry = UINT32_MAX;
     push.physicalPool = UINT32_MAX;
@@ -2189,7 +2232,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     push.pageSize = settings.pageSize;
     push.workCapacity = singlePage ? 0u : settings.maxWorkItems;
     push.batchCount = (push.workCapacity + kDrawBatchSize - 1) / kDrawBatchSize;
-    push.coarseBatchCount = (casters.triangleCapacity + kDrawBatchSize - 1) / kDrawBatchSize;
+    const uint32_t coarseDrawCapacity = packedCoarseRaster ? coarseTickets : casters.triangleCapacity;
+    push.coarseBatchCount = uint32_t((uint64_t(coarseDrawCapacity) + kDrawBatchSize - 1u) / kDrawBatchSize);
     push.cancelledCount = cancelledCount;
     push.lightRange = light.range;
     push.lightType = uint32_t(light.type);
@@ -2246,7 +2290,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     const bool staticPageHZB = layered && directional;
     const bool receiverMask = layered && directional &&
         push.filterMode == uint32_t(VirtualShadowMapFilter::SMRT);
-    std::array<uint32_t, kVSMHybridHardwareTriangles + 1> cacheDiagnostics{};
+    std::array<uint32_t, kVSMCoarseRasterDispatchGroups + 1> cacheDiagnostics{};
+    cacheDiagnostics[kVSMCoarseRasterQueue] = coarseQueueHandle;
     cacheDiagnostics[50] = UINT32_MAX;
     cacheDiagnostics[kVSMCacheInstanceTable] = casters.instanceTable;
     cacheDiagnostics[kVSMCacheInstanceCount] = static_cast<uint32_t>(casters.states.size());
@@ -2940,6 +2985,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         programs_->localSMRTStateReuse != settings.localSMRTStateReuse ||
         programs_->markCacheLevels != markCacheLevels || programs_->markPageShift != markPageShift ||
         programs_->compactBuild != compactBuild || programs_->instanceBuild != instanceBuild || programs_->clusterPageRaster != clusterPageRaster ||
+        programs_->packedRasterWork != packedRasterWork || bool(programs_->packedCoarseRaster) != packedCoarseRaster ||
         programs_->pageWindowRaster != pageWindowRaster || programs_->clusterHybridRaster != clusterHybridRaster ||
         programs_->twoPassHZB != twoPassHZB ||
         programs_->hierarchyHZB != hierarchyHZB ||
@@ -2969,6 +3015,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         programs->markPageShift = markPageShift;
         programs->compactBuild = compactBuild;
         programs->clusterPageRaster = clusterPageRaster;
+        programs->packedRasterWork = packedRasterWork;
         programs->clusterHybridRaster = clusterHybridRaster;
         programs->twoPassHZB = twoPassHZB;
         programs->hierarchyHZB = hierarchyHZB;
@@ -3032,6 +3079,12 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
             }
             if (groupedFineRaster && (index == 0 || index == 3 || index == 4 || index == 20 || index == 23)) {
                 entryMacros.push_back({pageWindowRaster ? "VSM_PAGE_WINDOW_RASTER" : "VSM_CLUSTER_PAGE_RASTER", "1"});
+            }
+            if (packedRasterWork && (index == 3 || index == 4)) {
+                entryMacros.push_back({"VSM_PACKED_RASTER_WORK", "1"});
+            }
+            if (packedCoarseRaster && index == 4) {
+                entryMacros.push_back({"VSM_PACKED_COARSE_RASTER", "1"});
             }
             if (clusterHybridRaster && (index == 4 || index == 9 || index == 20 || (index >= 22 && index <= 26))) {
                 entryMacros.push_back({"VSM_CLUSTER_HYBRID_RASTER", "1"});
@@ -3127,6 +3180,34 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
             auto packed = ShaderRegistry::instance().getGraphicsPipeline(device, rasterDesc);
             if (!packed) { return std::unexpected(packed.error()); }
             programs->packedRaster = std::move(*packed);
+        }
+        if (packedCoarseRaster) {
+            std::vector<SlangMacroDefine> coarseMacros(macros.begin(), macros.end());
+            coarseMacros.push_back({"VSM_BATCHED_BUILD_RASTER", "1"});
+            coarseMacros.push_back({"VSM_PACKED_COARSE_RASTER", "1"});
+            const auto compileCoarse = [&](const char* entry, const char* name) -> Result<std::unique_ptr<ShaderModule>> {
+                auto shader = ShaderRegistry::instance().getShader({.moduleName = "Features/VirtualShadowMaps/VirtualShadowMaps",
+                    .entryPointName = entry, .searchPath = PROJECT_SOURCE_DIR "/Shaders", .additionalSearchPaths = paths,
+                    .capabilities = capabilities, .macroDefines = coarseMacros}, log);
+                if (!shader) { return std::unexpected(shader.error()); }
+                const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
+                spdlog::info("[VSMCoarseRasterShader] entry={} spirvSHA256={}", entry, debug::debugSha256(bytes));
+                return ShaderRegistry::instance().getShaderModule(device, {.spirv = shader->spirv, .debugName = name});
+            };
+            auto workShader = compileCoarse("vsmBuildCoarseWorkMain", "VSMBuildCoarseWork");
+            if (!workShader) { return std::unexpected(workShader.error()); }
+            programs->coarseWorkShader = std::move(*workShader);
+            auto work = ShaderRegistry::instance().getComputePipeline(device, {.computeShader = {programs->coarseWorkShader.get()},
+                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(ShadowPush)});
+            if (!work) { return std::unexpected(work.error()); }
+            programs->buildCoarseWork = std::move(*work);
+            auto rasterShader = compileCoarse("vsmRasterPackedMeshMain", "VSMPackedCoarseRaster");
+            if (!rasterShader) { return std::unexpected(rasterShader.error()); }
+            programs->coarseRasterShader = std::move(*rasterShader);
+            rasterDesc.meshShader = {programs->coarseRasterShader.get()};
+            auto packed = ShaderRegistry::instance().getGraphicsPipeline(device, rasterDesc);
+            if (!packed) { return std::unexpected(packed.error()); }
+            programs->packedCoarseRaster = std::move(*packed);
         }
         auto clear = ShaderRegistry::instance().getGraphicsPipeline(device, {.meshShader = {programs->shaders[8].get()},
             .fragmentShader = {programs->shaders[9].get()},
@@ -4171,6 +4252,7 @@ VirtualShadowMapMemoryUsage VirtualShadowMaps::memoryUsage() const
             addBuffer(state_->resources->rasterHZB.get());
         }
         addBuffer(state_->resources->cacheDiagnostics.get());
+        addBuffer(state_->resources->coarseRasterQueue.get());
         addBuffer(state_->resources->hierarchyHZBQueue.get());
         addBuffer(state_->resources->lodContext.get());
         addBuffer(state_->resources->lodGroupStates.get());

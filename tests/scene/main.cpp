@@ -7478,6 +7478,19 @@ TEST(SceneLoading, StreamedOpenValidatesCookAndSkipsResidentPayloads)
     ASSERT_TRUE(loaded->revert(reason)) << reason;
     EXPECT_TRUE(loaded->hasStreamGeometry());
 
+    const auto document = directory / "alternate_lighting.metallic_scene.json";
+    const nlohmann::json documentJson = {{"version", 3}, {"source", source.filename().string()},
+        {"sceneIndex", loaded->sceneIndex()}};
+    writeTextFile(document, documentJson.dump());
+    auto documentHandle = loader.request(document, {.streamAssetPath = cache});
+    waitForSceneLoad(documentHandle);
+    ASSERT_EQ(documentHandle.progress().status, scene::SceneLoadStatus::Succeeded) << documentHandle.progress().error;
+    const auto loadedDocument = documentHandle.takeResult();
+    ASSERT_NE(loadedDocument, nullptr);
+    EXPECT_EQ(loadedDocument->documentPath(), std::filesystem::weakly_canonical(document));
+    EXPECT_EQ(loadedDocument->sourcePath(), loaded->sourcePath());
+    EXPECT_TRUE(loadedDocument->hasStreamGeometry());
+
     const auto binary = directory / "meshopt_compressed.bin";
     std::filesystem::last_write_time(binary, std::filesystem::last_write_time(binary) + std::chrono::seconds(2));
     auto stale = loader.request(source, {.streamAssetPath = cache});
@@ -7506,6 +7519,22 @@ TEST(SceneLoading, StreamedOpenValidatesCookAndSkipsResidentPayloads)
     ASSERT_FALSE(cookInput->renderPrimitives().front().positions.empty());
     ASSERT_TRUE(scene::buildMeshletStreamAsset({.scene = cookInput.get(), .sourcePath = cookSource,
         .outputPath = cookCache}, reason)) << reason;
+
+    const auto giDocument = directory / "baked_gi.metallic_scene.json";
+    const nlohmann::json bakePaths = {{"distanceFieldPaths", {"terrain.meshdf"}}, {"meshCardPaths", {"terrain.meshcards"}}};
+    const nlohmann::json giDocumentJson = {{"version", 3}, {"source", cookSource.filename().string()},
+        {"sceneIndex", cookInput->sceneIndex()}, {"world", {{"realtimeGI", bakePaths}}}};
+    writeTextFile(giDocument, giDocumentJson.dump());
+    auto giHandle = loader.request(giDocument, {.streamAssetPath = cookCache});
+    waitForSceneLoad(giHandle);
+    ASSERT_EQ(giHandle.progress().status, scene::SceneLoadStatus::Succeeded) << giHandle.progress().error;
+    const auto giScene = giHandle.takeResult();
+    ASSERT_NE(giScene, nullptr);
+    EXPECT_TRUE(giScene->realtimeGI());
+    EXPECT_FALSE(giScene->hasStreamGeometry());
+    ASSERT_FALSE(giScene->renderPrimitives().empty());
+    EXPECT_FALSE(giScene->renderPrimitives().front().positions.empty());
+
     ASSERT_TRUE(std::filesystem::remove(directory / "fallback.bin"));
     auto missingDependency = loader.request(cookSource, {.streamAssetPath = cookCache});
     waitForSceneLoad(missingDependency);
