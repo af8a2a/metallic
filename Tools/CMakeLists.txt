@@ -22,8 +22,8 @@ endif()
 find_package(Python3 QUIET COMPONENTS Interpreter)
 
 if(Python3_Interpreter_FOUND)
-    set(METALLIC_TERRAIN_P0_SOURCE
-        "${CMAKE_SOURCE_DIR}/Asset/simple_terrain_height.exr")
+    include("${CMAKE_SOURCE_DIR}/cmake/TerrainVSMSamples.cmake")
+
     set(METALLIC_TERRAIN_P0_DIRECTORY
         "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainP0")
     set(METALLIC_TERRAIN_P0_GLTF
@@ -32,7 +32,6 @@ if(Python3_Interpreter_FOUND)
         "${METALLIC_TERRAIN_P0_DIRECTORY}/simple_terrain_height.bin")
     set(METALLIC_TERRAIN_P0_STREAMASSET
         "${METALLIC_TERRAIN_P0_GLTF}.meshstream.bin")
-    set(METALLIC_TERRAIN_HEIGHT_ARGS --horizontal-size 256 --height-scale 16 --skirt-depth 8)
 
     add_custom_command(
         OUTPUT
@@ -97,82 +96,6 @@ if(Python3_Interpreter_FOUND)
         VERBATIM
     )
 
-    function(add_metallic_terrain_block_height output tiles_per_axis)
-        cmake_parse_arguments(PARSE_ARGV 2 terrain "" "HEIGHT_FIELD" "")
-        set(terrain_args)
-        if(terrain_HEIGHT_FIELD)
-            set(terrain_args --height-field-output "${terrain_HEIGHT_FIELD}")
-        endif()
-        add_custom_command(
-            OUTPUT "${output}.gltf" "${output}.bin" ${terrain_HEIGHT_FIELD}
-            COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py"
-                "${METALLIC_TERRAIN_P0_SOURCE}" --output "${output}.gltf"
-                ${METALLIC_TERRAIN_HEIGHT_ARGS} --tiles-per-axis ${tiles_per_axis} ${terrain_args}
-            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py" "${METALLIC_TERRAIN_P0_SOURCE}"
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            COMMENT "Converting the Houdini EXR height field to ${tiles_per_axis}x${tiles_per_axis} terrain blocks"
-            VERBATIM
-        )
-    endfunction()
-
-    function(add_metallic_terrain_vsm_sample bake_target smoke_target sample_id terrain_source output)
-        cmake_parse_arguments(PARSE_ARGV 5 terrain "" "WEIGHT_MAP;LAYER_ASSET;HEIGHT_FIELD" "LAYER_TEXTURES")
-        set(lighting "${CMAKE_SOURCE_DIR}/Asset/Terrain/TerrainVSM.metallic_scene.json")
-        set(graph "${CMAKE_SOURCE_DIR}/Pipelines/Samples/gpu_driven_terrain_vsm.metallic_graph.json")
-        set(stream_asset "${output}.gltf.meshstream.bin")
-        set(layer_args)
-        set(layer_outputs)
-        set(layer_dependencies)
-        if(terrain_WEIGHT_MAP)
-            set(layer_args --weight-map "${terrain_WEIGHT_MAP}")
-            set(layer_outputs "${output}.material" "${output}.materialdef" "${output}_weight.png"
-                "${output}_grass_color.png" "${output}_grass_normal.png"
-                "${output}_rock_color.png" "${output}_rock_normal.png")
-            set(layer_dependencies "${terrain_WEIGHT_MAP}" "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainLayerTextures.py")
-        endif()
-        if(terrain_LAYER_ASSET)
-            set(layer_args --layer-asset "${terrain_LAYER_ASSET}")
-            set(layer_outputs "${output}.material" "${output}.materialdef" "${output}_layer_weights.png")
-            set(layer_dependencies "${terrain_LAYER_ASSET}" ${terrain_LAYER_TEXTURES}
-                "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainLayerTextures.py"
-                "${CMAKE_CURRENT_SOURCE_DIR}/ImportTerrainLayers.py"
-                "${CMAKE_CURRENT_SOURCE_DIR}/TerrainLayerAsset.py")
-        endif()
-        if(terrain_HEIGHT_FIELD)
-            list(APPEND layer_args --height-field "${terrain_HEIGHT_FIELD}")
-            list(APPEND layer_dependencies "${terrain_HEIGHT_FIELD}")
-        endif()
-        add_custom_command(
-            OUTPUT "${output}.gltf" "${output}.bin" "${output}.metallic_scene.json" ${layer_outputs}
-            COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainVSMSample.py"
-                "${terrain_source}.gltf" "${lighting}" "${graph}" "${output}.gltf" ${layer_args}
-            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainVSMSample.py"
-                "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py"
-                "${terrain_source}.gltf" "${lighting}" "${graph}" ${layer_dependencies}
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            COMMENT "Assembling ${sample_id} with opaque mesh props"
-            VERBATIM
-        )
-        add_custom_command(
-            OUTPUT "${stream_asset}"
-            COMMAND "$<TARGET_FILE:Metallic>" --build-meshstream "${output}.gltf" --output "${stream_asset}"
-            DEPENDS Metallic "${output}.gltf" "${output}.bin" "${terrain_source}.bin"
-                "${output}.metallic_scene.json" ${layer_outputs}
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            COMMENT "Building the ${sample_id} MeshletStreamAsset"
-            VERBATIM
-        )
-        add_custom_target(${bake_target} DEPENDS "${stream_asset}" "${output}.metallic_scene.json")
-        add_custom_target(${smoke_target}
-            COMMAND ${CMAKE_COMMAND} -E env METALLIC_SMOKE_TEST_HIDDEN=1
-                "METALLIC_SMOKE_TEST_SAMPLE=${sample_id}" "$<TARGET_FILE:Metallic>" --smoke-test
-            DEPENDS ${bake_target}
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            COMMENT "Rendering the ${sample_id} smoke frame"
-            VERBATIM
-        )
-    endfunction()
-
     add_metallic_terrain_vsm_sample(MetallicTerrainVSMSample MetallicTerrainVSMSmoke
         gpu-driven-terrain-vsm "${METALLIC_TERRAIN_P0_DIRECTORY}/simple_terrain_height"
         "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainVSM/terrain_vsm")
@@ -212,31 +135,11 @@ if(Python3_Interpreter_FOUND)
     add_metallic_terrain_vsm_sample(MetallicTerrainLayers16x16VSMSample MetallicTerrainLayers16x16VSMSmoke
         gpu-driven-terrain-layers-16x16-vsm "${METALLIC_TERRAIN_BLOCKS_16X16_HEIGHT}"
         "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainLayers16x16/terrain_layers_16x16"
+        MATERIAL_TARGET MetallicTerrainLayers16x16VSMMaterials
         WEIGHT_MAP "${CMAKE_SOURCE_DIR}/Asset/Terrain/TerrainRockWeight.exr")
 
-    set(terrain_multilayer_dir "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainMultilayer16x16")
-    set(terrain_multilayer_source "${terrain_multilayer_dir}/source")
-    set(terrain_multilayer_asset "${terrain_multilayer_source}/terrain.layers.json")
-    set(terrain_multilayer_textures "${terrain_multilayer_source}/weights.exr")
-    foreach(layer IN ITEMS rock grass gravel snow)
-        foreach(role IN ITEMS baseColor normal roughness)
-            list(APPEND terrain_multilayer_textures "${terrain_multilayer_source}/${layer}_${role}.png")
-        endforeach()
-    endforeach()
-    add_custom_command(
-        OUTPUT "${terrain_multilayer_asset}" ${terrain_multilayer_textures}
-        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/ExportTerrainMultilayerExample.py"
-            "${CMAKE_SOURCE_DIR}/Asset/Terrain/TerrainRockWeight.exr" --output "${terrain_multilayer_asset}"
-        DEPENDS "${CMAKE_SOURCE_DIR}/Asset/Terrain/TerrainRockWeight.exr"
-            "${CMAKE_CURRENT_SOURCE_DIR}/ExportTerrainMultilayerExample.py"
-            "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainLayerTextures.py" "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py"
-        COMMENT "Generating the four terrain sample layers and RGBA weights"
-        VERBATIM
-    )
-    add_metallic_terrain_vsm_sample(MetallicTerrainMultilayer16x16VSMSample MetallicTerrainMultilayer16x16VSMSmoke
-        gpu-driven-terrain-multilayer-16x16-vsm "${METALLIC_TERRAIN_BLOCKS_16X16_HEIGHT}"
-        "${terrain_multilayer_dir}/terrain_multilayer_16x16"
-        LAYER_ASSET "${terrain_multilayer_asset}" LAYER_TEXTURES ${terrain_multilayer_textures})
+    add_metallic_terrain_multilayer_vsm_sample("${METALLIC_TERRAIN_BLOCKS_16X16_HEIGHT}"
+        "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainMultilayer16x16")
 
     add_metallic_terrain_vsm_sample(MetallicTerrainPlacement16x16VSMSample MetallicTerrainPlacement16x16VSMSmoke
         gpu-driven-terrain-placement-16x16-vsm "${METALLIC_TERRAIN_BLOCKS_16X16_HEIGHT}"
@@ -255,7 +158,8 @@ if(Python3_Interpreter_FOUND)
             "${METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT}.gltf" --output-directory "${terrain_regions_dir}"
             --lighting "${terrain_regions_lighting}" --height-field "${METALLIC_TERRAIN_BLOCKS_8X8_QUERY}"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainRegions.py"
-            "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainVSMSample.py" "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainVSMSample.py" "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainVSMMaterial.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py"
             "${METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT}.gltf" "${METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT}.bin"
             "${terrain_regions_lighting}" "${METALLIC_TERRAIN_BLOCKS_8X8_QUERY}"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"

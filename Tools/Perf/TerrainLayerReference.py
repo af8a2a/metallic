@@ -167,7 +167,9 @@ def load_terrain_layer_reference(scene: Path):
     """Load bound texture files and check their UV transforms against authored world scales."""
     extras = json.loads(scene.read_text(encoding="utf-8"))["extras"]
     world_size = float(extras["metallicTerrainTiles"]["horizontalSize"])
-    authored = extras["metallicTerrainLayers"]
+    metadata = scene.with_suffix(".terrain-layers.json")
+    authored = (json.loads(metadata.read_text(encoding="utf-8")) if metadata.is_file()
+                else extras["metallicTerrainLayers"])
     reference_layers = {layer["name"]: layer for layer in authored["layers"]}
     entries = json.loads(scene.with_suffix(".metallic_scene.json").read_text(encoding="utf-8"))["materials"]
     binding, = (entry["materialAsset"] for entry in entries

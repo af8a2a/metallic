@@ -15,7 +15,7 @@ import numpy as np
 from PIL import Image
 
 from BuildTerrainLayerTextures import mirror_weight_map, weight_uv_transform
-from BuildTerrainMesh import TerrainBuildError, write_atomic
+from BuildTerrainMesh import TerrainBuildError
 from TerrainLayerAsset import load_terrain_layer_asset, read_layer_weights
 
 
@@ -47,8 +47,7 @@ def encode_weight_png(weights: np.ndarray) -> bytes:
         return stream.getvalue()
 
 
-def prepare_terrain_layer_import(terrain_path: Path, asset_path: Path, output: Path,
-                                 weight_file: str | None = None) -> tuple[dict, bytes]:
+def prepare_terrain_layer_import(terrain_path: Path, asset_path: Path, output: Path) -> tuple[dict, bytes]:
     terrain_path = terrain_path.resolve()
     output = output.resolve()
     terrain = load_terrain_grid(terrain_path)
@@ -60,9 +59,8 @@ def prepare_terrain_layer_import(terrain_path: Path, asset_path: Path, output: P
 
     weights = read_layer_weights(asset, terrain)
     png = encode_weight_png(weights)
-    if weight_file is None:
-        # Name the payload by content so an interrupted reimport leaves the previous asset usable.
-        weight_file = f"{output.stem}.weights-{hashlib.sha256(png).hexdigest()[:16]}.png"
+    # Name the payload by content so an interrupted reimport leaves the previous asset usable.
+    weight_file = f"{output.stem}.weights-{hashlib.sha256(png).hexdigest()[:16]}.png"
     weight_output = output.with_name(weight_file)
     if weight_output in sources:
         raise TerrainBuildError("the imported weight texture must have a separate output path")
@@ -127,18 +125,18 @@ def build_terrain_layer_material(terrain_path: Path, asset_path: Path, output: P
     instance = output.with_suffix(".material")
     if definition == asset_path.resolve():
         raise TerrainBuildError("the material definition must have a separate output path")
-    weight_file = f"{output.stem}_layer_weights.png"
-    imported, png = prepare_terrain_layer_import(terrain_path, asset_path, instance, weight_file)
+    imported, png = prepare_terrain_layer_import(terrain_path, asset_path, instance)
+    weight_file = imported["weightMap"]["path"]
+    payloads = {weight_file: png}
 
     def resource(source: dict, transform: list, role: str) -> dict:
         path = (output.parent / source["path"]).resolve()
-        if not path.is_relative_to(output.parent):
-            # MaterialAssetLibrary resolves all resources inside its declared asset root.
-            content = path.read_bytes()
-            local_name = f"{output.stem}_layer_{hashlib.sha256(content).hexdigest()[:16]}{path.suffix.lower()}"
-            path = output.with_name(local_name)
-            write_atomic(path, content)
-        binding = {"uri": "asset://" + path.relative_to(output.parent).as_posix(), "transform": transform}
+        # Keep the last publication readable and give MaterialAsset reload a
+        # new texture identity only when the source bytes change.
+        content = path.read_bytes()
+        local_name = f"{output.stem}_layer_{hashlib.sha256(content).hexdigest()[:16]}{path.suffix.lower()}"
+        payloads[local_name] = content
+        binding = {"uri": "asset://" + local_name, "transform": transform}
         if role == "baseColor":
             binding["colorSpace"] = source["colorSpace"]
         return binding
@@ -159,9 +157,18 @@ def build_terrain_layer_material(terrain_path: Path, asset_path: Path, output: P
             "defaultLayer": imported["defaultLayer"], "layers": layers,
         },
     }
-    write_atomic(output.with_name(weight_file), png)
     for path, document in ((definition, material_def), (instance, material_instance)):
-        write_atomic(path, (json.dumps(document, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8"))
+        payloads[path.name] = (json.dumps(document, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
+
+    with tempfile.TemporaryDirectory(dir=output.parent) as staging:
+        # Publish the instance last, after every referenced file exists.
+        for name, content in payloads.items():
+            destination = output.with_name(name)
+            if destination.is_file() and destination.read_bytes() == content:
+                continue
+            pending = Path(staging) / name
+            pending.write_bytes(content)
+            pending.replace(destination)
 
     scene_binding = {"sourceId": "main", "materialIndex": 0, "sourceName": "Terrain Multilayer",
                      "materialAsset": {"uri": "asset://" + instance.name, "root": "."}}

@@ -861,6 +861,30 @@ if(Python3_Interpreter_FOUND)
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tools/TestTerrainLayerAsset.py")
     set_tests_properties(MetallicTerrainLayerAssetTests PROPERTIES
         LABELS "terrain;cpu" SKIP_RETURN_CODE 77 TIMEOUT 30)
+    if(TARGET Metallic)
+        if(CMAKE_GENERATOR MATCHES "^Ninja")
+            set(terrain_material_reimport_ninja "${CMAKE_MAKE_PROGRAM}")
+        else()
+            find_program(terrain_material_reimport_ninja NAMES ninja ninja-build)
+        endif()
+        if(terrain_material_reimport_ninja)
+            set(terrain_material_reimport_command
+                "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tools/RunTerrainMaterialReimportRegression.py"
+                --cmake "${CMAKE_COMMAND}" --ninja "${terrain_material_reimport_ninja}"
+                --cooker "$<TARGET_FILE:Metallic>"
+                --output-root "${CMAKE_CURRENT_BINARY_DIR}/terrain-material-reimport")
+            add_custom_target(MetallicTerrainMaterialReimportRegression
+                COMMAND ${terrain_material_reimport_command}
+                DEPENDS Metallic
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                USES_TERMINAL
+                VERBATIM)
+            add_test(NAME MetallicTerrainMaterialReimportRegression COMMAND ${terrain_material_reimport_command})
+            set_tests_properties(MetallicTerrainMaterialReimportRegression PROPERTIES
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "terrain;cpu"
+                SKIP_RETURN_CODE 77 TIMEOUT 180)
+        endif()
+    endif()
     function(add_metallic_terrain_streaming_regression name tiles sample output timeout)
         if(NOT TARGET ${sample})
             return()

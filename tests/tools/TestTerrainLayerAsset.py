@@ -1,6 +1,7 @@
 """Regression checks for Houdini terrain layer assets and weight alignment."""
 
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -23,6 +24,7 @@ TOOLS = Path(__file__).resolve().parents[2] / "Tools"
 sys.path.insert(0, str(TOOLS))
 from BuildTerrainLayerTextures import build_layer_material
 from BuildTerrainMesh import TerrainBuildError
+from BuildTerrainVSMMaterial import build_sample_material
 from BuildTerrainVSMSample import build_sample
 from ImportTerrainLayers import import_terrain_layers
 from TerrainLayerAsset import load_terrain_layer_asset, read_layer_weights
@@ -86,6 +88,33 @@ class TerrainLayerAssetTests(unittest.TestCase):
     def load(self, document=None):
         self.path.write_text(json.dumps(document if document is not None else self.document), encoding="utf-8")
         return load_terrain_layer_asset(self.path)
+
+    def build_four_layer_sample(self):
+        height_path = self.root / "height.exr"
+        terrain_path = self.root / "terrain.gltf"
+        output = self.root / "baked" / "terrain.gltf"
+        self.write_exr({"Y": [0, 1, 2, 3]}, path=height_path)
+        self.planes["G"] = [1, 1, 0, 1]
+        self.write_exr(self.planes)
+        template = self.document["layers"][0]
+        clay_texture = output.parent / "source" / "clay_color.png"
+        clay_texture.parent.mkdir(parents=True)
+        Image.new("RGB", (1, 1), (70, 110, 155)).save(clay_texture)
+        self.document["layers"].append({**template, "name": "clay", "channel": "G",
+                                        "baseColor": clay_texture.relative_to(self.root).as_posix()})
+        self.load()
+        bake = subprocess.run([
+            sys.executable, "-B", str(TOOLS / "BuildTerrainMesh.py"), str(height_path),
+            "--output", str(terrain_path), "--horizontal-size", "30", "--flip-z",
+        ], capture_output=True, text=True)
+        self.assertEqual(0, bake.returncode, bake.stdout + bake.stderr)
+        lighting = self.root / "lighting.json"
+        lighting.write_text(json.dumps({"world": {"environment": {"path": "environment.hdr"}}}), encoding="utf-8")
+        build_sample(terrain_path, lighting,
+                     TOOLS.parent / "Pipelines/Samples/gpu_driven_terrain_vsm.metallic_graph.json", output,
+                     terrain_material="multilayer")
+        build_sample_material(output, layer_asset=self.path)
+        return terrain_path, output, clay_texture
 
     def test_scale_paths_and_stable_layer_channel_mapping(self):
         asset = self.load()
@@ -223,26 +252,7 @@ class TerrainLayerAssetTests(unittest.TestCase):
         self.assertEqual([0.25, 0, 0.125, 0, 0.25, 0.125], weight_map["transform"])
 
     def test_sample_binds_four_layers_with_private_linear_and_color_resources(self):
-        height_path = self.root / "height.exr"
-        terrain_path = self.root / "terrain.gltf"
-        output = self.root / "baked" / "terrain.gltf"
-        self.write_exr({"Y": [0, 1, 2, 3]}, path=height_path)
-        self.planes["G"] = [1, 1, 0, 1]
-        self.write_exr(self.planes)
-        template = self.document["layers"][0]
-        self.document["layers"].append({**template, "name": "clay", "channel": "G"})
-        self.load()
-        bake = subprocess.run([
-            sys.executable, "-B", str(TOOLS / "BuildTerrainMesh.py"), str(height_path),
-            "--output", str(terrain_path), "--horizontal-size", "30", "--flip-z",
-        ], capture_output=True, text=True)
-        self.assertEqual(0, bake.returncode, bake.stdout + bake.stderr)
-        lighting = self.root / "lighting.json"
-        lighting.write_text(json.dumps({"world": {"environment": {"path": "environment.hdr"}}}), encoding="utf-8")
-        build_sample(terrain_path, lighting,
-                     TOOLS.parent / "Pipelines/Samples/gpu_driven_terrain_vsm.metallic_graph.json", output,
-                     layer_asset=self.path)
-
+        _, output, _ = self.build_four_layer_sample()
         sidecar = json.loads(output.with_suffix(".metallic_scene.json").read_text(encoding="utf-8"))
         binding, = sidecar["materials"]
         self.assertEqual(0, binding["materialIndex"])
@@ -255,8 +265,8 @@ class TerrainLayerAssetTests(unittest.TestCase):
         self.assertEqual("bedrock", terrain_layers["defaultLayer"])
         self.assertEqual(["B", "A", "R", "G"], [layer["channel"] for layer in terrain_layers["layers"]])
         weights = terrain_layers["weights"]
-        self.assertEqual({"uri": "asset://terrain_layer_weights.png", "transform": [0.25, 0, 0.125, 0, 0.25, 0.125]},
-                         weights)
+        self.assertEqual([0.25, 0, 0.125, 0, 0.25, 0.125], weights["transform"])
+        self.assertTrue(weights["uri"].startswith("asset://"))
         with Image.open(output.parent / weights["uri"].removeprefix("asset://")) as image:
             self.assertEqual("RGBA", image.mode)
             rgba = np.asarray(image)
@@ -270,6 +280,49 @@ class TerrainLayerAssetTests(unittest.TestCase):
             texture_uri = resource["uri"].removeprefix("asset://")
             self.assertEqual(Path(texture_uri).name, texture_uri)
             self.assertEqual((self.root / "textures" / texture).read_bytes(), (output.parent / texture_uri).read_bytes())
+
+    def test_sample_material_reimport_updates_only_changed_weight_and_layer_resources(self):
+        terrain, sample, clay_texture = self.build_four_layer_sample()
+
+        def fingerprint(path):
+            return hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns
+
+        untouched = (terrain, terrain.with_suffix(".bin"), sample, sample.with_suffix(".bin"),
+                     sample.with_suffix(".metallic_scene.json"))
+        original_geometry = {path: fingerprint(path) for path in untouched}
+
+        def resources():
+            material = json.loads(sample.with_suffix(".material").read_text(encoding="utf-8"))["terrainLayers"]
+            bindings = {"weights": material["weights"]["uri"]}
+            for layer in material["layers"]:
+                for role in ("baseColor", "normal", "roughness"):
+                    bindings[f"{layer['name']}.{role}"] = layer[role]["uri"]
+            return {role: sample.parent / uri.removeprefix("asset://") for role, uri in bindings.items()}
+
+        original_resources = resources()
+        original_textures = {path: fingerprint(path) for path in original_resources.values()}
+        self.planes["R"][2] = 1
+        self.write_exr(self.planes)
+        build_sample_material(sample, layer_asset=self.path)
+
+        weighted_resources = resources()
+        self.assertEqual({"weights"}, {role for role in original_resources
+                                      if original_resources[role] != weighted_resources[role]})
+        with Image.open(weighted_resources["weights"]) as updated:
+            self.assertEqual((255, 0, 0, 0), updated.getpixel((0, 0)))
+        self.assertEqual(original_geometry, {path: fingerprint(path) for path in untouched})
+        self.assertEqual(original_textures, {path: fingerprint(path) for path in original_resources.values()})
+
+        Image.new("RGB", (1, 1), (201, 42, 23)).save(clay_texture)
+        stable_textures = {path: fingerprint(path) for path in weighted_resources.values()}
+        build_sample_material(sample, layer_asset=self.path)
+
+        updated_resources = resources()
+        self.assertEqual({"clay.baseColor"}, {role for role in weighted_resources
+                                             if weighted_resources[role] != updated_resources[role]})
+        self.assertEqual(clay_texture.read_bytes(), updated_resources["clay.baseColor"].read_bytes())
+        self.assertEqual(original_geometry, {path: fingerprint(path) for path in untouched})
+        self.assertEqual(stable_textures, {path: fingerprint(path) for path in weighted_resources.values()})
 
 
 if __name__ == "__main__":

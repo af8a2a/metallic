@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import quote, unquote
 
 from BuildTerrainMesh import TerrainBuildError, write_atomic
+from BuildTerrainVSMMaterial import TERRAIN_MATERIAL_NAMES, material_kind, terrain_material_binding, write_sample_material
 
 
 def box_geometry():
@@ -97,9 +98,10 @@ def append_camera(document: dict, camera: dict) -> None:
 
 def build_sample(terrain_path: Path, scene_path: Path, graph_path: Path, output_path: Path,
                  weight_map: Path | None = None, height_field: Path | None = None,
-                 layer_asset: Path | None = None) -> None:
-    if weight_map is not None and layer_asset is not None:
-        raise TerrainBuildError("select either a legacy weight map or a terrain layer asset")
+                 layer_asset: Path | None = None, terrain_material: str | None = None) -> None:
+    import_kind = material_kind(weight_map, layer_asset)
+    if terrain_material is not None and (terrain_material not in TERRAIN_MATERIAL_NAMES or import_kind is not None):
+        raise TerrainBuildError("select --terrain-material for geometry-only assembly or supply material inputs")
     document = json.loads(terrain_path.read_text(encoding="utf-8"))
     scene = json.loads(scene_path.read_text(encoding="utf-8"))
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -159,24 +161,15 @@ def build_sample(terrain_path: Path, scene_path: Path, graph_path: Path, output_
 
     if len(document["nodes"]) == 1:
         document["nodes"][0]["name"] = "Houdini Heightfield"
-    terrain_material = document["materials"][0]
-    terrain_material["name"] = "Terrain Grass"
-    if weight_map is not None or layer_asset is not None:
-        extras = document["extras"]
-        if layer_asset is not None:
-            from ImportTerrainLayers import build_terrain_layer_material
-
-            binding, metadata = build_terrain_layer_material(terrain_path, layer_asset, output_path)
-        else:
-            from BuildTerrainLayerTextures import build_layer_material
-
-            terrain_metadata = extras.get("metallicTerrainTiles") or extras["metallicTerrainP0"]
-            binding, metadata = build_layer_material(output_path, weight_map, terrain_metadata)
-        terrain_material["name"] = binding["sourceName"]
-        extras["metallicTerrainLayers"] = metadata
+    material = document["materials"][0]
+    material["name"] = "Terrain Grass"
+    kind = terrain_material or import_kind
+    if kind is not None:
+        binding = terrain_material_binding(output_path, kind)
+        material["name"] = binding["sourceName"]
         scene.setdefault("materials", []).append(binding)
     # Grazing light can reach only the reverse face of an open heightfield.
-    terrain_material["doubleSided"] = True
+    material["doubleSided"] = True
     box = geometry_accessors(box_geometry())
     tower = append_mesh("Painted Survey Tower", (0.84, 0.24, 0.06), 0.1, 0.65, box)
     bridge = append_mesh("Blue Bridge Steel", (0.30, 0.62, 0.82), 0.25, 0.48, box)
@@ -222,6 +215,8 @@ def build_sample(terrain_path: Path, scene_path: Path, graph_path: Path, output_
         scene["terrain"] = {"heightField": relative_path(height_field, output_path.parent), **prototypes}
 
     document["buffers"].append({"uri": quote(box_path.name), "byteLength": len(payload)})
+    if import_kind is not None:
+        write_sample_material(terrain_path, output_path, weight_map=weight_map, layer_asset=layer_asset)
     write_atomic(box_path, bytes(payload))
     write_atomic(sidecar, (json.dumps(scene, indent=2, allow_nan=False) + "\n").encode("utf-8"))
     write_atomic(output_path, (json.dumps(document, indent=2, allow_nan=False) + "\n").encode("utf-8"))
@@ -236,9 +231,12 @@ if __name__ == "__main__":
     materials = parser.add_mutually_exclusive_group()
     materials.add_argument("--weight-map", type=Path, help="Linear R OpenEXR rock weights aligned to the heightfield")
     materials.add_argument("--layer-asset", type=Path, help="Houdini-authored Metallic.TerrainLayers JSON")
+    materials.add_argument("--terrain-material", choices=TERRAIN_MATERIAL_NAMES,
+                           help="Bind a terrain material without importing its resources")
     parser.add_argument("--height-field", type=Path, help="Baked source height grid for picking and placement")
     args = parser.parse_args()
     try:
-        build_sample(args.terrain, args.scene, args.graph, args.output, args.weight_map, args.height_field, args.layer_asset)
+        build_sample(args.terrain, args.scene, args.graph, args.output, args.weight_map, args.height_field,
+                     args.layer_asset, args.terrain_material)
     except (OSError, ValueError, TerrainBuildError) as error:
         parser.error(str(error))

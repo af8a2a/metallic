@@ -218,6 +218,24 @@ cmake --build build-relwithdebinfo --target MetallicTerrainMultilayer16x16VSMSmo
 
 `OpenPBR.TerrainLayers` 在材质实例的 `terrainLayers` 中显式绑定 `weights` 和 `defaultLayer`，并在每层声明 `name`、`channel`、`baseColor`、`normal` 和 `roughness`。贴图使用常规材质资源 URI 和 UV 变换。运行时在采样后对已声明的权重再次归一化，全零时选择默认层。底色按工作空间线性混合，切线空间法线解码后加权并归一化，粗糙度读取各层贴图的 R 并沿用双层样例的线性加权语义。
 
+#### 独立重导入地形材质
+
+样例首次构建完成后，可以编辑四层样例 `source/` 中的权重 EXR 或某层贴图，再执行材质目标。完整样例目标也会按同一套依赖执行增量更新。旧岩草样例使用 `MetallicTerrainLayers16x16VSMMaterials`。
+
+```powershell
+cmake --build build-relwithdebinfo --target MetallicTerrainMultilayer16x16VSMMaterials
+python -B Tools/BuildTerrainVSMMaterial.py path/to/sample.gltf --layer-asset path/to/terrain.layers.json
+```
+
+独立导入从已有样例 glTF 读取高度网格坐标，将层元数据写入 `.terrain-layers.json`。四层纹理文件按内容命名，素材有变化时生成对应的新纹理，再更新 `.material` 的绑定。重新载入场景即可读取新材质。老版本完整样例首次构建时会迁移到独立清单，并烘焙一次对应的几何基线。此后的权重和贴图编辑只触发材质导入。
+
+独立重导入回归在专用运行目录内修改权重图和层贴图，用增量构建检查绑定更新以及几何产物的稳定性。回归需要 Ninja 和地形 Python 依赖，报告写入 `build-ci/tests/terrain-material-reimport/run-*/TerrainMaterialReimportRegression.json`。构建目标会先准备离线烘焙器。也可在烘焙器已构建后直接运行同名 CTest。
+
+```powershell
+cmake --build build-ci --target MetallicTerrainMaterialReimportRegression
+ctest --test-dir build-ci -R '^MetallicTerrainMaterialReimportRegression$' --output-on-failure
+```
+
 四层自动回归沿用双层的机位和飞行路线，在 `(11,3)` 与 `(11,4)` 的共享边检查第 84 帧（272 页、混合 LOD）、第 94 帧（近景）和第 104 帧（远景）的底色、法线与粗糙度连续性。回归要求共享边两侧都有四层参与，还会根据抓帧的地表深度和相机重建纹理采样范围，比较滤波后的世界坐标参考和接缝残差。以下目标会构建样例与 `MetallicRHITests` 并运行回归，输出保存在 `build-ci/tests/terrain-multilayer-regression/`。各次运行独立保存抓帧、Vulkan 检查及 `TerrainLayerAcceptance.json`。
 
 ```powershell

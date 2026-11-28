@@ -765,6 +765,7 @@ TEST_F(MaterialAssets, TerrainLayerTexturePublicationIsTransactional)
     write("Weights.png", "CPU resource identity fixture");
     write("Rock.png", "CPU resource identity fixture");
     write("Normal.png", "CPU resource identity fixture");
+    std::filesystem::remove(root / "Roughness.png");
     MaterialAssetLibrary library(root);
     ASSERT_TRUE(library.save("asset://Terrain.material", asset, error)) << error;
     const auto identity = document.resourceIdentity();
@@ -793,6 +794,19 @@ TEST_F(MaterialAssets, TerrainLayerTexturePublicationIsTransactional)
     EXPECT_EQ(document.materials()[0].terrainLayers->layers[0].channel, 3u);
     EXPECT_EQ(document.resourceIdentity(), published);
     EXPECT_GT(document.materialRevision(), revision);
+
+    write("Weights-reimported.png", "Changed CPU resource identity fixture");
+    asset.terrainLayers["weights"] = "asset://Weights-reimported.png";
+    ASSERT_TRUE(library.save("asset://Terrain.material", asset, error)) << error;
+    ASSERT_TRUE(document.reloadMaterialAsset(0, error)) << error;
+    const auto reimported = document.materials()[0].terrainLayers;
+    ASSERT_TRUE(reimported);
+    EXPECT_NE(reimported->weights.textureIndex, bindings->weights.textureIndex);
+    EXPECT_EQ(reimported->layers[0].baseColor.textureIndex, bindings->layers[0].baseColor.textureIndex);
+    EXPECT_EQ(reimported->layers[0].normal.textureIndex, bindings->layers[0].normal.textureIndex);
+    EXPECT_EQ(reimported->layers[0].roughness.textureIndex, bindings->layers[0].roughness.textureIndex);
+    EXPECT_EQ(document.textures().size(), count + 5);
+    EXPECT_NE(document.resourceIdentity(), published);
 }
 
 } // namespace
