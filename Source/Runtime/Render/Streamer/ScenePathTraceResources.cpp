@@ -987,12 +987,29 @@ Result<> buildGpuTerrainBindings(const scene::Scene& loadedScene, const std::vec
             return makeError(Error::InvalidArgument);
         }
         auto& binding = bindings.emplace_back();
-        binding.weights = makeTexture(authored->weights, "terrain weights");
+        for (size_t i = 0; i < authored->weightMaps.size(); ++i) {
+            binding.weightMaps[i] = makeTexture(authored->weightMaps[i], "terrain weights");
+        }
+        if (authored->weightMaps.size() == 2) {
+            const uint32_t first = binding.weightMaps[0].textureIndex;
+            const uint32_t second = binding.weightMaps[1].textureIndex;
+            if (first == 0 || first >= textures.size() || second == 0 || second >= textures.size()) {
+                appendLogBlock(log, "Both terrain weight maps must be available as scene textures");
+                return makeError(Error::InvalidArgument);
+            }
+            const auto& a = textures[first];
+            const auto& b = textures[second];
+            if (a.sourceWidth != b.sourceWidth || a.sourceHeight != b.sourceHeight || a.sourceMipCount != b.sourceMipCount) {
+                appendLogBlock(log, "Terrain weight maps require matching dimensions and source mip counts");
+                return makeError(Error::InvalidArgument);
+            }
+        }
         binding.settings[0] = static_cast<uint32_t>(authored->layers.size());
         binding.settings[1] = authored->defaultLayerIndex;
+        binding.settings[2] = static_cast<uint32_t>(authored->weightMaps.size());
         for (size_t i = 0; i < authored->layers.size(); ++i) {
             const auto& layer = authored->layers[i];
-            binding.channels[i] = layer.channel;
+            binding.weightSlots[i] = 4 * layer.weightMap + layer.channel;
             binding.layers[i] = {
                 .baseColor = makeTexture(layer.baseColor, "terrain base color"),
                 .normal = makeTexture(layer.normal, "terrain normal", true),
@@ -1038,7 +1055,7 @@ std::vector<bool> referencedMaterialTextures(const scene::Scene& loadedScene)
         mark(material.specularColorTexture);
         mark(material.displacementTexture);
         if (const auto& bindings = material.terrainLayers) {
-            mark(bindings->weights);
+            for (const auto& map : bindings->weightMaps) { mark(map); }
             for (const auto& layer : bindings->layers) {
                 mark(layer.baseColor);
                 mark(layer.normal);
@@ -1054,7 +1071,7 @@ std::vector<bool> referencedMaterialTextures(const scene::Scene& loadedScene)
 }
 
 constexpr size_t kStandardMaterialLayoutEntries = 23;
-using MaterialResourceLayout = std::array<int32_t, kStandardMaterialLayoutEntries + 1 + 3 * kMaxTerrainMaterialLayers>;
+using MaterialResourceLayout = std::array<int32_t, kStandardMaterialLayoutEntries + kMaxTerrainWeightMaps + 3 * kMaxTerrainMaterialLayers>;
 
 std::vector<MaterialResourceLayout> materialResourceLayout(const scene::Scene& loadedScene)
 {
@@ -1092,7 +1109,8 @@ std::vector<MaterialResourceLayout> materialResourceLayout(const scene::Scene& l
         auto textureEntry = slots.begin() + kStandardMaterialLayoutEntries;
         std::fill(textureEntry, slots.end(), scene::kInvalidSceneIndex);
         if (const auto& bindings = material.terrainLayers) {
-            *textureEntry++ = bindings->weights.textureIndex;
+            for (const auto& map : bindings->weightMaps) { *textureEntry++ = map.textureIndex; }
+            textureEntry = slots.begin() + kStandardMaterialLayoutEntries + kMaxTerrainWeightMaps;
             for (const auto& layer : bindings->layers) {
                 *textureEntry++ = layer.baseColor.textureIndex;
                 *textureEntry++ = layer.normal.textureIndex;

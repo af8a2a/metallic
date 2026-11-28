@@ -119,6 +119,35 @@ class TerrainLayerAssetTests(unittest.TestCase):
         build_sample_material(output, layer_asset=self.path)
         return terrain_path, output, clay_texture
 
+    def make_dual_map_dcc_source(self):
+        second = self.root / "weights_second.exr"
+        first_planes = {channel: [0.125, 0.125, 0, 0.5] for channel in "RGBA"}
+        second_planes = {
+            "R": [0.25, 0, 0, 0.125], "G": [0.125, 0.5, 0, 0.125],
+            "B": [0.375, 0, 0, 0.125], "A": [0.25, 0.5, 0, 0.125],
+        }
+        self.write_exr(first_planes)
+        self.write_exr(second_planes, path=second)
+        texture_paths = self.document["layers"][0]
+        textures = {role: {"path": texture_paths[role], "colorSpace": space} for role, space in
+                    (("baseColor", "sRGB"), ("normal", "Linear"), ("roughness", "Linear"))}
+        source = {
+            "type": "AncientRiftValley.DCCSource", "version": 1,
+            "normalConvention": "OpenGL tangent-space +Y",
+            "coordinateSystem": {"unit": "meter", "up": "+Y", "worldBoundsXZ": [-15, -15, 15, 15],
+                                 "heightfieldColumnAxis": "+X", "heightfieldRowAxis": "+Z", "flipZ": False},
+            "sampling": {"dataWindowInclusive": self.terrain["sourceDataWindow"]},
+            "weightMaps": [{"path": path.name, "channels": "RGBA", "colorSpace": "Linear"}
+                           for path in (self.weight_map, second)],
+            "defaultLayer": "pad1A",
+            "layers": [
+                {"name": f"pad{index}{channel}", "weightMap": index, "channel": channel,
+                 "worldTileSizeMeters": [3, 5], "textures": textures}
+                for index in range(2) for channel in "RGBA"
+            ],
+        }
+        return source, second, second_planes
+
     def test_scale_paths_and_stable_layer_channel_mapping(self):
         asset = self.load()
         self.assertEqual(self.weight_map.resolve(), asset.weight_map)
@@ -253,6 +282,81 @@ class TerrainLayerAssetTests(unittest.TestCase):
         weight_map = material["resources"]["occlusionTexture"]
         self.assertEqual("asset://legacy_weight.png", weight_map["uri"])
         self.assertEqual([0.25, 0, 0.125, 0, 0.25, 0.125], weight_map["transform"])
+
+    def test_dual_weights_share_normalization_and_reimport_independently_of_geometry(self):
+        source, second, second_planes = self.make_dual_map_dcc_source()
+        asset = self.load(source)
+        terrain = {**self.terrain, "horizontalSize": 30}
+        weights = read_layer_weights(asset, terrain)
+        self.assertEqual((2, 2, 8), weights.shape)
+        np.testing.assert_allclose(weights[0, 0], np.array([0.125] * 4 + [0.25, 0.125, 0.375, 0.25]) / 1.5)
+        np.testing.assert_array_equal(weights[1, 0], [0, 0, 0, 0, 0, 0, 0, 1])
+        np.testing.assert_allclose(weights.sum(axis=-1), 1)
+
+        sample = self.root / "two_map.gltf"
+        sample.write_text(json.dumps({"extras": {"metallicTerrainTiles": terrain},
+                                      "materials": [{"name": "Terrain Multilayer"}]}), encoding="utf-8")
+        sample.with_suffix(".bin").write_bytes(b"geometry")
+        sample.with_suffix(".metallic_scene.json").write_bytes(b"scene")
+
+        def fingerprint(path):
+            return hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns
+
+        def instance():
+            return json.loads(sample.with_suffix(".material").read_text(encoding="utf-8"))["terrainLayers"]
+
+        def image_path(binding):
+            return self.root / binding["uri"].removeprefix("asset://")
+
+        protected = (sample, sample.with_suffix(".bin"), sample.with_suffix(".metallic_scene.json"))
+        geometry = {path: fingerprint(path) for path in protected}
+        build_sample_material(sample, layer_asset=self.path)
+        material = instance()
+        self.assertNotIn("weights", material)
+        self.assertEqual([(index, channel) for index in range(2) for channel in "RGBA"],
+                         [(layer["weightMap"], layer["channel"]) for layer in material["layers"]])
+        self.assertEqual("pad1A", material["defaultLayer"])
+        packed = []
+        for binding in material["weightMaps"]:
+            self.assertEqual([0.5, 0, 0.25, 0, 0.5, 0.25], binding["transform"])
+            with Image.open(image_path(binding)) as image:
+                self.assertEqual(("RGBA", (2, 2)), (image.mode, image.size))
+                self.assertFalse({"srgb", "gamma", "icc_profile", "chromaticity"} & image.info.keys())
+                packed.append(np.array(image))
+        encoded = np.concatenate(packed, axis=-1)
+        np.testing.assert_array_equal(encoded.sum(axis=-1), np.full((2, 2), 255))
+        np.testing.assert_allclose(encoded / 255, weights, atol=1 / 255, rtol=0)
+        metadata = json.loads(sample.with_suffix(".terrain-layers.json").read_text(encoding="utf-8"))
+        self.assertEqual(2, metadata["version"])
+        self.assertEqual([image_path(binding).name for binding in material["weightMaps"]],
+                         [weight_map["path"] for weight_map in metadata["weightMaps"]])
+
+        before = {path: fingerprint(path) for path in (image_path(binding) for binding in material["weightMaps"])}
+        second_planes["R"], second_planes["G"] = second_planes["G"], second_planes["R"]
+        self.write_exr(second_planes, path=second)
+        build_sample_material(sample, layer_asset=self.path)
+        updated = instance()
+        self.assertEqual(material["weightMaps"][0], updated["weightMaps"][0])
+        self.assertNotEqual(material["weightMaps"][1], updated["weightMaps"][1])
+        self.assertEqual(before, {path: fingerprint(path) for path in before})
+        self.assertEqual(geometry, {path: fingerprint(path) for path in protected})
+
+    def test_dual_map_rejects_repeated_slots_and_incompatible_grids(self):
+        source, second, second_planes = self.make_dual_map_dcc_source()
+        duplicate = deepcopy(source)
+        duplicate["layers"][4]["weightMap"] = 0
+        with self.assertRaisesRegex(TerrainBuildError, "repeats a layer name or RGBA channel"):
+            self.load(duplicate)
+        invalid_index = deepcopy(source)
+        invalid_index["layers"][4]["weightMap"] = 2
+        with self.assertRaisesRegex(TerrainBuildError, "valid weightMap index"):
+            self.load(invalid_index)
+        asset = self.load(source)
+        with self.assertRaisesRegex(TerrainBuildError, "baked global grid"):
+            read_layer_weights(asset, {**self.terrain, "horizontalSize": 500})
+        self.write_exr(second_planes, [-2, 7, -1, 8], second)
+        with self.assertRaisesRegex(TerrainBuildError, "data windows must match"):
+            read_layer_weights(asset, {**self.terrain, "horizontalSize": 30})
 
     def test_sample_binds_four_layers_with_private_linear_and_color_resources(self):
         _, output, _ = self.build_four_layer_sample()

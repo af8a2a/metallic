@@ -20,9 +20,10 @@ def write_json(path, document):
     write_atomic(path, (json.dumps(document, indent=2, allow_nan=False) + "\n").encode("utf-8"))
 
 
-def make_region(source, source_payload, terrain, side, x_begin, x_end):
+def make_region(source, source_payload, terrain, side, tile_bounds):
     name = f"terrain_region_{side}"
     axis = terrain["tilesPerAxis"]
+    x_begin, z_begin, x_end, z_end = tile_bounds
     payload = bytearray()
     views = []
     accessors = []
@@ -44,7 +45,7 @@ def make_region(source, source_payload, terrain, side, x_begin, x_end):
         accessors.append({**accessor, "bufferView": len(views) - 1})
         return len(accessors) - 1
 
-    for index in (z * axis + x for z in range(axis) for x in range(x_begin, x_end)):
+    for index in (z * axis + x for z in range(z_begin, z_end) for x in range(x_begin, x_end)):
         tile = terrain["tiles"][index]
         mesh = source["meshes"][index]
         (primitive,) = mesh["primitives"]
@@ -66,7 +67,7 @@ def make_region(source, source_payload, terrain, side, x_begin, x_end):
     )}
     metadata.update({
         "region": side,
-        "tileBounds": [x_begin, 0, x_end, axis],
+        "tileBounds": list(tile_bounds),
         "worldBounds": {"min": minimum, "max": maximum},
         "tiles": tiles,
         "exportedVertexCount": sum(tile["vertexCount"] for tile in tiles),
@@ -89,7 +90,7 @@ def make_region(source, source_payload, terrain, side, x_begin, x_end):
     return gltf, payload
 
 
-def combine_regions(west, east):
+def combine_regions(sources, *, shared_x_split=False):
     gltf = {
         "asset": {"version": "2.0", "generator": GENERATOR},
         "scene": 0,
@@ -102,7 +103,7 @@ def combine_regions(west, east):
         "accessors": [],
     }
     regions = []
-    for source in (west, east):
+    for source in sources:
         name = source["scenes"][0]["name"]
         terrain = source["extras"]["metallicTerrainTiles"]
         buffer_offset = len(gltf["buffers"])
@@ -140,11 +141,14 @@ def combine_regions(west, east):
             }]})
         gltf["nodes"].extend({**node, "mesh": node["mesh"] + mesh_offset} for node in source["nodes"])
 
-    split_x = regions[0]["worldBounds"]["max"][0]
-    if split_x != regions[1]["worldBounds"]["min"][0]:
-        raise TerrainBuildError("the west and east regions do not share a world-X boundary")
     gltf["scenes"][0]["nodes"] = list(range(len(gltf["nodes"])))
-    gltf["extras"] = {"metallicTerrainRegions": {"splitX": split_x, "regions": regions}}
+    terrain = {"regions": regions}
+    if shared_x_split:
+        split_x = regions[0]["worldBounds"]["max"][0]
+        if split_x != regions[1]["worldBounds"]["min"][0]:
+            raise TerrainBuildError("the west and east regions do not share a world-X boundary")
+        terrain = {"splitX": split_x, **terrain}
+    gltf["extras"] = {"metallicTerrainRegions": terrain}
     return gltf
 
 
@@ -197,9 +201,9 @@ def build_regions(path: Path, directory: Path, lighting: Path | None = None,
         raise TerrainBuildError(f"terrain buffer byte count mismatch: '{binary}'")
 
     middle = axis // 2
-    west, west_payload = make_region(source, payload, terrain, "west", 0, middle)
-    east, east_payload = make_region(source, payload, terrain, "east", middle, axis)
-    aggregate = combine_regions(west, east)
+    west, west_payload = make_region(source, payload, terrain, "west", (0, 0, middle, axis))
+    east, east_payload = make_region(source, payload, terrain, "east", (middle, 0, axis, axis))
+    aggregate = combine_regions((west, east), shared_x_split=True)
     regions = ((west, west_payload), (east, east_payload))
     aggregate_path = directory / "terrain_regions.gltf"
     sidecar = aggregate_path.with_suffix(".metallic_scene.json")

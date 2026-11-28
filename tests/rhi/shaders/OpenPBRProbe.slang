@@ -126,6 +126,16 @@ public struct ProbeSource : IOpenPBRMaterialSource
         if (info.textureIndex == 3) { sample.a = 0.25; }
         return sample;
     }
+    public void loadTerrainWeightPair(MaterialTextureInfo first, MaterialTextureInfo second, float2 uv,
+        ScenePathTracePush push, TextureFootprint footprint, out float4 firstWeights, out float4 secondWeights)
+    {
+        uint seed = 0u;
+        bool sampled;
+        firstWeights = loadTexture(first, uv, float4(0), push, RayCone(), HitInfo(), float3(0),
+            false, seed, footprint, sampled);
+        secondWeights = loadTexture(second, uv, float4(0), push, RayCone(), HitInfo(), float3(0),
+            false, seed, footprint, sampled);
+    }
 };
 
 public SurfaceMaterialResult<T.Closure> evaluateHit<T : ISurfaceMaterialProgram>(

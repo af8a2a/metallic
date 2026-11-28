@@ -1,4 +1,4 @@
-"""Sample the four-layer terrain fixture in world space for GPU readback checks."""
+"""Sample terrain layer fixtures in world space for GPU readback checks."""
 
 from dataclasses import dataclass
 import json
@@ -12,14 +12,20 @@ RGBA = "RGBA"
 TEXTURE_ROLES = {"baseColor": "baseColor", "normalTexture": "normal", "roughness": "roughness"}
 
 
-def repeat_linear(image, uv):
+def repeat_linear(image, uv, *, clamp=False):
     height, width = image.shape[:2]
     sample = uv * [width, height] - 0.5
     lower = np.floor(sample).astype(np.int64)
     x, y = lower[..., 0], lower[..., 1]
     u, v = np.moveaxis((sample - lower)[..., None], -2, 0)
-    left = image[y % height, x % width] * (1.0 - v) + image[(y + 1) % height, x % width] * v
-    right = image[y % height, (x + 1) % width] * (1.0 - v) + image[(y + 1) % height, (x + 1) % width] * v
+    if clamp:
+        x0, x1 = np.clip(x, 0, width - 1), np.clip(x + 1, 0, width - 1)
+        y0, y1 = np.clip(y, 0, height - 1), np.clip(y + 1, 0, height - 1)
+    else:
+        x0, x1 = x % width, (x + 1) % width
+        y0, y1 = y % height, (y + 1) % height
+    left = image[y0, x0] * (1.0 - v) + image[y1, x0] * v
+    right = image[y0, x1] * (1.0 - v) + image[y1, x1] * v
     return left * (1.0 - u) + right * u
 
 
@@ -70,6 +76,7 @@ class _Texture:
     mips: tuple[np.ndarray, ...]
     transform: np.ndarray
     srgb: bool
+    clamp: bool
 
     def lod(self, footprint):
         height, width = self.mips[0].shape[:2]
@@ -79,7 +86,7 @@ class _Texture:
     def sample(self, uv, footprint):
         uv = uv @ self.transform[:, :2].T + self.transform[:, 2]
         if footprint is None:
-            sample = repeat_linear(self.mips[0], uv)
+            sample = repeat_linear(self.mips[0], uv, clamp=self.clamp)
         else:
             lod = self.lod(footprint)
             components = self.mips[0].shape[-1]
@@ -87,7 +94,7 @@ class _Texture:
             for level, mip in enumerate(self.mips):
                 fraction = 1 - np.abs(lod - level)
                 used = fraction > 0
-                sample[used] += fraction[used, None] * repeat_linear(mip, uv[used])
+                sample[used] += fraction[used, None] * repeat_linear(mip, uv[used], clamp=self.clamp)
         return srgb_to_linear(sample) if self.srgb else sample
 
 
@@ -103,6 +110,7 @@ class TerrainLayerReference:
     weight_texture: _Texture
     default_channel: int
     layers: tuple[_Layer, ...]
+    second_weight_texture: _Texture | None = None
 
     def _uv(self, world):
         return world[..., [0, 2]] / self.world_size + 0.5
@@ -114,9 +122,12 @@ class TerrainLayerReference:
         return result
 
     def weights(self, world, footprint=None):
-        """Return the normalized layer weights in RGBA channel order."""
-        sampled = self.weight_texture.sample(self._uv(world), footprint)
-        unused = [i for i in range(len(RGBA)) if all(layer.channel != i for layer in self.layers)]
+        """Return normalized weights in packed map and RGBA channel order."""
+        uv = self._uv(world)
+        sampled = self.weight_texture.sample(uv, footprint)
+        if self.second_weight_texture is not None:
+            sampled = np.concatenate((sampled, self.second_weight_texture.sample(uv, footprint)), axis=-1)
+        unused = [i for i in range(sampled.shape[-1]) if all(layer.channel != i for layer in self.layers)]
         sampled[..., unused] = 0.0
         return self._normalized_weights(sampled)
 
@@ -127,7 +138,8 @@ class TerrainLayerReference:
             weights = self.weights(world, footprint)
         if omitted_channel is not None:
             weights = weights.copy()
-            weights[..., RGBA.index(omitted_channel)] = 0.0
+            slot = RGBA.index(omitted_channel) if isinstance(omitted_channel, str) else omitted_channel
+            weights[..., slot] = 0.0
             weights = self._normalized_weights(weights)
 
         role = TEXTURE_ROLES[mode]
@@ -154,7 +166,7 @@ def _asset_path(root, uri):
     return path
 
 
-def _texture(root, binding, transform, role):
+def _texture(root, binding, transform, role, *, clamp=False):
     path = _asset_path(root, binding["uri"])
     if binding.get("texCoord", 0) != 0 or not np.allclose(binding["transform"], transform, atol=1e-9, rtol=0):
         raise ValueError(f"{path.name} UV transform does not match the authored terrain mapping")
@@ -168,7 +180,11 @@ def _texture(root, binding, transform, role):
         texels = np.asarray(image.convert("RGBA" if role == "weights" else "RGB"), dtype=np.uint8)
     if role == "roughness":
         texels = texels[..., :1]
-    return _Texture(path, _mip_chain(texels), np.asarray(transform).reshape(2, 3), color_space == "srgb")
+    return _Texture(path, _mip_chain(texels), np.asarray(transform).reshape(2, 3), color_space == "srgb", clamp)
+
+
+def _weight_slot(layer):
+    return layer.get("weightMap", 0) * len(RGBA) + RGBA.index(layer["channel"])
 
 
 def load_terrain_layer_reference(scene: Path, *, scene_document: Path | None = None, channels=RGBA):
@@ -180,7 +196,7 @@ def load_terrain_layer_reference(scene: Path, *, scene_document: Path | None = N
     authored = (json.loads(metadata.read_text(encoding="utf-8")) if metadata.is_file()
                 else extras["metallicTerrainLayers"])
     reference_layers = {layer["name"]: layer for layer in authored["layers"]}
-    if "metallicTerrainTiles" in extras:
+    if "metallicTerrainRegions" not in extras:
         world_size = float(extras["metallicTerrainTiles"]["horizontalSize"])
         terrain_materials = [0]
     else:
@@ -201,25 +217,31 @@ def load_terrain_layer_reference(scene: Path, *, scene_document: Path | None = N
         raise ValueError("Terrain regions must share one material asset binding per variant")
     root = (scene_document.parent / binding["root"]).resolve()
     material = json.loads(_asset_path(root, binding["uri"]).read_text(encoding="utf-8"))["terrainLayers"]
-    if (len(material["layers"]) != len(channels) or {entry["channel"] for entry in material["layers"]} != set(channels)
+    dual = "weightMaps" in material
+    slots = set(range(8)) if dual else {RGBA.index(channel) for channel in channels}
+    if (len(material["layers"]) != len(slots) or {_weight_slot(entry) for entry in material["layers"]} != slots
             or {entry["name"] for entry in material["layers"]} != reference_layers.keys()
             or material["defaultLayer"] != authored["defaultLayer"]):
         raise ValueError("Terrain material names, channels or default layer differ from the authored tile metadata")
 
     width, height = authored["weightResolution"]
-    transform = [(width - 1) / (2 * width), 0, 0.25 / width, 0, (height - 1) / (2 * height), 0.25 / height]
-    weight_texture = _texture(root, material["weights"], transform, "weights")
-    if weight_texture.mips[0].shape[:2] != (2 * height, 2 * width):
-        raise ValueError("Mirrored weights must cover twice the heightfield resolution on each axis")
+    mirror = 1 if dual else 2
+    transform = [(width - 1) / (mirror * width), 0, 0.5 / (mirror * width),
+                 0, (height - 1) / (mirror * height), 0.5 / (mirror * height)]
+    weight_bindings = material["weightMaps"] if dual else [material["weights"]]
+    textures = [_texture(root, item, transform, "weights", clamp=dual) for item in weight_bindings]
+    if len(textures) != (2 if dual else 1) or any(t.mips[0].shape[:2] != (mirror * height, mirror * width)
+                                                for t in textures):
+        raise ValueError("Weight maps must match the authored count and texel dimensions")
 
     layers = []
     for entry in material["layers"]:
         layer = reference_layers[entry["name"]]
-        if entry["channel"] != layer["channel"]:
+        if _weight_slot(entry) != _weight_slot(layer):
             raise ValueError(f"{layer['name']} channel differs from the authored terrain channel")
         repeat_x, repeat_z = world_size / np.asarray(layer["worldTileSize"])
         transform = [repeat_x, 0, -0.5 * repeat_x, 0, repeat_z, -0.5 * repeat_z]
-        textures = {role: _texture(root, entry[role], transform, role) for role in TEXTURE_ROLES.values()}
-        layers.append(_Layer(RGBA.index(entry["channel"]), textures))
-    default_channel = RGBA.index(reference_layers[authored["defaultLayer"]]["channel"])
-    return TerrainLayerReference(world_size, weight_texture, default_channel, tuple(layers))
+        layer_textures = {role: _texture(root, entry[role], transform, role) for role in TEXTURE_ROLES.values()}
+        layers.append(_Layer(_weight_slot(entry), layer_textures))
+    default_channel = _weight_slot(reference_layers[authored["defaultLayer"]])
+    return TerrainLayerReference(world_size, textures[0], default_channel, tuple(layers), textures[1] if dual else None)

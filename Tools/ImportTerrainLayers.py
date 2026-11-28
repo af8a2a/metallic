@@ -16,7 +16,7 @@ from PIL import Image
 
 from BuildTerrainLayerTextures import mirror_weight_map, weight_uv_transform
 from BuildTerrainMesh import TerrainBuildError
-from TerrainLayerAsset import load_terrain_layer_asset, read_layer_weights
+from TerrainLayerAsset import CHANNELS, load_terrain_layer_asset, read_layer_weights
 
 
 def load_terrain_grid(path: Path) -> dict:
@@ -38,35 +38,53 @@ def relative_asset_path(path: Path, directory: Path) -> str:
         return path.as_posix()
 
 
-def encode_weight_png(weights: np.ndarray) -> bytes:
-    # Quantize cumulative weights so the four byte channels still sum to 255.
-    cumulative = np.rint(np.cumsum(weights, axis=-1, dtype=np.float64) * 255).astype(np.int16)
-    rgba = np.diff(cumulative, axis=-1, prepend=0).astype(np.uint8)
-    with io.BytesIO() as stream:
-        Image.fromarray(mirror_weight_map(rgba)).save(stream, format="PNG")
-        return stream.getvalue()
+def encode_weight_pngs(weights: np.ndarray) -> tuple[bytes, ...]:
+    # Quantize the full cumulative sum before splitting so both packs share one 255-unit total.
+    cumulative = np.cumsum(weights, axis=-1, dtype=np.float64)
+    cumulative *= 255
+    np.rint(cumulative, out=cumulative)
+    packed = np.diff(cumulative.astype(np.int16), axis=-1, prepend=np.int16(0)).astype(np.uint8)
+    if packed.shape[-1] == len(CHANNELS):
+        packed = mirror_weight_map(packed)
+    pngs = []
+    for start in range(0, packed.shape[-1], len(CHANNELS)):
+        with io.BytesIO() as stream:
+            rgba = packed[..., start:start + len(CHANNELS)]
+            Image.fromarray(rgba).save(stream, format="PNG")
+            pngs.append(stream.getvalue())
+    return tuple(pngs)
 
 
-def prepare_terrain_layer_import(terrain_path: Path, asset_path: Path, output: Path) -> tuple[dict, bytes]:
+def prepare_terrain_layer_import(terrain_path: Path, asset_path: Path, output: Path) -> tuple[dict, dict[str, bytes]]:
     terrain_path = terrain_path.resolve()
     output = output.resolve()
     terrain = load_terrain_grid(terrain_path)
     asset = load_terrain_layer_asset(asset_path)
-    sources = {terrain_path, asset.path, asset.weight_map}
+    sources = {terrain_path, asset.path, *asset.weight_maps}
     sources.update(texture for layer in asset.layers for texture in (layer.base_color, layer.normal, layer.roughness))
     if output in sources:
         raise TerrainBuildError("the imported asset must have a separate output path")
 
     weights = read_layer_weights(asset, terrain)
-    png = encode_weight_png(weights)
-    # Name the payload by content so an interrupted reimport leaves the previous asset usable.
-    weight_file = f"{output.stem}.weights-{hashlib.sha256(png).hexdigest()[:16]}.png"
-    weight_output = output.with_name(weight_file)
-    if weight_output in sources:
-        raise TerrainBuildError("the imported weight texture must have a separate output path")
-
+    multi_map = len(asset.weight_maps) > 1
     rows, columns = weights.shape[:2]
-    scale_x, scale_z, offset_x, offset_z = weight_uv_transform(columns, rows)
+    if multi_map:
+        # V2 uses native dimensions and a terrain weight ClampToEdge sampler.
+        scale_x, scale_z = (columns - 1) / columns, (rows - 1) / rows
+        offset_x, offset_z = 0.5 / columns, 0.5 / rows
+    else:
+        scale_x, scale_z, offset_x, offset_z = weight_uv_transform(columns, rows)
+    weight_transform = [scale_x, 0, offset_x, 0, scale_z, offset_z]
+    weight_maps = []
+    payloads = {}
+    for png in encode_weight_pngs(weights):
+        # Publish new payloads under distinct names while the previous material can still be in use.
+        weight_file = f"{output.stem}.weights-{hashlib.sha256(png).hexdigest()[:16]}.png"
+        if output.with_name(weight_file) in sources:
+            raise TerrainBuildError("the imported weight texture must have a separate output path")
+        payloads[weight_file] = png
+        weight_maps.append({"path": weight_file, "format": "RGBA8", "colorSpace": "linear",
+                            "uvTransform": weight_transform})
     horizontal_size = terrain["horizontalSize"]
     layers = []
     for layer in asset.layers:
@@ -76,6 +94,7 @@ def prepare_terrain_layer_import(terrain_path: Path, asset_path: Path, output: P
         layers.append({
             "name": layer.name,
             "channel": layer.channel,
+            **({"weightMap": layer.weight_map} if multi_map else {}),
             "worldTileSize": layer.world_tile_size,
             "uvTransform": [repeat_x, 0, -0.5 * repeat_x, 0, repeat_z, -0.5 * repeat_z],
             "baseColor": {"path": relative_asset_path(layer.base_color, output.parent), "colorSpace": "srgb"},
@@ -84,7 +103,7 @@ def prepare_terrain_layer_import(terrain_path: Path, asset_path: Path, output: P
         })
     document = {
         "type": "Metallic.ImportedTerrainLayers",
-        "version": 1,
+        "version": 2 if multi_map else 1,
         "terrain": {
             "path": relative_asset_path(terrain_path, output.parent),
             "sourceDataWindow": terrain["sourceDataWindow"],
@@ -93,29 +112,24 @@ def prepare_terrain_layer_import(terrain_path: Path, asset_path: Path, output: P
             "flipZ": terrain["flipZ"],
         },
         "defaultLayer": asset.default_layer,
-        "weightMap": {
-            "path": weight_file,
-            "format": "RGBA8",
-            "colorSpace": "linear",
-            "uvTransform": [scale_x, 0, offset_x, 0, scale_z, offset_z],
-        },
+        **({"weightMaps": weight_maps} if multi_map else {"weightMap": weight_maps[0]}),
         "layers": layers,
     }
-    return document, png
+    return document, payloads
 
 
 def import_terrain_layers(terrain_path: Path, asset_path: Path, output: Path) -> None:
     output = output.resolve()
-    document, png = prepare_terrain_layer_import(terrain_path, asset_path, output)
-    weight_file = document["weightMap"]["path"]
+    document, payloads = prepare_terrain_layer_import(terrain_path, asset_path, output)
     encoded = (json.dumps(document, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output.parent) as staging:
-        pending_weights = Path(staging) / weight_file
         pending_manifest = Path(staging) / output.name
-        pending_weights.write_bytes(png)
         pending_manifest.write_bytes(encoded)
-        pending_weights.replace(output.with_name(weight_file))
+        for weight_file, png in payloads.items():
+            pending_weights = Path(staging) / weight_file
+            pending_weights.write_bytes(png)
+            pending_weights.replace(output.with_name(weight_file))
         pending_manifest.replace(output)
 
 
@@ -125,9 +139,11 @@ def build_terrain_layer_material(terrain_path: Path, asset_path: Path, output: P
     instance = output.with_suffix(".material")
     if definition == asset_path.resolve():
         raise TerrainBuildError("the material definition must have a separate output path")
-    imported, png = prepare_terrain_layer_import(terrain_path, asset_path, instance)
-    weight_file = imported["weightMap"]["path"]
-    payloads = {weight_file: png}
+    imported, payloads = prepare_terrain_layer_import(terrain_path, asset_path, instance)
+    multi_map = imported["version"] == 2
+    weight_maps = imported["weightMaps"] if multi_map else [imported["weightMap"]]
+    weight_bindings = [{"uri": "asset://" + weights["path"], "transform": weights["uvTransform"]}
+                       for weights in weight_maps]
 
     def resource(source: dict, transform: list, role: str) -> dict:
         path = (output.parent / source["path"]).resolve()
@@ -141,11 +157,12 @@ def build_terrain_layer_material(terrain_path: Path, asset_path: Path, output: P
             binding["colorSpace"] = source["colorSpace"]
         return binding
 
+    layer_keys = ("name", "channel", "weightMap") if multi_map else ("name", "channel")
     roles = ("baseColor", "normal", "roughness")
     layers = []
     for layer in imported["layers"]:
         bindings = {role: resource(layer[role], layer["uvTransform"], role) for role in roles}
-        layers.append({"name": layer["name"], "channel": layer["channel"], **bindings})
+        layers.append({**{key: layer[key] for key in layer_keys}, **bindings})
     material_def = {"type": "Metallic.MaterialDefinition", "version": 1, "definitionVersion": 1,
                     "implementation": "OpenPBR.TerrainLayers", "defaults": {}}
     material_instance = {
@@ -153,7 +170,7 @@ def build_terrain_layer_material(terrain_path: Path, asset_path: Path, output: P
         "definition": "asset://" + definition.name,
         "parameters": {"metalness": 0}, "features": {"doubleSided": True},
         "terrainLayers": {
-            "weights": {"uri": "asset://" + weight_file, "transform": imported["weightMap"]["uvTransform"]},
+            **({"weightMaps": weight_bindings} if multi_map else {"weights": weight_bindings[0]}),
             "defaultLayer": imported["defaultLayer"], "layers": layers,
         },
     }
@@ -174,15 +191,17 @@ def build_terrain_layer_material(terrain_path: Path, asset_path: Path, output: P
                      "materialAsset": {"uri": "asset://" + instance.name, "root": "."}}
     metadata = {
         "defaultLayer": imported["defaultLayer"], "weightResolution": imported["terrain"]["sourceResolution"],
-        "layers": [{key: layer[key] for key in ("name", "channel", "worldTileSize")} for layer in imported["layers"]],
+        "layers": [{key: layer[key] for key in (*layer_keys, "worldTileSize")} for layer in imported["layers"]],
     }
+    if multi_map:
+        metadata.update(version=2, weightMaps=weight_maps)
     return scene_binding, metadata
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("terrain", type=Path, help="Terrain glTF baked from the Houdini height field")
-    parser.add_argument("layers", type=Path, help="Metallic.TerrainLayers JSON authored alongside the weight EXR")
+    parser.add_argument("layers", type=Path, help="Metallic.TerrainLayers or Ancient Rift Valley DCC source JSON")
     parser.add_argument("--output", type=Path, required=True, help="Imported terrain layer manifest JSON")
     args = parser.parse_args()
     try:

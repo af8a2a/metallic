@@ -948,6 +948,40 @@ if(Python3_Interpreter_FOUND)
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "rhi;terrain"
             RESOURCE_LOCK MetallicGPU TIMEOUT 1200)
     endif()
+    if(TARGET MetallicAncientRiftValley2x2Sample)
+        set(ancient_rift_acceptance
+            "${Python3_EXECUTABLE}" -B "${CMAKE_SOURCE_DIR}/Tools/Perf/AncientRiftValleyAcceptance.py" run
+            --executable "$<TARGET_FILE:MetallicRHITests>"
+            --output "${CMAKE_CURRENT_BINARY_DIR}/ancient-rift-valley-2x2")
+        add_custom_target(MetallicAncientRiftValley2x2Regression
+            COMMAND ${ancient_rift_acceptance}
+            DEPENDS MetallicRHITests MetallicAncientRiftValley2x2Sample
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            USES_TERMINAL VERBATIM)
+        add_test(NAME MetallicAncientRiftValley2x2Regression COMMAND ${ancient_rift_acceptance})
+        set_tests_properties(MetallicAncientRiftValley2x2Regression PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "rhi;terrain" RESOURCE_LOCK MetallicGPU TIMEOUT 2700)
+        if(CMAKE_GENERATOR MATCHES "^Ninja")
+            set(ancient_rift_reimport_ninja "${CMAKE_MAKE_PROGRAM}")
+        else()
+            find_program(ancient_rift_reimport_ninja NAMES ninja ninja-build)
+        endif()
+        if(ancient_rift_reimport_ninja)
+            set(ancient_rift_reimport
+                "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tools/RunAncientRiftValleyMaterialReimport.py"
+                --cmake "${CMAKE_COMMAND}" --ninja "${ancient_rift_reimport_ninja}"
+                --cooker "$<TARGET_FILE:MetallicMeshletCook>"
+                --output-root "${CMAKE_CURRENT_BINARY_DIR}/ancient-rift-valley-material-reimport")
+            add_custom_target(MetallicAncientRiftValley2x2MaterialReimportRegression
+                COMMAND ${ancient_rift_reimport}
+                DEPENDS MetallicMeshletCook
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                USES_TERMINAL VERBATIM)
+            add_test(NAME MetallicAncientRiftValley2x2MaterialReimportRegression COMMAND ${ancient_rift_reimport})
+            set_tests_properties(MetallicAncientRiftValley2x2MaterialReimportRegression PROPERTIES
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "cpu;terrain" SKIP_RETURN_CODE 77 TIMEOUT 900)
+        endif()
+    endif()
     if(TARGET MetallicTerrainPlacement16x16VSMSample)
         add_test(NAME MetallicTerrainPlacementEditorSmoke
             COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunTerrainPlacementSmoke.py"

@@ -51,7 +51,8 @@ struct SceneMaterialData
     uint32_t terrainLayerBinding[4] = {};
 };
 
-inline constexpr size_t kMaxTerrainMaterialLayers = 4;
+inline constexpr size_t kMaxTerrainWeightMaps = 2;
+inline constexpr size_t kMaxTerrainMaterialLayers = 4 * kMaxTerrainWeightMaps;
 
 struct TerrainLayerTextureBindings
 {
@@ -62,9 +63,9 @@ struct TerrainLayerTextureBindings
 
 struct alignas(16) TerrainLayerMaterialData
 {
-    SceneMaterialData::TextureInfo weights;
-    uint32_t settings[4] = {}; // layer count, default layer index, reserved, reserved
-    uint32_t channels[kMaxTerrainMaterialLayers] = {};
+    SceneMaterialData::TextureInfo weightMaps[kMaxTerrainWeightMaps];
+    uint32_t settings[4] = {}; // layer count, default layer index, weight map count, reserved
+    uint32_t weightSlots[kMaxTerrainMaterialLayers] = {}; // weightMap * 4 + channel
     TerrainLayerTextureBindings layers[kMaxTerrainMaterialLayers];
 };
 
@@ -80,10 +81,10 @@ static_assert(offsetof(SceneMaterialData, baseColorTexture) == 176);
 static_assert(offsetof(SceneMaterialData, specular) == 608);
 static_assert(offsetof(SceneMaterialData, terrainLayerBinding) == 720);
 static_assert(std::is_trivially_copyable_v<TerrainLayerMaterialData>);
-static_assert(sizeof(TerrainLayerMaterialData) == 656);
+static_assert(sizeof(TerrainLayerMaterialData) == 1296);
 static_assert(sizeof(TerrainLayerTextureBindings) == 144);
-static_assert(offsetof(TerrainLayerMaterialData, settings) == 48);
-static_assert(offsetof(TerrainLayerMaterialData, channels) == 64);
-static_assert(offsetof(TerrainLayerMaterialData, layers) == 80);
+static_assert(offsetof(TerrainLayerMaterialData, settings) == 96);
+static_assert(offsetof(TerrainLayerMaterialData, weightSlots) == 112);
+static_assert(offsetof(TerrainLayerMaterialData, layers) == 144);
 
 } // namespace metallic::render

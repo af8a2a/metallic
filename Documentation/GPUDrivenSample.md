@@ -297,3 +297,17 @@ python -B Tools/Perf/TerrainRegionMaterialAcceptance.py --executable build-ci/te
 路线从西区起飞，在同一条材质带上停留于远、近两个机位，再横跨东西区边界。诊断读回底色、切线空间法线和粗糙度，并对照从 GPU 深度重建的世界坐标及纹理采样范围。过界前、中、后三帧均要求两区可见。额外远景扩大权重纹素覆盖，使用底色读回对照共享权重图的滤波结果和固定 mip 0。区域飞行沿用 80 页和 1 MiB 的保底几何设置。`--mode diagnostic` 可单独执行连续性验证。
 
 普通计时在独立进程中以双层、四层交替运行，共用相机、640×360 内部尺寸和预热帧。报告使用固定机位上逐进程的 Deferred GPU 时间中位数，以及 VBuffer 报告的已驻留纹理分配字节。区域发布和释放的几何字节另有记录。`Continuity.json`、`Timing.json` 和原始读回写入 `build/terrain-region-material-validation/run-*/`。
+
+### Ancient Rift Valley 中央 2×2
+
+```powershell
+cmake --build build-ci --target MetallicAncientRiftValley2x2Sample
+cmake --build build-ci --target MetallicAncientRiftValley2x2Regression
+cmake --build build-ci --target MetallicAncientRiftValley2x2MaterialReimportRegression
+```
+
+编辑器样例 **GPUDrivenSample / Ancient Rift Valley 2x2 + VSM** 使用原 1 km 高度场的中央 1025² 个米制样本。500 m × 500 m 的范围由四个独立烘焙的区域组成。几何法线使用相邻高度样本计算，权重和细节贴图沿用全局 1 km 的 XZ 坐标。样例启动时发布四区的保底几何，并按屏幕误差请求细节。
+
+八层材质共用两张原尺寸的 2049² 线性 RGBA 权重图。每层按图索引和通道绑定，导入时联合量化，GPU 在两张图的相同源 mip 采样后联合归一化。新权重图采用边缘钳制，细节贴图按世界尺度平铺。此样例为 XZ 平面投影基线，DCC 预览中的陡壁三平面投影属于后续工作。
+
+GPU 回归在四区交点检查深度覆盖和混合 LOD，并在冲积扇采集八层底色、切线法线和粗糙度供 CPU 参考比较。第二张权重图的增量回归在隔离的 Ninja 构建中分别调用完整目标和 `MetallicAncientRiftValley2x2Materials`，核对区域几何、StreamAsset 和场景文档的 SHA-256 及修改时间。报告和抓帧保存在 `build-ci/tests/ancient-rift-valley-2x2/` 和 `build-ci/tests/ancient-rift-valley-material-reimport/`。

@@ -56,6 +56,13 @@ struct LightingProbeSource : IOpenPBRMaterialSource, IDebugLambertSource
         source.probe = probe;
         return source.loadTexture(info, uv, fallback, push, cone, hit, rayDirection, deterministicMip0, seed, footprint, sampled);
     }
+    void loadTerrainWeightPair(MaterialTextureInfo first, MaterialTextureInfo second, float2 uv,
+        ScenePathTracePush push, TextureFootprint footprint, out float4 firstWeights, out float4 secondWeights)
+    {
+        ProbeSource source;
+        source.probe = probe;
+        source.loadTerrainWeightPair(first, second, uv, push, footprint, firstWeights, secondWeights);
+    }
     DebugLambertInputs evaluateInputs(SurfaceMaterialContext context, MaterialInstanceRef instance)
     {
         OpenPBRMaterialParameters material = loadParameters(instance);

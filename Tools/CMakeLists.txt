@@ -218,6 +218,20 @@ if(Python3_Interpreter_FOUND)
     )
     add_custom_target(MetallicTerrainRegionMaterialsSample DEPENDS ${terrain_region_material_outputs})
     add_dependencies(MetallicTerrainRegionMaterialsSample MetallicTerrainRegionsSample)
+    include("${CMAKE_SOURCE_DIR}/cmake/AncientRiftValleySample.cmake")
+    add_metallic_ancient_rift_valley_sample(
+        "${CMAKE_SOURCE_DIR}/Asset/Terrain/AncientRiftValley/TerrainAsset.json"
+        "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/AncientRiftValley2x2"
+        MetallicMeshletCook)
+    add_custom_target(MetallicAncientRiftValley2x2Smoke
+        COMMAND ${CMAKE_COMMAND} -E env METALLIC_SMOKE_TEST_HIDDEN=1
+            METALLIC_SMOKE_TEST_SAMPLE=gpu-driven-ancient-rift-valley-2x2-vsm
+            "$<TARGET_FILE:Metallic>" --smoke-test
+        DEPENDS Metallic MetallicAncientRiftValley2x2Sample
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Rendering the Ancient Rift Valley 2x2 smoke frame"
+        VERBATIM
+    )
     add_custom_target(MetallicPCGWorld DEPENDS LookDev MetallicTerrainRegionsSample)
     add_custom_target(MetallicTerrainRegionsSmoke
         COMMAND ${CMAKE_COMMAND} -E env METALLIC_SMOKE_TEST_HIDDEN=1

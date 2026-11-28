@@ -426,6 +426,11 @@ public struct DeferredOpenPBRMaterialSource : IOpenPBRMaterialSource
         return source.loadTexture(textureInfo, uv, fallback, push, cone, hit, rayDirection,
             deterministicMip0, seed, footprint, sampled);
     }
+    public void loadTerrainWeightPair(MaterialTextureInfo first, MaterialTextureInfo second, float2 uv,
+        ScenePathTracePush push, TextureFootprint footprint, out float4 firstWeights, out float4 secondWeights)
+    {
+        loadPairedTerrainWeights(first, second, uv, push, footprint, firstWeights, secondWeights);
+    }
 };
 
 [ForceInline]

@@ -3518,7 +3518,7 @@ bool Scene::compose(
             rebaseTexture(material.displacementTexture);
             if (material.terrainLayers) {
                 auto bindings = std::make_shared<RenderTerrainLayerBindings>(*material.terrainLayers);
-                rebaseTexture(bindings->weights);
+                for (auto& map : bindings->weightMaps) { rebaseTexture(map); }
                 for (auto& layer : bindings->layers) {
                     rebaseTexture(layer.baseColor);
                     rebaseTexture(layer.normal);
@@ -5413,8 +5413,8 @@ bool Scene::applyMaterialInstance(int32_t materialIndex, const material::Resolve
         const auto terrainTextureIndices = [](const auto& bindings) {
             std::vector<int32_t> indices;
             if (bindings) {
-                indices.reserve(1 + 3 * bindings->layers.size());
-                indices.push_back(bindings->weights.textureIndex);
+                indices.reserve(bindings->weightMaps.size() + 3 * bindings->layers.size());
+                for (const auto& map : bindings->weightMaps) { indices.push_back(map.textureIndex); }
                 for (const auto& layer : bindings->layers) {
                     indices.insert(indices.end(), {layer.baseColor.textureIndex, layer.normal.textureIndex, layer.roughness.textureIndex});
                 }

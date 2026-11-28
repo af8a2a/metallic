@@ -105,20 +105,36 @@ constexpr std::string_view kTerrainImplementation = "OpenPBR.TerrainLayers";
 Json terrainLayers(Json value)
 {
     if (value.is_null()) { return value; }
-    keys(value, {"weights", "defaultLayer", "layers"});
-    value["weights"] = terrainTexture(value.at("weights"), false);
+    keys(value, {"weights", "weightMaps", "defaultLayer", "layers"});
+    const bool paired = value.contains("weightMaps");
+    require(paired != value.contains("weights"), "Terrain material requires either weights or weightMaps");
+    if (paired) {
+        auto& maps = value.at("weightMaps");
+        require(maps.is_array() && maps.size() == 2, "Terrain material weightMaps requires exactly two textures");
+        for (auto& map : maps) { map = terrainTexture(map, false); }
+        require(maps[0].at("transform") == maps[1].at("transform"), "Terrain weight maps require the same UV transform");
+    } else {
+        value["weights"] = terrainTexture(value.at("weights"), false);
+    }
     auto& layers = value.at("layers");
-    require(layers.is_array() && !layers.empty() && layers.size() <= kTerrainChannels.size(),
-        "Terrain material requires one to four layers");
+    require(layers.is_array() && !layers.empty() && layers.size() <= kTerrainChannels.size() * (paired ? 2 : 1),
+        paired ? "Paired terrain weight maps support one to eight layers" : "Terrain material requires one to four layers");
     std::set<std::string> names;
-    std::set<char> channels;
+    std::set<size_t> slots;
     for (auto& layer : layers) {
-        keys(layer, {"name", "channel", "baseColor", "normal", "roughness"});
+        keys(layer, {"name", "weightMap", "channel", "baseColor", "normal", "roughness"});
         const auto name = layer.at("name").get<std::string>();
         require(!name.empty() && names.insert(name).second, "Terrain layer names must be nonempty and unique");
+        require(paired == layer.contains("weightMap"), "A terrain layer requires weightMap only with paired weight maps");
+        if (paired) {
+            const auto& map = layer.at("weightMap");
+            require(map.is_number_integer() && (map == 0 || map == 1), "Terrain layer weightMap must be 0 or 1");
+        }
         const auto channel = layer.at("channel").get<std::string>();
-        require(channel.size() == 1 && kTerrainChannels.find(channel[0]) != std::string_view::npos &&
-            channels.insert(channel[0]).second, "Terrain layers require unique R, G, B or A channels");
+        const size_t component = kTerrainChannels.find(channel);
+        require(channel.size() == 1 && component != std::string_view::npos, "Terrain layers require an R, G, B or A channel");
+        const size_t map = layer.value("weightMap", 0u);
+        require(slots.insert(map * kTerrainChannels.size() + component).second, "Terrain weight channels must be unique within each map");
         layer["baseColor"] = terrainTexture(layer.at("baseColor"), true);
         layer["normal"] = terrainTexture(layer.at("normal"), false);
         layer["roughness"] = terrainTexture(layer.at("roughness"), false);
@@ -591,13 +607,20 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
                 "Terrain layers require lit opaque OpenPBR");
             const auto resolved = terrainLayers(instance.terrainLayers);
             auto bindings = std::make_shared<scene::RenderTerrainLayerBindings>();
-            bindings->weights = lowerTexture(resolved.at("weights"), resolver, {});
+            if (resolved.contains("weightMaps")) {
+                for (const auto& map : resolved.at("weightMaps")) {
+                    bindings->weightMaps.push_back(lowerTexture(map, resolver, {}));
+                }
+            } else {
+                bindings->weightMaps.push_back(lowerTexture(resolved.at("weights"), resolver, {}));
+            }
             const auto defaultLayer = resolved.at("defaultLayer").get<std::string>();
             for (const auto& source : resolved.at("layers")) {
                 const auto name = source.at("name").get<std::string>();
                 if (name == defaultLayer) { bindings->defaultLayerIndex = static_cast<uint32_t>(bindings->layers.size()); }
                 bindings->layers.push_back({
                     .name = name,
+                    .weightMap = source.value("weightMap", 0u),
                     .channel = static_cast<uint32_t>(kTerrainChannels.find(source.at("channel").get<std::string>())),
                     .baseColor = lowerTexture(source.at("baseColor"), resolver, render::ksRGBColorTexture),
                     .normal = lowerTexture(source.at("normal"), resolver, {}),
@@ -681,6 +704,7 @@ bool createMaterialInstance(const scene::RenderMaterial& source, std::string def
         }
         if (source.terrainLayers) {
             const auto& bindings = *source.terrainLayers;
+            const bool paired = bindings.weightMaps.size() == 2;
             Json layers = Json::array();
             for (const auto& layer : bindings.layers) {
                 const auto prefix = "terrainLayers." + layer.name + ".";
@@ -690,12 +714,20 @@ bool createMaterialInstance(const scene::RenderMaterial& source, std::string def
                     {"normal", encodeTexture(prefix + "normal", layer.normal)},
                     {"roughness", encodeTexture(prefix + "roughness", layer.roughness)},
                 });
+                if (paired) { layers.back()["weightMap"] = layer.weightMap; }
             }
             candidate.terrainLayers = {
-                {"weights", encodeTexture("terrainLayers.weights", bindings.weights)},
                 {"defaultLayer", bindings.layers[bindings.defaultLayerIndex].name},
                 {"layers", std::move(layers)},
             };
+            if (paired) {
+                auto& maps = candidate.terrainLayers["weightMaps"] = Json::array();
+                for (size_t i = 0; i < bindings.weightMaps.size(); ++i) {
+                    maps.push_back(encodeTexture("terrainLayers.weightMaps." + std::to_string(i), bindings.weightMaps[i]));
+                }
+            } else {
+                candidate.terrainLayers["weights"] = encodeTexture("terrainLayers.weights", bindings.weightMaps.front());
+            }
         }
         const Json features = {{"alphaMode", source.alphaMode == "OPAQUE" ? "opaque" : source.alphaMode == "MASK" ? "mask" : "blend"},
             {"doubleSided", source.doubleSided}, {"unlit", source.unlit}};

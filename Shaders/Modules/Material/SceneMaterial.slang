@@ -25,15 +25,15 @@ public struct TerrainLayerTextureBindings
 
 public struct TerrainLayerMaterialHeader
 {
-    public MaterialTextureInfo weights;
-    public uint4 settings; // x: layer count, y: default layer index
-    public uint4 channels;
+    public MaterialTextureInfo weightMaps[2];
+    public uint4 settings; // x: layer count, y: default layer index, z: weight map count
+    public uint4 weightSlots[2]; // weightMap * 4 + channel
 };
 
 public struct TerrainLayerMaterialData
 {
     public TerrainLayerMaterialHeader header;
-    public TerrainLayerTextureBindings layers[4];
+    public TerrainLayerTextureBindings layers[8];
 };
 
 public struct SceneMaterialData

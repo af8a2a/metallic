@@ -34,6 +34,16 @@ struct TerrainProbeTextureSource : ISceneMaterialTextureSource
         uint2 texel = uint2(info.textureIndex % 4u, info.textureIndex / 4u);
         return decodeMaterialTextureSample(resolveUniform(probe.texture).Load(int3(texel, 0)), info.transform0.w);
     }
+    void loadTerrainWeightPair(MaterialTextureInfo first, MaterialTextureInfo second, float2 uv,
+        ScenePathTracePush push, TextureFootprint footprint, out float4 firstWeights, out float4 secondWeights)
+    {
+        uint seed = 0u;
+        bool sampled;
+        firstWeights = loadTexture(first, uv, float4(0), push, RayCone(), HitInfo(), float3(0),
+            false, seed, footprint, sampled);
+        secondWeights = loadTexture(second, uv, float4(0), push, RayCone(), HitInfo(), float3(0),
+            false, seed, footprint, sampled);
+    }
 };
 
 [shader("compute")]
@@ -41,7 +51,6 @@ struct TerrainProbeTextureSource : ISceneMaterialTextureSource
 void openPBRTerrainLayersProbeMain(uint3 id : SV_DispatchThreadID)
 {
     uint lane = id.x;
-    if (lane >= 5u) { return; }
     TerrainProbeTextureSource source;
     source.probe = gProbe;
     uint seed = 0u;
@@ -68,6 +77,11 @@ struct GuardedProbeSource : IOpenPBRMaterialSource
     {
         return base.loadTexture(info, uv, fallback, push, cone, hit, rayDirection,
             deterministicMip0, seed, footprint, sampled);
+    }
+    void loadTerrainWeightPair(MaterialTextureInfo first, MaterialTextureInfo second, float2 uv,
+        ScenePathTracePush push, TextureFootprint footprint, out float4 firstWeights, out float4 secondWeights)
+    {
+        base.loadTerrainWeightPair(first, second, uv, push, footprint, firstWeights, secondWeights);
     }
 };
 

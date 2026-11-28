@@ -93,6 +93,64 @@ public float materialResidentTextureLod(TextureSamplingMetadata metadata, float 
         0.0, float(max(metadata.residentMipCount, 1u) - 1u));
 }
 
+internal float2 terrainWeightMipTexelCenter(uint2 dimensions, uint mip)
+{
+    return 0.5 / float2(max(dimensions >> mip, uint2(1u)));
+}
+
+internal float4 sampleClampedTerrainWeights(MaterialTextureInfo info, TextureSamplingMetadata metadata,
+    float2 uv, float lod)
+{
+    let texture = sceneMaterialTexture(info.textureIndex);
+    let sampler = sceneMaterialSampler();
+    uint2 dimensions = uint2(metadata.residentWidth, metadata.residentHeight);
+    uint lower = uint(floor(lod));
+    uint upper = uint(ceil(lod));
+    float2 upperCenter = terrainWeightMipTexelCenter(dimensions, upper);
+    float2 upperUv = clamp(uv, upperCenter, 1.0 - upperCenter);
+    // The scene sampler repeats. Inside the upper mip's texel centers it can
+    // filter normally. At the border each mip needs its own clamp before blending.
+    if (lower == upper || all(upperUv == uv)) {
+        return texture.SampleLevel(sampler, upperUv, lod);
+    }
+    float2 lowerCenter = terrainWeightMipTexelCenter(dimensions, lower);
+    float2 lowerUv = clamp(uv, lowerCenter, 1.0 - lowerCenter);
+    return lerp(texture.SampleLevel(sampler, lowerUv, float(lower)),
+        texture.SampleLevel(sampler, upperUv, float(upper)), frac(lod));
+}
+
+public void loadPairedTerrainWeights(MaterialTextureInfo first, MaterialTextureInfo second, float2 uv,
+    ScenePathTracePush push, TextureFootprint footprint, out float4 firstWeights, out float4 secondWeights)
+{
+    if (!hasMaterialTexture(first, push) || !hasMaterialTexture(second, push)) {
+        firstWeights = secondWeights = float4(0.0);
+        return;
+    }
+    let a = sceneTextureSamplingMetadata()[first.textureIndex];
+    let b = sceneTextureSamplingMetadata()[second.textureIndex];
+    float firstResidentMip = float(a.residentFirstMipAndFlags & 0x7fffffffu);
+    float secondResidentMip = float(b.residentFirstMipAndFlags & 0x7fffffffu);
+    // The asset and scene upload require matching transforms and source mip
+    // dimensions. Sample both halves at one source mip, including during a
+    // resident-tail transition, so the colors have the same filter footprint.
+    float wantedLod = materialSourceTextureLod(first, footprint.isotropicLod0, textureTransformLodBias(first));
+    if (push.textureFeedbackEnabled != 0u) {
+        if (streamTextureDemandEnabled(a)) {
+            recordTextureDemand(sceneTextureDemandMip(), sceneTextureDemandHits(), first.textureIndex, uint(floor(wantedLod)));
+        }
+        if (streamTextureDemandEnabled(b)) {
+            recordTextureDemand(sceneTextureDemandMip(), sceneTextureDemandHits(), second.textureIndex, uint(floor(wantedLod)));
+        }
+    }
+    float commonLod = max(wantedLod, max(firstResidentMip + max(a.samplingFloor, 0.0),
+        secondResidentMip + max(b.samplingFloor, 0.0)));
+    float2 mappedUv = transformMaterialUv(first, uv);
+    firstWeights = sampleClampedTerrainWeights(first, a, mappedUv,
+        clamp(commonLod - firstResidentMip, 0.0, float(a.residentMipCount - 1u)));
+    secondWeights = sampleClampedTerrainWeights(second, b, mappedUv,
+        clamp(commonLod - secondResidentMip, 0.0, float(b.residentMipCount - 1u)));
+}
+
 public SurfaceMaterialContext sceneSurfaceMaterialContextForRay(HitInfo hit, RayCone rayCone, float3 rayDirection,
     bool resolveFootprint = true)
 {

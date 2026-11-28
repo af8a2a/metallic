@@ -142,6 +142,8 @@ public interface ISceneMaterialTextureSource
     public float4 loadTexture(MaterialTextureInfo textureInfo, float2 uv, float4 fallback,
         ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
         bool deterministicMip0, inout uint seed, TextureFootprint footprint, out bool sampled);
+    public void loadTerrainWeightPair(MaterialTextureInfo first, MaterialTextureInfo second, float2 uv,
+        ScenePathTracePush push, TextureFootprint footprint, out float4 firstWeights, out float4 secondWeights);
 };
 
 public interface IOpenPBRMaterialSource : ISceneMaterialTextureSource
@@ -162,6 +164,11 @@ public struct SceneMaterialTextureSource : ISceneMaterialTextureSource
         return loadMaterialTextureForMaterialResolved(textureInfo, uv, fallback, push,
             deterministicMip0, seed, footprint, sampled);
     }
+    public void loadTerrainWeightPair(MaterialTextureInfo first, MaterialTextureInfo second, float2 uv,
+        ScenePathTracePush push, TextureFootprint footprint, out float4 firstWeights, out float4 secondWeights)
+    {
+        loadPairedTerrainWeights(first, second, uv, push, footprint, firstWeights, secondWeights);
+    }
 };
 
 public struct SceneOpenPBRMaterialSource : IOpenPBRMaterialSource
@@ -181,6 +188,11 @@ public struct SceneOpenPBRMaterialSource : IOpenPBRMaterialSource
         SceneMaterialTextureSource source;
         return source.loadTexture(textureInfo, uv, fallback, push, cone, hit, rayDirection,
             deterministicMip0, seed, footprint, sampled);
+    }
+    public void loadTerrainWeightPair(MaterialTextureInfo first, MaterialTextureInfo second, float2 uv,
+        ScenePathTracePush push, TextureFootprint footprint, out float4 firstWeights, out float4 secondWeights)
+    {
+        loadPairedTerrainWeights(first, second, uv, push, footprint, firstWeights, secondWeights);
     }
 };
 
@@ -253,24 +265,34 @@ public TerrainLayerSurfaceValues evaluateTerrainLayerSurface<TSource : ISceneMat
 {
     let bindings = layerMaterials.Load<TerrainLayerMaterialHeader>(byteOffset);
     bool sampled;
-    float4 sampledWeights = source.loadTexture(bindings.weights, hit.texcoord, float4(0.0),
-        push, rayCone, hit, rayDirection, false, seed, footprint, sampled);
-    float4 layerWeights = float4(0.0);
-    for (uint i = 0u; i < bindings.settings.x; ++i) {
-        layerWeights[i] = max(sampledWeights[bindings.channels[i]], 0.0);
-    }
-    float total = dot(layerWeights, float4(1.0));
-    if (total > 0.0) {
-        layerWeights /= total;
+    float4 sampledWeights[2];
+    if (bindings.settings.z == 2u) {
+        source.loadTerrainWeightPair(bindings.weightMaps[0], bindings.weightMaps[1], hit.texcoord, push, footprint,
+            sampledWeights[0], sampledWeights[1]);
     } else {
-        layerWeights[bindings.settings.y] = 1.0;
+        sampledWeights[0] = source.loadTexture(bindings.weightMaps[0], hit.texcoord, float4(0.0),
+            push, rayCone, hit, rayDirection, false, seed, footprint, sampled);
+        sampledWeights[1] = float4(0.0);
+    }
+    float4 layerWeights[2] = {float4(0.0), float4(0.0)};
+    for (uint i = 0u; i < bindings.settings.x; ++i) {
+        uint slot = bindings.weightSlots[i / 4u][i % 4u];
+        layerWeights[i / 4u][i % 4u] = max(sampledWeights[slot / 4u][slot % 4u], 0.0);
+    }
+    float total = dot(layerWeights[0], float4(1.0)) + dot(layerWeights[1], float4(1.0));
+    if (total > 0.0) {
+        layerWeights[0] /= total;
+        layerWeights[1] /= total;
+    } else {
+        uint defaultLayer = bindings.settings.y;
+        layerWeights[defaultLayer / 4u][defaultLayer % 4u] = 1.0;
     }
 
     TerrainLayerSurfaceValues values = {};
     values.enabled = true;
     const float3 neutralNormal = float3(0.0, 0.0, 1.0);
     for (uint i = 0u; i < bindings.settings.x; ++i) {
-        float weight = layerWeights[i];
+        float weight = layerWeights[i / 4u][i % 4u];
         if (weight == 0.0) { continue; }
         let layer = layerMaterials.Load<TerrainLayerTextureBindings>(
             byteOffset + sizeof(TerrainLayerMaterialHeader) + i * sizeof(TerrainLayerTextureBindings));

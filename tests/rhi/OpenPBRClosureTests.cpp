@@ -71,11 +71,15 @@ void require(const Result<T>& value, const std::string& message)
 void runOpenPBRTerrainLayers(RHITestContext& context, Device& device, ResourceRegistry& registry,
     Buffer& output, Buffer& counters)
 {
-    const std::array<Float4, 16> texels{{
+    const std::array<Float4, 32> texels{{
         {0.15f, 0.25f, 0.05f, 0.05f}, {0, 0, 0, 0}, {0.6f, 0.2f, 0.2f, 1}, {0, 0, 0, 1},
         {0.3f, 0.8f, 0.7f, 0.7f}, {0.7f, 0.3f, 0.45f, 0.6f}, {0.5f, 0.6f, 0.9f, 0.5f}, {0.8f, 0.4f, 0.15f, 0.4f},
         {0.65f, 0.5f, 0.7f, 0.2f}, {0.5f, 0.9f, 0.8f, 0.3f}, {0.2f, 0.5f, 0.9f, 0.4f}, {0.5f, 0.2f, 0.0f, 0.5f},
         {0.12f, 0.8f, 0.02f, 0.3f}, {0.67f, 0.8f, 0.02f, 0.3f}, {0.39f, 0.8f, 0.02f, 0.3f}, {0.9f, 0.8f, 0.02f, 0.3f},
+        {0.2f, 0.4f, 0.1f, 0.3f}, {0, 0, 0.5f, 0}, {}, {},
+        {0.1f, 0.7f, 0.3f, 1}, {0.6f, 0.25f, 0.8f, 1}, {0.18f, 0.62f, 0.3f, 1}, {0.4f, 0.2f, 0.8f, 1},
+        {0.5f, 0.8f, 0.9f, 1}, {0.5f, 0.2f, 0.9f, 1}, {0.9f, 0.5f, 0.8f, 1}, {0.1f, 0.5f, 0.8f, 1},
+        {0.44f, 0, 0, 1}, {0.58f, 0, 0, 1}, {0.79f, 0, 0, 1}, {0.23f, 0, 0, 1},
     }};
     auto upload = device.createBuffer({.size = sizeof(texels), .usage = BufferUsageBits::TransferSource,
         .memoryLocation = MemoryLocation::HostUpload});
@@ -85,22 +89,29 @@ void runOpenPBRTerrainLayers(RHITestContext& context, Device& device, ResourceRe
     std::memcpy(mappedUpload, texels.data(), sizeof(texels));
     (*upload)->flush();
     (*upload)->unmap();
-    std::array<TerrainLayerMaterialData, 5> bindings{};
+    std::array<TerrainLayerMaterialData, 8> bindings{};
+    constexpr std::array kFirstWeightTextures{0u, 1u, 2u, 3u, 3u, 0u, 1u, 1u};
+    constexpr std::array kSecondWeightTextures{16u, 1u, 17u};
     for (uint32_t lane = 0; lane < bindings.size(); ++lane) {
         auto& record = bindings[lane];
         const bool threeLayers = lane == 2 || lane == 3;
-        const auto channels = threeLayers ? std::array{2u, 0u, 1u, 3u} : std::array{3u, 2u, 0u, 1u};
-        record.weights.textureIndex = std::min(lane, 3u);
-        record.settings[0] = threeLayers ? 3u : 4u;
-        record.settings[1] = 2;
-        std::copy(channels.begin(), channels.end(), record.channels);
+        const bool paired = lane >= 5;
+        const auto slots = threeLayers ? std::array{2u, 0u, 1u, 3u, 6u, 4u, 7u, 5u}
+                                       : std::array{3u, 2u, 0u, 1u, 6u, 4u, 7u, 5u};
+        record.weightMaps[0].textureIndex = kFirstWeightTextures[lane];
+        if (paired) { record.weightMaps[1].textureIndex = kSecondWeightTextures[lane - 5u]; }
+        record.settings[0] = paired ? 8u : threeLayers ? 3u : 4u;
+        record.settings[1] = paired ? 6u : 2u;
+        record.settings[2] = paired ? 2u : 1u;
+        std::copy(slots.begin(), slots.end(), record.weightSlots);
         for (uint32_t i = 0; i < kMaxTerrainMaterialLayers; ++i) {
             auto& layer = record.layers[i];
-            layer.baseColor.textureIndex = 4 + i;
+            const uint32_t textureBase = i < 4 ? 4 + i : 16 + i;
+            layer.baseColor.textureIndex = textureBase;
             layer.baseColor.transform0[3] = i == 1 ? 1.0f : 0.0f;
-            layer.normal.textureIndex = 8 + i;
+            layer.normal.textureIndex = textureBase + 4;
             layer.normal.transform0[3] = i == 3 ? 2.0f : 0.0f;
-            layer.roughness.textureIndex = 12 + i;
+            layer.roughness.textureIndex = textureBase + 8;
         }
     }
     auto layers = device.createBuffer({.size = sizeof(bindings), .usage = BufferUsageBits::Storage,
@@ -112,7 +123,7 @@ void runOpenPBRTerrainLayers(RHITestContext& context, Device& device, ResourceRe
     (*layers)->flush();
     (*layers)->unmap();
     auto texture = device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
-        .format = Format::RGBA32Sfloat, .width = 4, .height = 4});
+        .format = Format::RGBA32Sfloat, .width = 4, .height = 8});
     require(texture, "Terrain layer probe texture allocation failed");
     auto view = device.createTextureView(**texture, {.format = Format::RGBA32Sfloat});
     require(view, "Terrain layer probe texture view failed");
@@ -130,7 +141,7 @@ void runOpenPBRTerrainLayers(RHITestContext& context, Device& device, ResourceRe
         .newLayout = TextureLayout::TransferDestination, .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
     require(gpu.commands->synchronize({.textures = {&before, 1}}), "Terrain layer upload barrier failed");
     require((*upload)->slice().and_then([&](const auto& slice) {
-        return gpu.commands->copyBufferToTexture({.texture = texture->get(), .buffer = slice, .width = 4, .height = 4});
+        return gpu.commands->copyBufferToTexture({.texture = texture->get(), .buffer = slice, .width = 4, .height = 8});
     }), "Terrain layer texture upload failed");
     const TextureBarrierDesc after{.texture = texture->get(), .oldLayout = TextureLayout::TransferDestination,
         .newLayout = TextureLayout::ShaderRead, .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
@@ -147,20 +158,26 @@ void runOpenPBRTerrainLayers(RHITestContext& context, Device& device, ResourceRe
     output.invalidate();
     const auto* mapped = static_cast<const Float4*>(output.map());
     require(mapped != nullptr, "Terrain layer probe output mapping failed");
-    std::array<Float4, 10> results;
+    std::array<Float4, 16> results;
     std::copy_n(mapped, results.size(), results.begin());
     output.unmap();
-    const std::array<Float4, 5> expectedWeights{{
+    const std::array<std::array<float, 8>, 8> expectedWeights{{
         {0.1f, 0.1f, 0.3f, 0.5f}, {0, 0, 1, 0}, {0.2f, 0.6f, 0.2f, 0}, {0, 0, 1, 0}, {1, 0, 0, 0},
+        {0.05f / 1.5f, 0.05f / 1.5f, 0.15f / 1.5f, 0.25f / 1.5f, 0.1f / 1.5f, 0.2f / 1.5f, 0.3f / 1.5f, 0.4f / 1.5f},
+        {0, 0, 0, 0, 0, 0, 1, 0}, {0, 0, 0, 0, 1, 0, 0, 0},
     }};
-    const std::array<color::RGB, 4> normals{{{0.6f, 0, 0.8f}, {0, 0.8f, 0.6f}, {-0.6f, 0, 0.8f}, {0, -0.6f, 0.8f}}};
+    const std::array<color::RGB, 8> normals{{
+        {0.6f, 0, 0.8f}, {0, 0.8f, 0.6f}, {-0.6f, 0, 0.8f}, {0, -0.6f, 0.8f},
+        {0, 0.6f, 0.8f}, {0, -0.6f, 0.8f}, {0.8f, 0, 0.6f}, {-0.8f, 0, 0.6f},
+    }};
     float maxError = 0;
     for (size_t lane = 0; lane < expectedWeights.size(); ++lane) {
         Float4 baseRoughness{};
         Float4 normal{0, 0, 0, 1};
         for (size_t i = 0; i < normals.size(); ++i) {
             const float weight = expectedWeights[lane][i];
-            auto albedo = color::RGB{texels[4 + i][0], texels[4 + i][1], texels[4 + i][2]};
+            const size_t textureBase = i < 4 ? 4 + i : 16 + i;
+            auto albedo = color::RGB{texels[textureBase][0], texels[textureBase][1], texels[textureBase][2]};
             if (i != 1) {
                 for (float& channel : albedo) { channel = color::decodeSRGB(channel); }
             }
@@ -169,7 +186,7 @@ void runOpenPBRTerrainLayers(RHITestContext& context, Device& device, ResourceRe
                 baseRoughness[channel] += weight * albedo[channel];
                 normal[channel] += weight * normals[i][channel];
             }
-            baseRoughness[3] += weight * texels[12 + i][0];
+            baseRoughness[3] += weight * texels[textureBase + 8][0];
         }
         const auto length = std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
         for (size_t channel = 0; channel < 3; ++channel) { normal[channel] /= length; }
@@ -182,7 +199,7 @@ void runOpenPBRTerrainLayers(RHITestContext& context, Device& device, ResourceRe
         }
     }
     std::ofstream report(context.outputDirectory / "OpenPBRTerrainLayers.txt");
-    report << "cases=5 fourLayer=1 threeLayer=1 zeroDefault=2 alphaOnly=1 maxError=" << maxError << '\n';
+    report << "cases=8 legacy=5 paired=3 eightLayer=1 secondMapOnly=1 zeroDefault=3 maxError=" << maxError << '\n';
 }
 
 void runOpenPBRColorSlots(RHITestContext& context, Device& device, ResourceRegistry& registry,

@@ -57,7 +57,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sample", type=Path, help="Assembled terrain sample glTF")
     inputs = parser.add_mutually_exclusive_group(required=True)
-    inputs.add_argument("--layer-asset", type=Path, help="Houdini-authored Metallic.TerrainLayers JSON")
+    inputs.add_argument("--layer-asset", type=Path, help="Metallic.TerrainLayers or Ancient Rift Valley DCC source JSON")
     inputs.add_argument("--weight-map", type=Path, help="Legacy linear R OpenEXR rock weights")
     args = parser.parse_args()
     try:

@@ -498,8 +498,10 @@ TEST_F(MaterialAssets, TerrainLayerBindingsRoundTripAndKeepTextureSemantics)
     const auto& bindings = *sceneMaterial.terrainLayers;
     ASSERT_EQ(bindings.layers.size(), 2u);
     EXPECT_EQ(bindings.defaultLayerIndex, 1u);
-    EXPECT_EQ(bindings.weights.textureIndex, 0);
-    EXPECT_EQ(bindings.weights.colorMetadata.semantic, render::TextureSemantic::Data);
+    ASSERT_EQ(bindings.weightMaps.size(), 1u);
+    EXPECT_EQ(bindings.weightMaps[0].textureIndex, 0);
+    EXPECT_EQ(bindings.weightMaps[0].colorMetadata.semantic, render::TextureSemantic::Data);
+    EXPECT_EQ(bindings.layers[0].weightMap, 0u);
     EXPECT_EQ(bindings.layers[0].channel, 3u);
     EXPECT_EQ(bindings.layers[0].baseColor.colorMetadata, render::ksRGBColorTexture);
     EXPECT_EQ(bindings.layers[1].channel, 1u);
@@ -533,6 +535,68 @@ TEST_F(MaterialAssets, TerrainLayerBindingsRoundTripAndKeepTextureSemantics)
     parent.terrainLayers["defaultLayer"] = "grass";
     parent.terrainLayers["weights"] = {{"uri", "asset://0.png"}, {"colorSpace", "srgb"}};
     EXPECT_FALSE(library.resolve(parent, resolved, error));
+}
+
+TEST_F(MaterialAssets, PairedTerrainLayerBindingsValidateAndRoundTrip)
+{
+    definition.implementation = "OpenPBR.TerrainLayers";
+    write("Terrain.materialdef", serializeMaterialDefinition(definition));
+    MaterialAssetLibrary library(root);
+    auto asset = instance();
+    asset.definition = "asset://Terrain.materialdef";
+    asset.terrainLayers = {
+        {"weightMaps", Json::array({"asset://0.png", "asset://1.png"})},
+        {"defaultLayer", "layer6"}, {"layers", Json::array()},
+    };
+    for (uint32_t i = 0; i < 8; ++i) {
+        asset.terrainLayers["layers"].push_back({
+            {"name", "layer" + std::to_string(i)}, {"weightMap", i / 4}, {"channel", std::string(1, "RGBA"[i % 4])},
+            {"baseColor", "asset://2.png"}, {"normal", "asset://3.png"}, {"roughness", "asset://4.png"},
+        });
+    }
+    ResolvedMaterialInstance resolved;
+    ASSERT_TRUE(library.resolve(asset, resolved, error)) << error;
+    const auto resolver = [](std::string_view uri) { return static_cast<int32_t>(uri[8] - '0'); };
+    scene::RenderMaterial material;
+    ASSERT_TRUE(lowerMaterialInstance(resolved, resolver, material, error)) << error;
+    ASSERT_TRUE(material.terrainLayers);
+    const auto& bindings = *material.terrainLayers;
+    ASSERT_EQ(bindings.weightMaps.size(), 2u);
+    ASSERT_EQ(bindings.layers.size(), 8u);
+    EXPECT_EQ(bindings.weightMaps[0].textureIndex, 0);
+    EXPECT_EQ(bindings.weightMaps[1].textureIndex, 1);
+    EXPECT_EQ(bindings.weightMaps[1].colorMetadata.semantic, render::TextureSemantic::Data);
+    EXPECT_EQ(bindings.defaultLayerIndex, 6u);
+    EXPECT_EQ(bindings.layers[0].channel, bindings.layers[4].channel);
+    EXPECT_EQ(bindings.layers[0].weightMap, 0u);
+    EXPECT_EQ(bindings.layers[4].weightMap, 1u);
+
+    MaterialInstance exported;
+    ASSERT_TRUE(createMaterialInstance(material, asset.definition, resolved.definition,
+        [](std::string_view, int32_t index) { return "asset://" + std::to_string(index) + ".png"; }, exported, error)) << error;
+    MaterialInstance decoded;
+    ASSERT_TRUE(deserializeMaterialInstance(serializeMaterialInstance(exported), decoded, error)) << error;
+    ASSERT_TRUE(library.resolve(decoded, resolved, error)) << error;
+    scene::RenderMaterial reloaded;
+    ASSERT_TRUE(lowerMaterialInstance(resolved, resolver, reloaded, error)) << error;
+    ASSERT_TRUE(reloaded.terrainLayers);
+    EXPECT_EQ(*reloaded.terrainLayers, bindings);
+
+    auto invalid = asset;
+    invalid.terrainLayers["layers"][4]["weightMap"] = 0;
+    EXPECT_FALSE(library.resolve(invalid, resolved, error));
+    invalid = asset;
+    invalid.terrainLayers["layers"][4]["weightMap"] = 2;
+    EXPECT_FALSE(library.resolve(invalid, resolved, error));
+    invalid = asset;
+    invalid.terrainLayers["layers"][4].erase("weightMap");
+    EXPECT_FALSE(library.resolve(invalid, resolved, error));
+    invalid = asset;
+    invalid.terrainLayers["weights"] = "asset://0.png";
+    EXPECT_FALSE(library.resolve(invalid, resolved, error));
+    invalid = asset;
+    invalid.terrainLayers["weightMaps"][1] = {{"uri", "asset://1.png"}, {"transform", {2, 0, 0, 0, 1, 0}}};
+    EXPECT_FALSE(library.resolve(invalid, resolved, error));
 }
 
 TEST_F(MaterialAssets, RejectsCyclesMissingParentsAndDefinitionMismatch)
@@ -801,12 +865,46 @@ TEST_F(MaterialAssets, TerrainLayerTexturePublicationIsTransactional)
     ASSERT_TRUE(document.reloadMaterialAsset(0, error)) << error;
     const auto reimported = document.materials()[0].terrainLayers;
     ASSERT_TRUE(reimported);
-    EXPECT_NE(reimported->weights.textureIndex, bindings->weights.textureIndex);
+    EXPECT_NE(reimported->weightMaps[0].textureIndex, bindings->weightMaps[0].textureIndex);
     EXPECT_EQ(reimported->layers[0].baseColor.textureIndex, bindings->layers[0].baseColor.textureIndex);
     EXPECT_EQ(reimported->layers[0].normal.textureIndex, bindings->layers[0].normal.textureIndex);
     EXPECT_EQ(reimported->layers[0].roughness.textureIndex, bindings->layers[0].roughness.textureIndex);
     EXPECT_EQ(document.textures().size(), count + 5);
     EXPECT_NE(document.resourceIdentity(), published);
+
+    const auto reimportedIdentity = document.resourceIdentity();
+    const auto reimportedRevision = document.materialRevision();
+    asset.terrainLayers.erase("weights");
+    asset.terrainLayers["weightMaps"] = Json::array({"asset://Weights-reimported.png", "asset://Weights2.png"});
+    asset.terrainLayers["layers"][0]["weightMap"] = 1;
+    ASSERT_TRUE(library.save("asset://Terrain.material", asset, error)) << error;
+    EXPECT_FALSE(document.reloadMaterialAsset(0, error));
+    EXPECT_EQ(document.materials()[0].terrainLayers, reimported);
+    EXPECT_EQ(document.resourceIdentity(), reimportedIdentity);
+    EXPECT_EQ(document.materialRevision(), reimportedRevision);
+
+    write("Weights2.png", "Second CPU resource identity fixture");
+    ASSERT_TRUE(document.reloadMaterialAsset(0, error)) << error;
+    const auto paired = document.materials()[0].terrainLayers;
+    ASSERT_TRUE(paired);
+    ASSERT_EQ(paired->weightMaps.size(), 2u);
+    EXPECT_EQ(paired->weightMaps[0], reimported->weightMaps[0]);
+    EXPECT_EQ(paired->layers[0].weightMap, 1u);
+    EXPECT_NE(document.resourceIdentity(), reimportedIdentity);
+    EXPECT_EQ(document.textures().size(), count + 6);
+
+    const auto pairedIdentity = document.resourceIdentity();
+    write("Weights2-reimported.png", "Changed second CPU resource identity fixture");
+    asset.terrainLayers["weightMaps"][1] = "asset://Weights2-reimported.png";
+    ASSERT_TRUE(library.save("asset://Terrain.material", asset, error)) << error;
+    ASSERT_TRUE(document.reloadMaterialAsset(0, error)) << error;
+    const auto pairedReimport = document.materials()[0].terrainLayers;
+    ASSERT_TRUE(pairedReimport);
+    ASSERT_EQ(pairedReimport->weightMaps.size(), 2u);
+    EXPECT_EQ(pairedReimport->weightMaps[0], paired->weightMaps[0]);
+    EXPECT_NE(pairedReimport->weightMaps[1].textureIndex, paired->weightMaps[1].textureIndex);
+    EXPECT_EQ(pairedReimport->layers, paired->layers);
+    EXPECT_NE(document.resourceIdentity(), pairedIdentity);
 }
 
 } // namespace

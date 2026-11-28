@@ -209,6 +209,7 @@ struct RenderTextureInfo {
 
 struct RenderTerrainMaterialLayer {
     std::string name;
+    uint32_t weightMap = 0;
     uint32_t channel = 0;
     RenderTextureInfo baseColor{.colorMetadata = render::ksRGBColorTexture};
     RenderTextureInfo normal;
@@ -217,7 +218,7 @@ struct RenderTerrainMaterialLayer {
 };
 
 struct RenderTerrainLayerBindings {
-    RenderTextureInfo weights;
+    std::vector<RenderTextureInfo> weightMaps;
     uint32_t defaultLayerIndex = 0;
     std::vector<RenderTerrainMaterialLayer> layers;
     bool operator==(const RenderTerrainLayerBindings&) const = default;
