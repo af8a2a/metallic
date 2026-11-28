@@ -22,6 +22,71 @@
 
 namespace metallic {
 
+bool EditorApplication::runTerrainRoamSmokeTest()
+{
+    const auto* heightField = scene_.terrainHeightField();
+    const float clearance = scene_.terrainCameraClearance();
+    if (!heightField || clearance != 2.0f || scene_.supportsTerrainPlacement()) {
+        spdlog::error("[Smoke Terrain Roam] Expected the regional heightfield and 2-unit camera clearance");
+        return false;
+    }
+
+    // Eye positions from the recorded flight over the west slope and perimeter.
+    const float3 eyes[] = {
+        {-61.451622f, 12.207044f, -107.289459f},
+        {-61.365829f, 13.681966f, -114.579254f},
+        {-61.378311f, 13.466945f, -113.516205f},
+        {-61.318382f, 14.497280f, -118.608574f},
+        {-61.251328f, 15.650219f, -124.306931f},
+        {-61.168571f, 17.073086f, -131.339432f},
+    };
+    const float3 forward(-0.011532f, -0.198272f, 0.979957f);
+    uint32_t penetrations = 0;
+    uint32_t outside = 0;
+    for (const auto& eye : eyes) {
+        auto properties = viewportCameraProperties();
+        auto& camera = properties["camera"];
+        const auto center = eye + forward;
+        camera["eye"] = {eye.x, eye.y, eye.z};
+        camera["center"] = {center.x, center.y, center.z};
+        camera["up"] = {-0.002259f, 0.980142f, 0.198282f};
+        camera["fovDegrees"] = 38.0f;
+        camera["znear"] = 0.5f;
+        camera["zfar"] = 10000.0f;
+        const auto surface = heightField->sample(eye.x, eye.z);
+        const float expectedY = surface ? std::max(eye.y, surface->position.y + clearance) : eye.y;
+        const bool belowSurface = surface && eye.y < surface->position.y;
+        penetrations += belowSurface ? 1u : 0u;
+        outside += !surface ? 1u : 0u;
+
+        applyViewportCameraProperties(std::move(properties), nullptr, true);
+        const auto& adjusted = viewportView_.camera();
+        const float3 actualEye(adjusted.eye[0], adjusted.eye[1], adjusted.eye[2]);
+        const float3 actualCenter(adjusted.center[0], adjusted.center[1], adjusted.center[2]);
+        if (length(actualEye - float3(eye.x, expectedY, eye.z)) > 1e-4f ||
+            length((actualCenter - actualEye) - forward) > 1e-4f) {
+            spdlog::error("[Smoke Terrain Roam] Invalid constrained camera at X={}, Z={}", eye.x, eye.z);
+            return false;
+        }
+        spdlog::info("[Smoke Terrain Roam] X={} Z={} eyeY={} adjustedY={}",
+            eye.x, eye.z, eye.y, actualEye.y);
+        auto profileFrame = profiler_.beginFrame();
+        if (!waitForFrameSlotBeforeInput() || !renderFrame()) { return false; }
+        if (belowSurface && penetrations == 3) {
+            const char* capture = std::getenv("METALLIC_SMOKE_TEST_CAPTURE");
+            if (capture && *capture && (!viewportPreviewValid_ || !exportSmokeMainViewport(capture))) {
+                spdlog::error("[Smoke Terrain Roam] Could not capture the corrected near-surface pose");
+                return false;
+            }
+        }
+    }
+    if (penetrations != 3 || outside != 1 || !viewportPreviewValid_) {
+        spdlog::error("[Smoke Terrain Roam] Expected three below-surface poses and one pose outside the terrain");
+        return false;
+    }
+    return true;
+}
+
 bool EditorApplication::runTerrainPlacementSmokeTest()
 {
     const auto expect = [](bool condition, const char* message) {

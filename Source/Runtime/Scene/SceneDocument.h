@@ -74,6 +74,8 @@ public:
     const LightingSettings& lighting() const;
 
     const TerrainHeightField* terrainHeightField() const { return heightField_ ? &*heightField_ : nullptr; }
+    float terrainCameraClearance() const { return terrainCameraClearance_; }
+    bool supportsTerrainPlacement() const { return terrainPrototypes_.front() != kNullSceneEntity; }
     const std::vector<TerrainPlacement>& terrainPlacements() const { return terrainPlacements_; }
     const TerrainPlacement* terrainPlacementForObject(SceneEntity object) const;
     SceneEntity terrainPlacementObject(uint64_t id) const;
@@ -113,6 +115,7 @@ private:
     std::filesystem::path documentPath_;
     std::filesystem::path heightFieldPath_;
     std::optional<TerrainHeightField> heightField_;
+    float terrainCameraClearance_ = 0.0f;
     std::array<std::string, 2> terrainPrototypeNames_;
     std::array<SceneEntity, 2> terrainPrototypes_{kNullSceneEntity, kNullSceneEntity};
     std::vector<TerrainPlacement> terrainPlacements_;

@@ -185,7 +185,9 @@ if(Python3_Interpreter_FOUND)
 
     set(METALLIC_TERRAIN_BLOCKS_8X8_DIRECTORY "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/TerrainBlocks8x8")
     set(METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT "${METALLIC_TERRAIN_BLOCKS_8X8_DIRECTORY}/terrain_blocks_8x8_height")
-    add_metallic_terrain_block_height("${METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT}" 8)
+    set(METALLIC_TERRAIN_BLOCKS_8X8_QUERY "${METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT}.heightfield.bin")
+    add_metallic_terrain_block_height("${METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT}" 8
+        HEIGHT_FIELD "${METALLIC_TERRAIN_BLOCKS_8X8_QUERY}")
     add_metallic_terrain_vsm_sample(MetallicTerrainBlocks8x8VSMSample MetallicTerrainBlocks8x8VSMSmoke
         gpu-driven-terrain-blocks-8x8-vsm "${METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT}"
         "${METALLIC_TERRAIN_BLOCKS_8X8_DIRECTORY}/terrain_blocks_8x8")
@@ -219,11 +221,11 @@ if(Python3_Interpreter_FOUND)
             "${terrain_regions_dir}/terrain_region_east.gltf" "${terrain_regions_dir}/terrain_region_east.bin"
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainRegions.py"
             "${METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT}.gltf" --output-directory "${terrain_regions_dir}"
-            --lighting "${terrain_regions_lighting}"
+            --lighting "${terrain_regions_lighting}" --height-field "${METALLIC_TERRAIN_BLOCKS_8X8_QUERY}"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainRegions.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainVSMSample.py" "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainMesh.py"
             "${METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT}.gltf" "${METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT}.bin"
-            "${terrain_regions_lighting}"
+            "${terrain_regions_lighting}" "${METALLIC_TERRAIN_BLOCKS_8X8_QUERY}"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         COMMENT "Splitting the 8x8 terrain into two adjacent regions"
         VERBATIM
@@ -257,12 +259,14 @@ if(Python3_Interpreter_FOUND)
         VERBATIM
     )
     add_custom_target(MetallicTerrainRegionsSample DEPENDS "${terrain_regions_cook}" "${terrain_regions_receipt}")
+    add_custom_target(MetallicPCGWorld DEPENDS LookDev MetallicTerrainRegionsSample)
     add_custom_target(MetallicTerrainRegionsSmoke
         COMMAND ${CMAKE_COMMAND} -E env METALLIC_SMOKE_TEST_HIDDEN=1
+            METALLIC_SMOKE_TEST_TERRAIN_ROAM=1
             METALLIC_SMOKE_TEST_SAMPLE=gpu-driven-terrain-regions-vsm "$<TARGET_FILE:Metallic>" --smoke-test
         DEPENDS MetallicTerrainRegionsSample
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        COMMENT "Rendering the gpu-driven-terrain-regions-vsm smoke frame"
+        COMMENT "Replaying the Terrain Regions viewport route over the west slope"
         VERBATIM
     )
 else()

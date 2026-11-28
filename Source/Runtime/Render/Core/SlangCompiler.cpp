@@ -1249,14 +1249,17 @@ Result<ShaderCompileResult> compileSlangShaderToSpirvSnapshotAttempt(
         }
         outResult.diagnostics = log;
         metrics.totalTimeNanoseconds = elapsed(requestStart);
-        spdlog::info(
-            "[ShaderCache] Loaded {}.{} from '{}' (optimization={}, postprocess={}, totalMs={:.3f}, producerMs={:.3f}, sourceMs={:.3f}, epochReused={}, producerAcquireMs={:.3f}, epochAcquireMs={:.3f}, epochCaptureMs={:.3f}, lookupMs={:.3f})",
-            desc.moduleName, desc.entryPointName, cachePath.string(), slangShaderOptimizationLevelName(*effectiveOptimization),
-            slangShaderPostprocessModeName(*effectivePostprocess), double(metrics.totalTimeNanoseconds) / 1e6,
-            double(metrics.producerValidationTimeNanoseconds) / 1e6, double(metrics.sourceValidationTimeNanoseconds) / 1e6,
-            metrics.sourceEpochReused, double(metrics.producerAcquireTimeNanoseconds) / 1e6,
-            double(metrics.sourceEpochAcquireTimeNanoseconds) / 1e6, double(metrics.sourceEpochCaptureTimeNanoseconds) / 1e6,
-            double(metrics.cacheLookupTimeNanoseconds) / 1e6);
+        const auto cacheHitLogLevel = cacheOptions.logCacheHitsAtInfo ? spdlog::level::info : spdlog::level::debug;
+        if (spdlog::should_log(cacheHitLogLevel)) {
+            spdlog::log(cacheHitLogLevel,
+                "[ShaderCache] Loaded {}.{} from '{}' (optimization={}, postprocess={}, totalMs={:.3f}, producerMs={:.3f}, sourceMs={:.3f}, epochReused={}, producerAcquireMs={:.3f}, epochAcquireMs={:.3f}, epochCaptureMs={:.3f}, lookupMs={:.3f})",
+                desc.moduleName, desc.entryPointName, cachePath.string(), slangShaderOptimizationLevelName(*effectiveOptimization),
+                slangShaderPostprocessModeName(*effectivePostprocess), double(metrics.totalTimeNanoseconds) / 1e6,
+                double(metrics.producerValidationTimeNanoseconds) / 1e6, double(metrics.sourceValidationTimeNanoseconds) / 1e6,
+                metrics.sourceEpochReused, double(metrics.producerAcquireTimeNanoseconds) / 1e6,
+                double(metrics.sourceEpochAcquireTimeNanoseconds) / 1e6, double(metrics.sourceEpochCaptureTimeNanoseconds) / 1e6,
+                double(metrics.cacheLookupTimeNanoseconds) / 1e6);
+        }
         return outResult;
     }
 

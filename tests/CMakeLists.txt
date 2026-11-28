@@ -857,6 +857,10 @@ else()
     find_package(Python3 QUIET COMPONENTS Interpreter)
 endif()
 if(Python3_Interpreter_FOUND)
+    add_test(NAME MetallicTerrainLayerAssetTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tools/TestTerrainLayerAsset.py")
+    set_tests_properties(MetallicTerrainLayerAssetTests PROPERTIES
+        LABELS "terrain;cpu" SKIP_RETURN_CODE 77 TIMEOUT 30)
     function(add_metallic_terrain_streaming_regression name tiles sample output timeout)
         if(NOT TARGET ${sample})
             return()

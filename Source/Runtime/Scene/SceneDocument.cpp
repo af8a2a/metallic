@@ -1522,6 +1522,7 @@ void SceneDocument::clear()
     documentPath_.clear();
     heightFieldPath_.clear();
     heightField_.reset();
+    terrainCameraClearance_ = 0.0f;
     terrainPrototypeNames_ = {};
     terrainPrototypes_.fill(kNullSceneEntity);
     terrainPlacements_.clear();
@@ -1611,7 +1612,7 @@ std::optional<uint64_t> SceneDocument::addTerrainPlacement(TerrainPlacementKind 
     std::string& error)
 {
     error.clear();
-    if (!heightField_ || static_cast<size_t>(kind) >= terrainPrototypes_.size()) {
+    if (!supportsTerrainPlacement() || static_cast<size_t>(kind) >= terrainPrototypes_.size()) {
         error = "The scene has no terrain placement prototype for this kind.";
         return std::nullopt;
     }
@@ -2747,21 +2748,36 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
         if (compositionDocument_ || terrain == document.end() || !terrain->is_object() ||
             !terrain->contains("heightField") || !terrain->at("heightField").is_string() ||
             terrain->at("heightField").get_ref<const std::string&>().empty()) {
-            documentWarning_ = "Terrain placements require a world-aligned heightfield in a single-source scene.";
+            documentWarning_ = "Terrain settings require a world-aligned heightfield in a single-source scene.";
             return false;
         }
-        std::array<std::string, 2> prototypes;
-        for (size_t kind = 0; kind < prototypes.size(); ++kind) {
-            const auto name = terrain->find(kTerrainPrototypeKeys[kind]);
-            if (name == terrain->end() || !name->is_string() || name->get_ref<const std::string&>().empty()) {
-                documentWarning_ = std::string("Missing terrain prototype name: ") + kTerrainPrototypeKeys[kind];
+        float clearance = 0.0f;
+        if (const auto value = terrain->find("cameraClearance"); value != terrain->end()) {
+            if (!value->is_number()) {
+                documentWarning_ = "Terrain camera clearance must be finite and nonnegative.";
                 return false;
             }
-            prototypes[kind] = name->get<std::string>();
+            clearance = value->get<float>();
+            if (!std::isfinite(clearance) || clearance < 0.0f) {
+                documentWarning_ = "Terrain camera clearance must be finite and nonnegative.";
+                return false;
+            }
+        }
+        std::array<std::string, 2> prototypes;
+        const auto values = document.find("terrainPlacements");
+        if (values != document.end() ||
+            terrain->contains(kTerrainPrototypeKeys[0]) || terrain->contains(kTerrainPrototypeKeys[1])) {
+            for (size_t kind = 0; kind < prototypes.size(); ++kind) {
+                const auto name = terrain->find(kTerrainPrototypeKeys[kind]);
+                if (name == terrain->end() || !name->is_string() || name->get_ref<const std::string&>().empty()) {
+                    documentWarning_ = std::string("Missing terrain prototype name: ") + kTerrainPrototypeKeys[kind];
+                    return false;
+                }
+                prototypes[kind] = name->get<std::string>();
+            }
         }
         std::vector<TerrainPlacement> placements;
-        if (const auto values = document.find("terrainPlacements"); values != document.end() &&
-            !readTerrainPlacements(*values, placements)) {
+        if (values != document.end() && !readTerrainPlacements(*values, placements)) {
             documentWarning_ = "Invalid terrain placement IDs, kinds, or world XZ anchors.";
             return false;
         }
@@ -2769,6 +2785,7 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
         if (!loadTerrain(heightPath, std::move(prototypes), std::move(placements))) {
             return false;
         }
+        terrainCameraClearance_ = clearance;
     }
     sidecarLoaded_ = true;
     return true;
@@ -2785,6 +2802,7 @@ bool SceneDocument::loadTerrain(const std::filesystem::path& heightField, std::a
         return false;
     }
     terrainSourceNodeCount_ = nodes().size();
+    if (prototypes.front().empty()) { return true; }
     for (size_t kind = 0; kind < terrainPrototypes_.size(); ++kind) {
         for (size_t index = 0; index < terrainSourceNodeCount_; ++index) {
             if (nodes()[index].name != prototypes[kind]) { continue; }
@@ -2851,7 +2869,7 @@ bool SceneDocument::save(std::string& message)
     }
 
     nlohmann::json nodeOverrides = nlohmann::json::array();
-    const size_t authoredNodeCount = heightField_ ? terrainSourceNodeCount_ : nodes().size();
+    const size_t authoredNodeCount = supportsTerrainPlacement() ? terrainSourceNodeCount_ : nodes().size();
     for (size_t nodeIndex = 0; nodeIndex < authoredNodeCount; ++nodeIndex) {
         const SceneNode& node = nodes()[nodeIndex];
         nlohmann::json nodeOverride;
@@ -3106,6 +3124,9 @@ bool SceneDocument::save(std::string& message)
         std::error_code relativeError;
         const auto relativeHeightPath = std::filesystem::relative(heightFieldPath_, documentPath_.parent_path(), relativeError);
         document["terrain"]["heightField"] = (relativeError || relativeHeightPath.empty() ? heightFieldPath_ : relativeHeightPath).generic_string();
+        if (terrainCameraClearance_ > 0.0f) { document["terrain"]["cameraClearance"] = terrainCameraClearance_; }
+    }
+    if (supportsTerrainPlacement()) {
         for (size_t kind = 0; kind < terrainPrototypeNames_.size(); ++kind) {
             document["terrain"][kTerrainPrototypeKeys[kind]] = terrainPrototypeNames_[kind];
         }

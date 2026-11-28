@@ -137,6 +137,7 @@ struct SlangShaderCacheOptions {
     // Diagnostic output only. A cache hit does not invoke the compiler or
     // fabricate a per-pass report. Use a cache miss for detailed profiling.
     bool reportDetailedCompilerPerf = false;
+    bool logCacheHitsAtInfo = true;
 };
 
 struct SlangSourcePreparationMetrics {

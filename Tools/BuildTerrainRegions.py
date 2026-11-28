@@ -79,7 +79,8 @@ def make_region(source, source_payload, terrain, side, x_begin, x_end):
         "scenes": [{"name": name, "nodes": list(range(len(nodes)))}],
         "nodes": nodes,
         "meshes": meshes,
-        "materials": [{**material, "name": f"Terrain Region {side.title()}"}],
+        # Grazing VSM rays can enter the reverse face of an open heightfield.
+        "materials": [{**material, "name": f"Terrain Region {side.title()}", "doubleSided": True}],
         "buffers": [{"uri": f"{name}.bin", "byteLength": len(payload)}],
         "bufferViews": views,
         "accessors": accessors,
@@ -147,12 +148,20 @@ def combine_regions(west, east):
     return gltf
 
 
-def make_sample_scene(aggregate, aggregate_path, lighting):
-    scene = json.loads(lighting.read_text(encoding="utf-8"))
+def make_sample_scene(aggregate, aggregate_path, lighting, height_field):
+    if lighting is None:
+        scene = {"version": 3, "sceneIndex": 0, "nodes": []}
+    else:
+        scene = json.loads(lighting.read_text(encoding="utf-8"))
+        environment = scene.get("world", {}).get("environment", {})
+        if environment.get("path"):
+            environment["path"] = relative_path(lighting.parent / environment["path"], aggregate_path.parent)
     scene["source"] = aggregate_path.name
-    environment = scene.get("world", {}).get("environment", {})
-    if environment.get("path"):
-        environment["path"] = relative_path(lighting.parent / environment["path"], aggregate_path.parent)
+    if height_field is not None:
+        scene["terrain"] = {
+            "heightField": relative_path(height_field, aggregate_path.parent),
+            "cameraClearance": 2.0,
+        }
 
     terrain = aggregate["extras"]["metallicTerrainRegions"]
     split_x = terrain["splitX"]
@@ -168,7 +177,8 @@ def make_sample_scene(aggregate, aggregate_path, lighting):
     return scene
 
 
-def build_regions(path: Path, directory: Path, lighting: Path | None = None) -> None:
+def build_regions(path: Path, directory: Path, lighting: Path | None = None,
+                  height_field: Path | None = None) -> None:
     source = json.loads(path.read_text(encoding="utf-8"))
     if source["asset"].get("generator") != "Metallic Tools/BuildTerrainMesh.py":
         raise TerrainBuildError("expected the tiled height glTF from BuildTerrainMesh.py")
@@ -198,12 +208,18 @@ def build_regions(path: Path, directory: Path, lighting: Path | None = None) -> 
         name = region["scenes"][0]["name"]
         outputs.extend((directory / f"{name}.gltf", directory / region["buffers"][0]["uri"]))
     inputs = {path.resolve(), binary.resolve()}
-    if lighting is not None:
+    has_sidecar = lighting is not None or height_field is not None
+    if has_sidecar:
         outputs.append(sidecar)
+    if lighting is not None:
         inputs.add(lighting.resolve())
+    if height_field is not None:
+        if not height_field.is_file():
+            raise TerrainBuildError(f"missing source terrain heightfield: '{height_field}'")
+        inputs.add(height_field.resolve())
     if any(output.resolve() in inputs for output in outputs):
         raise TerrainBuildError("a region output would overwrite the source terrain")
-    scene = make_sample_scene(aggregate, aggregate_path, lighting) if lighting is not None else None
+    scene = make_sample_scene(aggregate, aggregate_path, lighting, height_field) if has_sidecar else None
 
     directory.mkdir(parents=True, exist_ok=True)
     for region, region_payload in regions:
@@ -226,9 +242,10 @@ def main() -> int:
     parser.add_argument("gltf", type=Path, help="tiled glTF from BuildTerrainMesh.py")
     parser.add_argument("--output-directory", type=Path, required=True)
     parser.add_argument("--lighting", type=Path, help="Metallic scene template for the aggregate editor sample")
+    parser.add_argument("--height-field", type=Path, help="World-space source height grid for camera clearance")
     args = parser.parse_args()
     try:
-        build_regions(args.gltf, args.output_directory, args.lighting)
+        build_regions(args.gltf, args.output_directory, args.lighting, args.height_field)
     except (OSError, TerrainBuildError, ValueError, KeyError, IndexError, TypeError) as error:
         print(f"Terrain region build failed: {error}", file=sys.stderr)
         return 1

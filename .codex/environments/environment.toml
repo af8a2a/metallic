@@ -10,6 +10,11 @@ icon = "run"
 command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/RunMetallic.ps1 -Target Metallic"
 
 [[actions]]
+name = "MetallicPCGWorld"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/RunMetallic.ps1' -Target MetallicPCGWorld -ExecutablePath 'Source/LookDev.exe' -ProgramArguments @('--sample', 'gpu-driven-terrain-regions-vsm')\""
+
+[[actions]]
 name = "Cornell Box - Path Tracing"
 icon = "run"
 command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/RunMetallic.ps1' -Target LookDev -ProgramArguments @('--sample', 'cornell-box-path-tracing')\""

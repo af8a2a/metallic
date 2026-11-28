@@ -1,4 +1,5 @@
 #include "Runtime/Scene/MeshletStreamAsset.h"
+#include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Scene/ScenePicker.h"
 #include "Runtime/Scene/TerrainHeightField.h"
 
@@ -181,6 +182,41 @@ TEST_F(TerrainHeightFieldAsset, ValidatesSidecarVersionSizeAndFiniteHeights)
     words.back() = std::bit_cast<uint32_t>(std::numeric_limits<float>::infinity());
     write(words.size());
     EXPECT_FALSE(TerrainHeightField::load(path, error));
+}
+
+TEST_F(TerrainHeightFieldAsset, RoundTripsNavigationHeightfieldWithoutPlacementPrototypes)
+{
+    const auto gltf = directory_ / "Terrain.gltf";
+    const auto heightPath = directory_ / "Terrain.heightfield";
+    constexpr std::array<uint32_t, 12> words{0x4648544Du, 1, 2, 2, 0, 0,
+        std::bit_cast<uint32_t>(1.0f), std::bit_cast<uint32_t>(1.0f),
+        std::bit_cast<uint32_t>(4.0f), std::bit_cast<uint32_t>(4.0f),
+        std::bit_cast<uint32_t>(4.0f), std::bit_cast<uint32_t>(4.0f)};
+    {
+        std::ofstream file(heightPath, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(words.data()), sizeof(words));
+        ASSERT_TRUE(file);
+    }
+    std::ofstream(gltf) << R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"Terrain"}]})";
+    const auto sidecar = SceneDocument::sidecarPathForSource(gltf);
+    std::ofstream(sidecar) << nlohmann::json{{"version", 3}, {"source", gltf.filename().string()}, {"sceneIndex", 0},
+        {"terrain", {{"heightField", heightPath.filename().string()}, {"cameraClearance", 2.0}}}};
+
+    SceneDocument document;
+    ASSERT_TRUE(document.load(sidecar)) << document.documentWarning();
+    ASSERT_TRUE(document.terrainHeightField());
+    EXPECT_FLOAT_EQ(document.terrainHeightField()->sample(0.5f, 0.5f)->position.y, 4.0f);
+    EXPECT_FLOAT_EQ(document.terrainCameraClearance(), 2.0f);
+    EXPECT_FALSE(document.supportsTerrainPlacement());
+    std::string message;
+    EXPECT_FALSE(document.addTerrainPlacement(TerrainPlacementKind::Rock, 0.5f, 0.5f, message));
+    ASSERT_TRUE(document.save(message)) << message;
+
+    SceneDocument reloaded;
+    ASSERT_TRUE(reloaded.load(sidecar)) << reloaded.documentWarning();
+    ASSERT_TRUE(reloaded.terrainHeightField());
+    EXPECT_FLOAT_EQ(reloaded.terrainCameraClearance(), 2.0f);
+    EXPECT_FALSE(reloaded.supportsTerrainPlacement());
 }
 
 TEST_F(TerrainHeightFieldAsset, MatchesSourcePickingAndCookedLOD0Triangles)

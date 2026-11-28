@@ -82,7 +82,7 @@ Result<std::shared_ptr<Buffer>> VirtualShadowMaps::aggregateLODStatistics(Device
     constexpr const char* entry = "vsmAggregateLODStatisticsMain";
     auto shader = ShaderRegistry::instance().getShader({
         .moduleName = "Features/VirtualShadowMaps/VirtualShadowMapLODStatistics", .entryPointName = entry,
-        .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, log);
+        .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, {.logCacheHitsAtInfo = false}, log);
     if (!shader) { return std::unexpected(shader.error()); }
     auto module = ShaderRegistry::instance().getShaderModule(device, {.spirv = shader->spirv, .debugName = entry});
     if (!module) { return std::unexpected(module.error()); }

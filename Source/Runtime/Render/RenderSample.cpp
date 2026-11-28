@@ -1153,9 +1153,21 @@ public:
         properties["initialStreamRegions"] = nlohmann::json::array({0});
         properties["geometryRegionLoadDistance"] = 44.0;
         properties["geometryRegionUnloadDistance"] = 56.0;
-        properties["maxResidentPages"] = 80;
+        // Fits detail pages from both independent cooks during overlap.
+        properties["maxResidentPages"] = 512;
+        // Keep the receiver surface close to the finely selected VSM casters.
+        properties["lodPixelError"] = 0.05f;
         properties["compactShadingAttributes"] = false;
         graph.setNodeProperties(visibility->id, std::move(properties));
+        const auto* shadows = graph.findNode("Shadows");
+        if (shadows == nullptr || shadows->type != "VirtualShadowMapLightsPass") {
+            outMessage = "Terrain Regions requires the VSM lights pass";
+            return false;
+        }
+        auto shadowProperties = shadows->properties;
+        // Allow for PCF receiver-plane error across steep heightfield facets.
+        shadowProperties["shadowBias"] = 0.008f;
+        graph.setNodeProperties(shadows->id, std::move(shadowProperties));
         return true;
     }
 };

@@ -23,6 +23,15 @@ def write_png(path: Path, values: np.ndarray) -> None:
         write_atomic(path, stream.getvalue())
 
 
+def mirror_weight_map(weights: np.ndarray) -> np.ndarray:
+    mirrored = np.concatenate((weights, weights[:, ::-1]), axis=1)
+    return np.concatenate((mirrored, mirrored[::-1]), axis=0)
+
+
+def weight_uv_transform(columns: int, rows: int) -> tuple[float, float, float, float]:
+    return (columns - 1) / (2 * columns), (rows - 1) / (2 * rows), 0.25 / columns, 0.25 / rows
+
+
 def layer_pixels(name: str) -> tuple[np.ndarray, np.ndarray]:
     # Integer frequencies make the generated detail maps repeat at every mip.
     axis = (np.arange(TEXTURE_SIZE, dtype=np.float32) + 0.5) * (2 * np.pi / TEXTURE_SIZE)
@@ -108,12 +117,9 @@ def build_layer_material(output: Path, weight_path: Path, terrain: dict) -> tupl
     # Mirroring the global map keeps filtering at the outer heightfield edges
     # local with the existing repeating sampler. Terrain UV 0 and 1 address the
     # first and last original texel centers in the mirrored texture.
-    mirrored = np.concatenate((weight, weight[:, ::-1]), axis=1)
-    mirrored = np.concatenate((mirrored, mirrored[::-1]), axis=0)
     weight_name = f"{stem}_weight.png"
-    write_png(output.with_name(weight_name), mirrored)
-    resources["occlusionTexture"] = resource(weight_name, (columns - 1) / (2 * columns), (rows - 1) / (2 * rows),
-                                              0.25 / columns, 0.25 / rows)
+    write_png(output.with_name(weight_name), mirror_weight_map(weight))
+    resources["occlusionTexture"] = resource(weight_name, *weight_uv_transform(columns, rows))
 
     definition = output.with_suffix(".materialdef")
     instance = output.with_suffix(".material")

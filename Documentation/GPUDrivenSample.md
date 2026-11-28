@@ -180,6 +180,35 @@ python -B Tools/ExportTerrainWeight.py Asset/simple_terrain_height.exr `
 
 第 84 帧在 272 页满额时采到 87 对材质带内的 LOD 2/3 跨边像素。近景、远景和混合 LOD 的底色与粗糙度均通过世界坐标参考比较，两层法线均产生了可测的映射结果。另对烘焙页解码，480 条共享边和 768 次 LOD 细化替换的世界位置、法线、UV0 和切线均与源数据一致。
 
+### Houdini RGBA 地形层资产
+
+将 Houdini 的层遮罩导出为单张线性 OpenEXR，声明使用的 `R`、`G`、`B`、`A` 通道。每个通道是独立的 HALF 或 FLOAT 权重，取值为 `[0, 1]`。权重图的 `dataWindow`（含原点）和行方向与源高度图一致，导入时从烘焙地形读取 `flipZ` 并应用一次。
+
+在 EXR 旁保存版本为 `1` 的 `Metallic.TerrainLayers` JSON。每层用一个稳定的名字和独占的 RGBA 通道，层名在忽略大小写时也须唯一。调整层列表顺序时沿用已有的名字和通道，`defaultLayer` 填写某个已声明的完整层名。标量 `worldTileSize` 同时用于 X/Z，`[x, z]` 分别指定两个方向的世界平铺周期。输入贴图路径相对于这份 JSON。
+
+```json
+{
+  "type": "Metallic.TerrainLayers",
+  "version": 1,
+  "weightMap": "terrain_weights.exr",
+  "defaultLayer": "grass",
+  "layers": [
+    {"name": "rock", "channel": "R", "worldTileSize": 6, "baseColor": "rock_color.png", "normal": "rock_normal.png", "roughness": "rock_roughness.png"},
+    {"name": "grass", "channel": "G", "worldTileSize": 2, "baseColor": "grass_color.png", "normal": "grass_normal.png", "roughness": "grass_roughness.png"},
+    {"name": "gravel", "channel": "B", "worldTileSize": [3, 5], "baseColor": "gravel_color.png", "normal": "gravel_normal.png", "roughness": "gravel_roughness.png"},
+    {"name": "snow", "channel": "A", "worldTileSize": 8, "baseColor": "snow_color.png", "normal": "snow_normal.png", "roughness": "snow_roughness.png"}
+  ]
+}
+```
+
+```powershell
+python -B Tools/ImportTerrainLayers.py Asset/MeshletCache/TerrainBlocks16x16/terrain_blocks_16x16_height.gltf `
+  path/to/terrain.layers.json --output build/terrain-layers/terrain.imported.json
+python -B tests/tools/TestTerrainLayerAsset.py -v
+```
+
+导入会在每个像素归一化已声明的权重，未声明的通道置零，已声明的权重全为零时令默认层占满。输出清单和镜像边缘的线性 RGBA8 权重图。四个字节逐像素合计为 255，A 通道仍是权重。清单记录全局权重 UV 变换和各层的世界平铺变换，标明底色按 sRGB 读取、法线与粗糙度按线性读取，供多层 OpenPBR 合成接入。现有岩石和草地样例继续通过 `BuildTerrainVSMSample.py --weight-map` 使用 `R / (1 - R)` 权重。
+
 ### 地表拾取与摆放
 
 ```powershell
@@ -207,6 +236,12 @@ cmake --build build-ci --target MetallicTerrainRegionStreamingRegression
 
 相机与区域 XZ 包围盒的距离进入 44 个世界单位时开始锁定目标区的保底页，超过 56 时请求卸载。Visibility Buffer 和 VSM 共用已发布的区域集合。发布前等待所有目标保底页就绪，切换时等待读取旧实例数据的 GPU 命令完成，随后通过原有的页退休流程回收旧区独占分配。预算须容纳交接时两区的保底页。
 
-回归在 80 页和 1 MiB 的几何页池里往返跨区。栅格和 VSM 都使用保底 LOD，以隔离细节页请求，并检查实际过界前、中、后的深度和可见性覆盖。编辑器样例使用自动 LOD。逐帧报告记录目标区、已发布区、GPU 页表锁定页、保底页占用和几何页池的已用字节。后两项计量的是页池内分配，页池预留容量由运行配置决定。报告位于构建目录的 `tests/terrain-region-streaming-regression/run-*/TerrainRegionStreamingAcceptance.json`。
+视口漫游使用烘焙时导出的源高度场。在地形范围内，相机眼位至少高出地面 2 个世界单位。需要抬高时，眼位和观察目标一起移动以保留视线方向。`MetallicTerrainRegionsSmoke` 回放录屏中的西区斜坡机位，检查地表下方的候选眼位和越出地形范围的眼位。
+
+分区样例的主视图以 0.05 显示像素为自动 LOD 误差上限，减小了主视图接收面与细化后 VSM 投影几何之间的偏差。地形材质为双面，保留掠射光下只命中开放高度场背面的投影。
+
+分区样例的方向光 PCF 使用 8 毫米的阴影深度偏置，容纳接收面法线跨越相邻三角形时产生的深度误差。近景与远景机位都对照源地形的受光与遮挡采样。
+
+回归在 80 页和 1 MiB 的几何页池里往返跨区。栅格和 VSM 都使用保底 LOD，以隔离细节页请求，并检查实际过界前、中、后的深度和可见性覆盖。编辑器样例使用自动 LOD、512 页上限和 64 MiB 页池，为交接时两区的细节页留出页槽。逐帧报告记录目标区、已发布区、GPU 页表锁定页、保底页占用和几何页池的已用字节。后两项计量的是页池内分配，页池预留容量由运行配置决定。报告位于构建目录的 `tests/terrain-region-streaming-regression/run-*/TerrainRegionStreamingAcceptance.json`。
 
 首次通过的 204 帧往返中，双区分别在第 31 和 124 帧就绪并发布，先于第 59 和 154 帧的实际过界。旧区独占分配分别在第 81 和 175 帧完成回收。锁定页数随西区、双区、东区在 32、64、32 之间变化，对应几何页池已用字节为 306,944、611,072、304,128。回到西区后恢复为 306,944 字节。

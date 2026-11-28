@@ -68,6 +68,7 @@ private:
     bool runSliderDebugSmokeTest();
     bool runGizmoSmokeTest();
     bool runTerrainPlacementSmokeTest();
+    bool runTerrainRoamSmokeTest();
     bool exportSmokeMainViewport(const std::filesystem::path& path);
     bool runSceneSwitchSmokeTest();
     bool runExitSmokeTest();
@@ -221,7 +222,8 @@ private:
         std::string value = {});
     void drawUnsavedSceneModal();
     void executePendingSceneAction();
-    void applyViewportCameraProperties(render::RenderGraphProperties properties, const char* status);
+    void applyViewportCameraProperties(render::RenderGraphProperties properties, const char* status,
+        bool constrainToTerrain = false);
     void drawRenderGraphEditorWindow();
     void drawRenderGraphPanel();
     void drawRenderGraphSettingsPanel();

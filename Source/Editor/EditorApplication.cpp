@@ -2475,6 +2475,11 @@ int EditorApplication::run(
             shutdown();
             return passed ? 0 : 1;
         }
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_TERRAIN_ROAM")) {
+            const bool passed = runTerrainRoamSmokeTest();
+            shutdown();
+            return passed ? 0 : 1;
+        }
         if (environmentFlagEnabled("METALLIC_SMOKE_TEST_LOOKDEV_PATHS") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_PAINTER_SWITCH") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_STUDIO_SWITCH") ||
@@ -5678,9 +5683,24 @@ void EditorApplication::beginEnvironmentEdit()
     environmentEditBaselineFromSample_ = environmentFromSample_;
 }
 
-void EditorApplication::applyViewportCameraProperties(render::RenderGraphProperties properties, const char* status)
+void EditorApplication::applyViewportCameraProperties(render::RenderGraphProperties properties, const char* status,
+    bool constrainToTerrain)
 {
-    if (!properties.contains("camera") || !viewportView_.setCameraProperties(properties["camera"])) { return; }
+    const auto camera = properties.find("camera");
+    if (camera == properties.end()) { return; }
+    if (const float clearance = scene_.terrainCameraClearance(); constrainToTerrain && clearance > 0.0f) {
+        auto eye = readVec3Property3(*camera, "eye");
+        const auto surface = scene_.terrainHeightField()->sample(eye.x, eye.z);
+        if (surface && eye.y < surface->position.y + clearance) {
+            const float lift = surface->position.y + clearance - eye.y;
+            auto center = readVec3Property3(*camera, "center");
+            eye.y += lift;
+            center.y += lift;
+            storeVec3Property(*camera, "eye", eye);
+            storeVec3Property(*camera, "center", center);
+        }
+    }
+    if (!viewportView_.setCameraProperties(*camera)) { return; }
     // Progressive accumulators cannot reproject; temporal passes use ViewConstants history.
     historyResources_.invalidateAll(render::HistoryInvalidationReason::CameraMotion);
     viewportPreviewNeedsRender_ = true;
@@ -8110,7 +8130,7 @@ void EditorApplication::drawViewportPanel()
     }
     drawLumenDebugViews();
     drawSliderDebugControls();
-    if (scene_.terrainHeightField() != nullptr) {
+    if (scene_.supportsTerrainPlacement()) {
         const char* label = !terrainPlacementKind_ ? "Place on Terrain" :
             *terrainPlacementKind_ == scene::TerrainPlacementKind::Rock ? "Place Rock" : "Place Vegetation";
         ImGui::SameLine();
@@ -8449,7 +8469,7 @@ void EditorApplication::handleViewportCameraControls(const ImVec2& min, const Im
     }
 
     if (changed) {
-        applyViewportCameraProperties(std::move(properties), "Updated render camera from viewport");
+        applyViewportCameraProperties(std::move(properties), "Updated render camera from viewport", true);
     }
 }
 
