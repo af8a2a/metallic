@@ -16,13 +16,15 @@
 #include "Runtime/Render/Streamer/StreamedImage.h"
 #include "Runtime/Render/Streamer/SceneStreamingConfig.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
+#include "Runtime/Render/Subsystem/GPUSceneLightFrustum.h"
+#include "Runtime/Render/Environment/CelestialLighting.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 
 namespace metallic::render {
 namespace {
 struct StreamRegionBounds {
-    std::array<float, 2> minXZ;
-    std::array<float, 2> maxXZ;
+    std::array<float, 3> min;
+    std::array<float, 3> max;
     bool operator==(const StreamRegionBounds&) const = default;
 };
 
@@ -30,6 +32,7 @@ struct StreamRegionSelection {
     std::vector<StreamRegionBounds> bounds;
     float loadDistance = 0.0f;
     float unloadDistance = 0.0f;
+    bool viewAndDirectionalCasters = false;
     bool operator==(const StreamRegionSelection&) const = default;
 };
 
@@ -45,6 +48,11 @@ Result<> readStreamRegionSelection(const RenderGraphProperties& properties,
         return value.get<uint32_t>();
     };
     try {
+        const auto mode = properties.value("geometryRegionSelectionMode", std::string("distance"));
+        if (mode != "distance" && mode != "viewAndDirectionalCasters") {
+            throw std::invalid_argument("unknown geometryRegionSelectionMode");
+        }
+        selection.viewAndDirectionalCasters = mode == "viewAndDirectionalCasters";
         selection.loadDistance = properties.at("geometryRegionLoadDistance").get<float>();
         selection.unloadDistance = properties.at("geometryRegionUnloadDistance").get<float>();
         const auto& initialRegions = properties.at("initialStreamRegions");
@@ -60,16 +68,18 @@ Result<> readStreamRegionSelection(const RenderGraphProperties& properties,
             if (!lower.is_array() || !upper.is_array() || lower.size() != 3 || upper.size() != 3) {
                 throw std::invalid_argument("region bounds require world-space XYZ min and max");
             }
-            const StreamRegionBounds horizontal{
-                {lower[0].get<float>(), lower[2].get<float>()},
-                {upper[0].get<float>(), upper[2].get<float>()}};
-            for (size_t axis = 0; axis < horizontal.minXZ.size(); ++axis) {
-                if (!std::isfinite(horizontal.minXZ[axis]) || !std::isfinite(horizontal.maxXZ[axis]) ||
-                    horizontal.minXZ[axis] > horizontal.maxXZ[axis]) {
-                    throw std::invalid_argument("region horizontal bounds must be finite and ordered");
+            const auto components = [&](const nlohmann::json& corner) {
+                return std::array<float, 3>{corner[0].get<float>(),
+                    selection.viewAndDirectionalCasters ? corner[1].get<float>() : 0.0f, corner[2].get<float>()};
+            };
+            const StreamRegionBounds world{components(lower), components(upper)};
+            for (size_t axis = 0; axis < world.min.size(); ++axis) {
+                if (!std::isfinite(world.min[axis]) || !std::isfinite(world.max[axis]) ||
+                    world.min[axis] > world.max[axis]) {
+                    throw std::invalid_argument("region XYZ bounds must be finite and ordered");
                 }
             }
-            selection.bounds.push_back(horizontal);
+            selection.bounds.push_back(world);
             desc.regions.push_back({readIndex(region.at("sourceInstanceOffset")),
                 readIndex(region.at("instanceCount"))});
         }
@@ -81,6 +91,82 @@ Result<> readStreamRegionSelection(const RenderGraphProperties& properties,
         return makeError(Error::InvalidArgument);
     }
     return {};
+}
+
+bool intersectsView(const StreamRegionBounds& bounds, const std::array<float4, 6>& planes)
+{
+    for (const float4& plane : planes) {
+        const double x = double(plane.x) * (plane.x >= 0.0f ? bounds.max[0] : bounds.min[0]);
+        const double y = double(plane.y) * (plane.y >= 0.0f ? bounds.max[1] : bounds.min[1]);
+        const double z = double(plane.z) * (plane.z >= 0.0f ? bounds.max[2] : bounds.min[2]);
+        const double rounding = 8.0 * std::numeric_limits<float>::epsilon() *
+            (std::abs(x) + std::abs(y) + std::abs(z) + std::abs(plane.w));
+        if (x + y + z + plane.w < -rounding) { return false; }
+    }
+    return true;
+}
+
+bool canCastOnto(const StreamRegionBounds& caster, const StreamRegionBounds& receiver, const float direction[3])
+{
+    // Sweep the caster box along the emitted rays. A possible receiver only
+    // needs the three overlap intervals to share a nonnegative ray distance.
+    double enter = 0.0;
+    double leave = std::numeric_limits<double>::infinity();
+    for (size_t axis = 0; axis < caster.min.size(); ++axis) {
+        const double lower = double(receiver.min[axis]) - caster.max[axis];
+        const double upper = double(receiver.max[axis]) - caster.min[axis];
+        const double component = direction[axis];
+        if (component == 0.0) {
+            if (lower > 0.0 || upper < 0.0) { return false; }
+            continue;
+        }
+        const double lowerTime = lower / component;
+        const double upperTime = upper / component;
+        const auto [first, last] = std::minmax(lowerTime, upperTime);
+        enter = std::max(enter, first);
+        leave = std::min(leave, last);
+        if (enter > leave) { return false; }
+    }
+    // Adjacent regions share their closed boundary. Contact at t=0 alone does not cast onto the receiver.
+    return leave > 0.0;
+}
+
+std::vector<uint32_t> wantedStreamRegions(const StreamRegionSelection& selection,
+    const std::vector<uint32_t>& previous, const ViewCameraConstants& camera,
+    const scene::Scene* scene, const RenderWorld* world)
+{
+    std::vector<uint32_t> receivers;
+    GPUCelestialLightRecords lights{};
+    if (selection.viewAndDirectionalCasters) {
+        const auto planes = gpuSceneLightFrustumPlanes(
+            float3(camera.eye[0], camera.eye[1], camera.eye[2]),
+            float3(camera.center[0], camera.center[1], camera.center[2]),
+            float3(camera.upProjection[0], camera.upProjection[1], camera.upProjection[2]),
+            camera.viewport[0], camera.viewport[3], camera.clipOrtho[0], camera.clipOrtho[1],
+            camera.upProjection[3] > 0.5f ? camera.clipOrtho[2] : 0.0f);
+        for (uint32_t id = 0; id < selection.bounds.size(); ++id) {
+            if (intersectsView(selection.bounds[id], planes)) { receivers.push_back(id); }
+        }
+        lights = buildCelestialLightRecords(resolveWorldEnvironment(scene, world));
+    }
+
+    std::vector<uint32_t> wanted;
+    for (uint32_t id = 0; id < selection.bounds.size(); ++id) {
+        const auto& bounds = selection.bounds[id];
+        const float dx = std::max({bounds.min[0] - camera.eye[0], camera.eye[0] - bounds.max[0], 0.0f});
+        const float dz = std::max({bounds.min[2] - camera.eye[2], camera.eye[2] - bounds.max[2], 0.0f});
+        const float distance = std::ranges::find(previous, id) != previous.end() ? selection.unloadDistance : selection.loadDistance;
+        if (std::hypot(dx, dz) <= distance || std::ranges::binary_search(receivers, id) ||
+            std::ranges::any_of(lights, [&](const GPUCelestialLight& light) {
+                constexpr uint32_t activeCaster = kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow;
+                return (light.flags & activeCaster) == activeCaster && std::ranges::any_of(receivers, [&](uint32_t receiver) {
+                    return canCastOnto(bounds, selection.bounds[receiver], light.direction);
+                });
+            })) {
+            wanted.push_back(id);
+        }
+    }
+    return wanted;
 }
 } // namespace
 
@@ -382,16 +468,8 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
                 log = "Geometry stream region selection requires a render view";
                 return makeError(Error::InvalidArgument);
             }
-            const auto& eye = renderView->current.eye;
-            std::vector<uint32_t> wanted;
-            for (uint32_t id = 0; id < regions.bounds.size(); ++id) {
-                const auto& bounds = regions.bounds[id];
-                const float dx = std::max({bounds.minXZ[0] - eye[0], eye[0] - bounds.maxXZ[0], 0.0f});
-                const float dz = std::max({bounds.minXZ[1] - eye[2], eye[2] - bounds.maxXZ[1], 0.0f});
-                const float distance = std::ranges::find(state.wantedRegions, id) != state.wantedRegions.end()
-                    ? regions.unloadDistance : regions.loadDistance;
-                if (std::hypot(dx, dz) <= distance) { wanted.push_back(id); }
-            }
+            auto wanted = wantedStreamRegions(regions, state.wantedRegions, renderView->current,
+                prepared.sourceScene, context.world());
             if (const auto result = stream.updateRegionSelection(wanted, log); !result) { return result; }
             state.wantedRegions = std::move(wanted);
         }

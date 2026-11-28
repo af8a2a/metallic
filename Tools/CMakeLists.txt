@@ -232,6 +232,19 @@ if(Python3_Interpreter_FOUND)
         COMMENT "Rendering the Ancient Rift Valley 2x2 smoke frame"
         VERBATIM
     )
+    add_metallic_ancient_rift_valley_sample(
+        "${CMAKE_SOURCE_DIR}/Asset/Terrain/AncientRiftValley/TerrainAsset.json"
+        "${CMAKE_SOURCE_DIR}/Asset/MeshletCache/AncientRiftValley4x4"
+        MetallicMeshletCook FULL_WORLD)
+    add_custom_target(MetallicAncientRiftValley4x4Smoke
+        COMMAND ${CMAKE_COMMAND} -E env METALLIC_SMOKE_TEST_HIDDEN=1
+            METALLIC_SMOKE_TEST_SAMPLE=gpu-driven-ancient-rift-valley-4x4-vsm
+            "$<TARGET_FILE:Metallic>" --smoke-test
+        DEPENDS Metallic MetallicAncientRiftValley4x4Sample
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Rendering the Ancient Rift Valley 4x4 smoke frame"
+        VERBATIM
+    )
     add_custom_target(MetallicPCGWorld DEPENDS LookDev MetallicTerrainRegionsSample)
     add_custom_target(MetallicTerrainRegionsSmoke
         COMMAND ${CMAKE_COMMAND} -E env METALLIC_SMOKE_TEST_HIDDEN=1

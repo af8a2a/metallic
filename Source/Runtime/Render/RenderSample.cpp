@@ -1186,18 +1186,24 @@ public:
     }
 };
 
-class GPUDrivenAncientRiftValley2x2VSMSample final : public GPUDrivenTerrainVSMSample {
+class GPUDrivenAncientRiftValleyVSMSample final : public GPUDrivenTerrainVSMSample {
 public:
-    std::string_view id() const override { return "gpu-driven-ancient-rift-valley-2x2-vsm"; }
-    std::string_view name() const override { return "GPUDrivenSample / Ancient Rift Valley 2x2 + VSM"; }
-    std::string_view description() const override
-    {
-        return "Four central Ancient Rift Valley regions with eight shared OpenPBR layers.";
-    }
-    std::string scenePath() const override
-    {
-        return "Asset/MeshletCache/AncientRiftValley2x2/ancient_rift_valley_2x2.gltf";
-    }
+    struct Configuration {
+        std::string_view id;
+        std::string_view name;
+        std::string_view description;
+        std::string_view scenePath;
+        std::string_view bakeTarget;
+        bool fullWorld;
+    };
+
+    explicit GPUDrivenAncientRiftValleyVSMSample(Configuration configuration)
+        : configuration_(configuration) {}
+
+    std::string_view id() const override { return configuration_.id; }
+    std::string_view name() const override { return configuration_.name; }
+    std::string_view description() const override { return configuration_.description; }
+    std::string scenePath() const override { return std::string(configuration_.scenePath); }
     bool configureGraph(RenderGraph& graph, std::string& outMessage) const override
     {
         const auto* visibility = graph.findNode("VBuffer");
@@ -1208,17 +1214,18 @@ public:
             return false;
         }
 
-        std::ifstream source(projectPath(scenePath()));
+        std::ifstream source(projectPath(configuration_.scenePath));
         if (!source) {
-            outMessage = "Bake MetallicAncientRiftValley2x2Sample to generate " + scenePath();
+            outMessage = "Bake " + std::string(configuration_.bakeTarget) + " to generate " + scenePath();
             return false;
         }
+        const uint32_t regionCount = configuration_.fullWorld ? 16u : 4u;
         RenderGraphProperties properties = visibility->properties;
         try {
             const auto document = nlohmann::json::parse(source);
             const auto& regions = document.at("extras").at("metallicTerrainRegions").at("regions");
-            if (!regions.is_array() || regions.size() != 4) {
-                outMessage = "Ancient Rift Valley requires its four-region sample directory";
+            if (!regions.is_array() || regions.size() != regionCount) {
+                outMessage = "Ancient Rift Valley requires a directory for all " + std::to_string(regionCount) + " sample regions";
                 return false;
             }
             properties["streamRegions"] = regions;
@@ -1226,9 +1233,13 @@ public:
             outMessage = "Could not read the Ancient Rift Valley region directory: " + std::string(error.what());
             return false;
         }
-        // Keep the complete four-region terminal cut available to the main view and VSM
-        // throughout the reference camera range. Detail pages still use normal feedback.
-        properties["initialStreamRegions"] = nlohmann::json::array({0, 1, 2, 3});
+        // The overview starts with the complete terminal cut. The central sample keeps
+        // that cut for reference and the 4x4 sample selects regions as the camera moves.
+        auto initialRegions = nlohmann::json::array();
+        for (uint32_t region = 0; region < regionCount; ++region) {
+            initialRegions.push_back(region);
+        }
+        properties["initialStreamRegions"] = std::move(initialRegions);
         properties["geometryRegionLoadDistance"] = 2500.0;
         properties["geometryRegionUnloadDistance"] = 2500.0;
         properties["maxResidentBytes"] = 256u * 1024u * 1024u;
@@ -1239,11 +1250,22 @@ public:
         properties["compactShadingAttributes"] = false;
         auto shadowProperties = shadows->properties;
         shadowProperties["shadowBias"] = 0.008f;
+        if (configuration_.fullWorld) {
+            properties["geometryRegionSelectionMode"] = "viewAndDirectionalCasters";
+            properties["geometryRegionLoadDistance"] = 44.0;
+            properties["geometryRegionUnloadDistance"] = 56.0;
+            // Extend the far clipmaps while preserving the existing near texel size.
+            shadowProperties["clipmapCount"] = 9;
+            shadowProperties["physicalPageBudget"] = 1024;
+        }
         const auto shadowId = shadows->id;
         graph.setNodeProperties(visibility->id, std::move(properties));
         graph.setNodeProperties(shadowId, std::move(shadowProperties));
         return true;
     }
+
+private:
+    Configuration configuration_;
 };
 
 const RenderSample& pathTracingMeetMatSample()
@@ -1386,7 +1408,27 @@ const RenderSample& gpuDrivenTerrainRegionsVSMSample()
 
 const RenderSample& gpuDrivenAncientRiftValley2x2VSMSample()
 {
-    static const GPUDrivenAncientRiftValley2x2VSMSample sample;
+    static const GPUDrivenAncientRiftValleyVSMSample sample({
+        .id = "gpu-driven-ancient-rift-valley-2x2-vsm",
+        .name = "GPUDrivenSample / Ancient Rift Valley 2x2 + VSM",
+        .description = "Four central Ancient Rift Valley regions with eight shared OpenPBR layers.",
+        .scenePath = "Asset/MeshletCache/AncientRiftValley2x2/ancient_rift_valley_2x2.gltf",
+        .bakeTarget = "MetallicAncientRiftValley2x2Sample",
+        .fullWorld = false,
+    });
+    return sample;
+}
+
+const RenderSample& gpuDrivenAncientRiftValley4x4VSMSample()
+{
+    static const GPUDrivenAncientRiftValleyVSMSample sample({
+        .id = "gpu-driven-ancient-rift-valley-4x4-vsm",
+        .name = "GPUDrivenSample / Ancient Rift Valley 4x4 + VSM",
+        .description = "Sixteen independently cooked Ancient Rift Valley regions across 1 km with eight shared OpenPBR layers.",
+        .scenePath = "Asset/MeshletCache/AncientRiftValley4x4/ancient_rift_valley_4x4.gltf",
+        .bakeTarget = "MetallicAncientRiftValley4x4Sample",
+        .fullWorld = true,
+    });
     return sample;
 }
 
@@ -1581,6 +1623,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &gpuDrivenTerrainPlacement16x16VSMSample(),
         &gpuDrivenTerrainRegionsVSMSample(),
         &gpuDrivenAncientRiftValley2x2VSMSample(),
+        &gpuDrivenAncientRiftValley4x4VSMSample(),
         &gpuDrivenRtasVisualizationSample(),
     };
     const bool hasBoxDistanceField = std::filesystem::is_regular_file(projectPath(".cache/mesh-distance-field/BoxInstances.meshdf"));

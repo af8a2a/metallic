@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the central four Ancient Rift Valley regions from their shared height grid."""
+"""Build Ancient Rift Valley regions from their shared height grid."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from BuildTerrainVSMSample import append_camera, relative_path
 WORLD_SIZE = 1000.0
 SOURCE_SAMPLES = 2049
 SOURCE_REGION_CELLS = 512
+SOURCE_REGIONS_PER_AXIS = 4
 RENDER_TILES_PER_REGION = 4
 SAMPLE_CAMERA = {
     "eye": [66.0, 118.0, -218.0],
@@ -33,27 +34,37 @@ SAMPLE_CAMERA = {
     "znear": 0.5,
     "zfar": 1400.0,
 }
+WORLD_CAMERA = {
+    "eye": [1040.0, 1475.0, -1240.0],
+    "center": [0.0, 200.0, 0.0],
+    "up": [0.0, 1.0, 0.0],
+    "fovDegrees": 42.0,
+    "znear": 0.5,
+    "zfar": 3500.0,
+}
 
 
-def build_sample(heightmap: Path, lighting: Path, output: Path) -> None:
+def build_sample(heightmap: Path, lighting: Path, output: Path, regions_per_axis: int = 2) -> None:
     heights, channel, data_window = load_height_field(heightmap, "Y")
     if heights.shape != (SOURCE_SAMPLES, SOURCE_SAMPLES) or data_window != (0, 0, 2048, 2048):
         raise TerrainBuildError("Ancient Rift Valley requires its 2049² metre height grid at EXR origin (0,0)")
 
-    begin = SOURCE_REGION_CELLS
-    end = SOURCE_REGION_CELLS * 3
+    first_region = (SOURCE_REGIONS_PER_AXIS - regions_per_axis) // 2
+    begin = first_region * SOURCE_REGION_CELLS
+    end = (first_region + regions_per_axis) * SOURCE_REGION_CELLS
     step = WORLD_SIZE / (SOURCE_SAMPLES - 1)
     width = (end - begin) * step
-    central = heights[begin:end + 1, begin:end + 1]
-    positions, _, texcoords, indices, metadata = build_terrain_mesh(
-        central, width, height_scale=1.0, height_offset=0.0, skirt_depth=0.0, flip_z=False)
-    # Include one source sample outside the sample rectangle on every side for its normal stencil.
-    halo = heights[begin - 1:end + 2, begin - 1:end + 2]
-    _, expanded_normals, _, _, _ = build_terrain_mesh(
-        halo, width + 2.0 * step, height_scale=1.0, height_offset=0.0, skirt_depth=0.0, flip_z=False)
-    normals = expanded_normals.reshape(*halo.shape, 3)[1:-1, 1:-1].reshape(-1, 3)
-    texcoords *= width / WORLD_SIZE
-    texcoords += begin / (SOURCE_SAMPLES - 1)
+    sample = heights[begin:end + 1, begin:end + 1]
+    positions, normals, texcoords, indices, metadata = build_terrain_mesh(
+        sample, width, height_scale=1.0, height_offset=0.0, skirt_depth=0.0, flip_z=False)
+    if first_region:
+        # Preserve the full grid's normal stencil and UV mapping through the central crop.
+        halo = heights[begin - 1:end + 2, begin - 1:end + 2]
+        _, expanded_normals, _, _, _ = build_terrain_mesh(
+            halo, width + 2.0 * step, height_scale=1.0, height_offset=0.0, skirt_depth=0.0, flip_z=False)
+        normals = expanded_normals.reshape(*halo.shape, 3)[1:-1, 1:-1].reshape(-1, 3)
+        texcoords *= width / WORLD_SIZE
+        texcoords += begin / (SOURCE_SAMPLES - 1)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     height_field = output.with_suffix(".heightfield.bin")
@@ -63,7 +74,7 @@ def build_sample(heightmap: Path, lighting: Path, output: Path) -> None:
         tile_payload = tile_source.with_suffix(".bin")
         write_terrain_gltf(tile_source, tile_payload, heightmap, channel, data_window, positions,
                            normals, texcoords, indices, metadata, WORLD_SIZE, 1.0, 0.0, 0.0,
-                           False, RENDER_TILES_PER_REGION * 2)
+                           False, RENDER_TILES_PER_REGION * regions_per_axis)
         source = json.loads(tile_source.read_text(encoding="utf-8"))
         payload = tile_payload.read_bytes()
 
@@ -74,10 +85,10 @@ def build_sample(heightmap: Path, lighting: Path, output: Path) -> None:
 
     regions = []
     count = RENDER_TILES_PER_REGION
-    for z in range(2):
-        for x in range(2):
+    for z in range(regions_per_axis):
+        for x in range(regions_per_axis):
             x0, z0 = x * count, z * count
-            region_id = f"x{x + 1}_z{z + 1}"
+            region_id = f"x{x + first_region}_z{z + first_region}"
             document, raw = make_region(source, payload, terrain, region_id,
                                         (x0, z0, x0 + count, z0 + count))
             if not regions:
@@ -88,13 +99,14 @@ def build_sample(heightmap: Path, lighting: Path, output: Path) -> None:
             regions.append(document)
 
     aggregate = combine_regions(regions)
-    aggregate["scenes"][0]["name"] = "Ancient Rift Valley 2x2"
+    aggregate["scenes"][0]["name"] = f"Ancient Rift Valley {regions_per_axis}x{regions_per_axis}"
     aggregate["extras"]["metallicTerrainTiles"] = {
         **terrain,
         "sampleWindowInclusive": [begin, begin, end, end],
     }
-    aggregate["extras"]["metallicTerrainRegions"]["sampleCamera"] = SAMPLE_CAMERA
-    append_camera(aggregate, SAMPLE_CAMERA)
+    camera = SAMPLE_CAMERA if first_region else WORLD_CAMERA
+    aggregate["extras"]["metallicTerrainRegions"]["sampleCamera"] = camera
+    append_camera(aggregate, camera)
 
     scene = json.loads(lighting.read_text(encoding="utf-8"))
     scene["source"] = output.name
@@ -117,9 +129,10 @@ def main() -> None:
     parser.add_argument("heightmap", type=Path)
     parser.add_argument("--lighting", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--regions-per-axis", type=int, choices=(2, SOURCE_REGIONS_PER_AXIS), default=2)
     args = parser.parse_args()
     try:
-        build_sample(args.heightmap, args.lighting, args.output)
+        build_sample(args.heightmap, args.lighting, args.output, args.regions_per_axis)
     except (OSError, TerrainBuildError, ValueError, KeyError, TypeError) as error:
         parser.error(str(error))
 

@@ -1,11 +1,28 @@
 # Shared by the editor sample and the isolated material reimport regression.
 function(add_metallic_ancient_rift_valley_sample manifest output_directory cook_target)
+    cmake_parse_arguments(PARSE_ARGV 3 valley "FULL_WORLD" "" "")
     get_filename_component(repo "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
     get_filename_component(authoring_directory "${manifest}" DIRECTORY)
     set(tools "${repo}/Tools")
     set(lighting "${repo}/Asset/Terrain/TerrainVSM.metallic_scene.json")
-    set(sample "${output_directory}/ancient_rift_valley_2x2")
-    set(region_ids x1_z1 x2_z1 x1_z2 x2_z2)
+    if(valley_FULL_WORLD)
+        set(dimensions 4x4)
+        set(first_region 0)
+        set(last_region 3)
+        set(region_args --regions-per-axis 4)
+    else()
+        set(dimensions 2x2)
+        set(first_region 1)
+        set(last_region 2)
+    endif()
+    set(target "MetallicAncientRiftValley${dimensions}")
+    set(sample "${output_directory}/ancient_rift_valley_${dimensions}")
+    set(region_ids)
+    foreach(z RANGE ${first_region} ${last_region})
+        foreach(x RANGE ${first_region} ${last_region})
+            list(APPEND region_ids "x${x}_z${z}")
+        endforeach()
+    endforeach()
 
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${manifest}")
     file(READ "${manifest}" authoring)
@@ -44,12 +61,12 @@ function(add_metallic_ancient_rift_valley_sample manifest output_directory cook_
     add_custom_command(
         OUTPUT "${sample}.gltf" "${sample}.metallic_scene.json" "${sample}.heightfield.bin" ${region_geometry}
         COMMAND "${Python3_EXECUTABLE}" -B "${tools}/BuildAncientRiftValleySample.py"
-            "${height}" --lighting "${lighting}" --output "${sample}.gltf"
+            "${height}" --lighting "${lighting}" --output "${sample}.gltf" ${region_args}
         DEPENDS "${height}" "${lighting}" "${tools}/BuildAncientRiftValleySample.py"
             "${tools}/BuildTerrainMesh.py" "${tools}/BuildTerrainRegions.py"
             "${tools}/BuildTerrainVSMMaterial.py" "${tools}/BuildTerrainVSMSample.py"
         WORKING_DIRECTORY "${repo}"
-        COMMENT "Building world-space Ancient Rift Valley 2x2 terrain geometry"
+        COMMENT "Building world-space Ancient Rift Valley ${dimensions} terrain geometry"
         VERBATIM
     )
     add_custom_command(
@@ -58,7 +75,7 @@ function(add_metallic_ancient_rift_valley_sample manifest output_directory cook_
             --compression none --validate-payloads
         DEPENDS ${cook_target} "${sample}.gltf" ${region_cooks}
         WORKING_DIRECTORY "${repo}"
-        COMMENT "Packing the four Ancient Rift Valley regions"
+        COMMENT "Packing the Ancient Rift Valley ${dimensions} regions"
         VERBATIM
     )
 
@@ -74,8 +91,8 @@ function(add_metallic_ancient_rift_valley_sample manifest output_directory cook_
         COMMENT "Importing Ancient Rift Valley terrain materials"
         VERBATIM
     )
-    add_custom_target(MetallicAncientRiftValley2x2Materials DEPENDS ${material_outputs})
-    add_custom_target(MetallicAncientRiftValley2x2Sample
+    add_custom_target("${target}Materials" DEPENDS ${material_outputs})
+    add_custom_target("${target}Sample"
         DEPENDS "${sample}.gltf.meshstream.bin" "${sample}.meshstream.regions.json" "${sample}.metallic_scene.json")
-    add_dependencies(MetallicAncientRiftValley2x2Sample MetallicAncientRiftValley2x2Materials)
+    add_dependencies("${target}Sample" "${target}Materials")
 endfunction()

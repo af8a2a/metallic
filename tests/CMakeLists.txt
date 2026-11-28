@@ -982,6 +982,20 @@ if(Python3_Interpreter_FOUND)
                 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "cpu;terrain" SKIP_RETURN_CODE 77 TIMEOUT 900)
         endif()
     endif()
+    if(TARGET MetallicAncientRiftValley4x4Sample)
+        set(ancient_rift_world_acceptance
+            "${Python3_EXECUTABLE}" -B "${CMAKE_SOURCE_DIR}/Tools/Perf/AncientRiftValleyWorldAcceptance.py" run
+            --executable "$<TARGET_FILE:MetallicRHITests>"
+            --output "${CMAKE_CURRENT_BINARY_DIR}/ancient-rift-valley-4x4")
+        add_custom_target(MetallicAncientRiftValley4x4Regression
+            COMMAND ${ancient_rift_world_acceptance}
+            DEPENDS MetallicRHITests MetallicAncientRiftValley4x4Sample
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            USES_TERMINAL VERBATIM)
+        add_test(NAME MetallicAncientRiftValley4x4Regression COMMAND ${ancient_rift_world_acceptance})
+        set_tests_properties(MetallicAncientRiftValley4x4Regression PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "rhi;terrain" RESOURCE_LOCK MetallicGPU TIMEOUT 1800)
+    endif()
     if(TARGET MetallicTerrainPlacement16x16VSMSample)
         add_test(NAME MetallicTerrainPlacementEditorSmoke
             COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunTerrainPlacementSmoke.py"

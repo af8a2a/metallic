@@ -311,3 +311,15 @@ cmake --build build-ci --target MetallicAncientRiftValley2x2MaterialReimportRegr
 八层材质共用两张原尺寸的 2049² 线性 RGBA 权重图。每层按图索引和通道绑定，导入时联合量化，GPU 在两张图的相同源 mip 采样后联合归一化。新权重图采用边缘钳制，细节贴图按世界尺度平铺。此样例为 XZ 平面投影基线，DCC 预览中的陡壁三平面投影属于后续工作。
 
 GPU 回归在四区交点检查深度覆盖和混合 LOD，并在冲积扇采集八层底色、切线法线和粗糙度供 CPU 参考比较。第二张权重图的增量回归在隔离的 Ninja 构建中分别调用完整目标和 `MetallicAncientRiftValley2x2Materials`，核对区域几何、StreamAsset 和场景文档的 SHA-256 及修改时间。报告和抓帧保存在 `build-ci/tests/ancient-rift-valley-2x2/` 和 `build-ci/tests/ancient-rift-valley-material-reimport/`。
+
+### Ancient Rift Valley 全域 16 区
+
+```powershell
+cmake --build build-ci --target MetallicAncientRiftValley4x4Sample
+cmake --build build-ci --target MetallicAncientRiftValley4x4Smoke
+cmake --build build-ci --target MetallicAncientRiftValley4x4Regression
+```
+
+编辑器样例 **GPUDrivenSample / Ancient Rift Valley 4x4 + VSM** 使用完整的 2049² 源高度场，覆盖 1 km × 1 km。16 个区域独立烘焙，256 个渲染块共享全局边界采样和八层材质。全区保底用于启动与全景验证。普通漫游启用 `geometryRegionSelectionMode="viewAndDirectionalCasters"`，选区包括近眼滞回范围、与视锥相交的接收区，以及能沿太阳或月亮方向向这些接收区投影的候选区域。细节继续由现有页请求驱动。全景机位的远裁剪面为 3500 m，方向光 VSM 从 8 m 半宽开始，使用 9 级 clipmap。
+
+GPU 回归固定在保底 LOD，在同一路线对照全区保底和按需选区，逐帧读取保底页与区域发布状态，在越过 X=250 m 的边界前、中、后对比深度、覆盖和方向光阴影。谷底探针另与纯距离选区对照，用于验证视锥外山脊的投影。分别在原切面、跨界后和全景就绪后对比 VSM 缓存与强制重画。俯视镜头跳转时，刚进入视野的区域要等保底页发布后才出现。回归记录首帧缺失像素和全区完成发布的帧号，并检查就绪后的完整覆盖。结果位于 `build-ci/tests/ancient-rift-valley-4x4/`，中央 2×2 回归仍有独立入口。
