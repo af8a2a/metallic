@@ -99,25 +99,36 @@ function(add_metallic_terrain_vsm_sample bake_target smoke_target sample_id terr
     )
 endfunction()
 
-function(add_metallic_terrain_multilayer_vsm_sample terrain_source terrain_multilayer_dir)
-    set(terrain_multilayer_source "${terrain_multilayer_dir}/source")
-    set(terrain_multilayer_asset "${terrain_multilayer_source}/terrain.layers.json")
-    set(terrain_multilayer_textures "${terrain_multilayer_source}/weights.exr")
+function(add_metallic_terrain_layer_example asset out_textures)
+    cmake_parse_arguments(PARSE_ARGV 2 example "" "REGION_GRID" "")
+    get_filename_component(directory "${asset}" DIRECTORY)
+    set(textures "${directory}/weights.exr")
     foreach(layer IN ITEMS rock grass gravel snow)
         foreach(role IN ITEMS baseColor normal roughness)
-            list(APPEND terrain_multilayer_textures "${terrain_multilayer_source}/${layer}_${role}.png")
+            list(APPEND textures "${directory}/${layer}_${role}.png")
         endforeach()
     endforeach()
+    if(example_REGION_GRID)
+        set(region_args --region-grid "${example_REGION_GRID}")
+    endif()
     add_custom_command(
-        OUTPUT "${terrain_multilayer_asset}" ${terrain_multilayer_textures}
+        OUTPUT "${asset}" ${textures}
         COMMAND "${Python3_EXECUTABLE}" -B "${METALLIC_TERRAIN_TOOLS_DIR}/ExportTerrainMultilayerExample.py"
-            "${METALLIC_TERRAIN_REPOSITORY_ROOT}/Asset/Terrain/TerrainRockWeight.exr" --output "${terrain_multilayer_asset}"
+            "${METALLIC_TERRAIN_REPOSITORY_ROOT}/Asset/Terrain/TerrainRockWeight.exr" --output "${asset}" ${region_args}
         DEPENDS "${METALLIC_TERRAIN_REPOSITORY_ROOT}/Asset/Terrain/TerrainRockWeight.exr"
             "${METALLIC_TERRAIN_TOOLS_DIR}/ExportTerrainMultilayerExample.py"
             "${METALLIC_TERRAIN_TOOLS_DIR}/BuildTerrainLayerTextures.py" "${METALLIC_TERRAIN_TOOLS_DIR}/BuildTerrainMesh.py"
+            "${METALLIC_TERRAIN_TOOLS_DIR}/ImportTerrainLayers.py" "${METALLIC_TERRAIN_TOOLS_DIR}/TerrainLayerAsset.py"
+            ${example_REGION_GRID}
         COMMENT "Generating the four terrain sample layers and RGBA weights"
         VERBATIM
     )
+    set(${out_textures} ${textures} PARENT_SCOPE)
+endfunction()
+
+function(add_metallic_terrain_multilayer_vsm_sample terrain_source terrain_multilayer_dir)
+    set(terrain_multilayer_asset "${terrain_multilayer_dir}/source/terrain.layers.json")
+    add_metallic_terrain_layer_example("${terrain_multilayer_asset}" terrain_multilayer_textures)
     add_metallic_terrain_vsm_sample(MetallicTerrainMultilayer16x16VSMSample MetallicTerrainMultilayer16x16VSMSmoke
         gpu-driven-terrain-multilayer-16x16-vsm "${terrain_source}"
         "${terrain_multilayer_dir}/terrain_multilayer_16x16"

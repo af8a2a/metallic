@@ -13,7 +13,7 @@ import tempfile
 from PrepareTerrainStreamingAcceptance import ROOT, read_json, write_json
 
 
-def capture(executable, case):
+def capture(executable, case, *, timeout=None):
     output = case / "capture"
     output.mkdir()
     log = output / "acceptance.log"
@@ -22,7 +22,8 @@ def capture(executable, case):
                "--rhi-validation", "--output-dir", str(output), "--gtest_color=no"]
     print(f"Capturing {case.name}", flush=True)
     with log.open("wb") as stream:
-        result = subprocess.run(command, cwd=ROOT, env=environment, stdout=stream, stderr=subprocess.STDOUT)
+        result = subprocess.run(command, cwd=ROOT, env=environment, stdout=stream, stderr=subprocess.STDOUT,
+                                timeout=timeout)
     if result.returncode or not (output / "VirtualShadowMapAcceptance.json").is_file():
         for line in log.read_text(encoding="utf-8", errors="replace").splitlines()[-15:]:
             print(line, file=sys.stderr)

@@ -195,6 +195,29 @@ if(Python3_Interpreter_FOUND)
         VERBATIM
     )
     add_custom_target(MetallicTerrainRegionsSample DEPENDS "${terrain_regions_cook}" "${terrain_regions_receipt}")
+    set(terrain_region_layer_asset "${terrain_regions_dir}/material_source/terrain.layers.json")
+    add_metallic_terrain_layer_example("${terrain_region_layer_asset}" terrain_region_layer_textures
+        REGION_GRID "${METALLIC_TERRAIN_BLOCKS_8X8_HEIGHT}.gltf")
+    set(terrain_region_material_outputs
+        "${terrain_regions_scene}_two.metallic_scene.json" "${terrain_regions_scene}_four.metallic_scene.json"
+        "${terrain_regions_scene}_two.material" "${terrain_regions_scene}_four.material"
+        "${terrain_regions_scene}_four.materialdef"
+        "${terrain_regions_scene}_two.terrain-layers.json" "${terrain_regions_scene}_four.terrain-layers.json")
+    add_custom_command(
+        OUTPUT ${terrain_region_material_outputs}
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainRegionMaterials.py"
+            "${terrain_regions_scene}.gltf" --layer-asset "${terrain_region_layer_asset}"
+        DEPENDS "${terrain_regions_scene}.gltf" "${terrain_regions_scene}.metallic_scene.json"
+            "${terrain_regions_dir}/terrain_region_west.gltf" "${terrain_region_layer_asset}" ${terrain_region_layer_textures}
+            "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainRegionMaterials.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainVSMMaterial.py" "${CMAKE_CURRENT_SOURCE_DIR}/ImportTerrainLayers.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/TerrainLayerAsset.py" "${CMAKE_CURRENT_SOURCE_DIR}/BuildTerrainLayerTextures.py"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Binding two and four layers to the shared terrain region geometry"
+        VERBATIM
+    )
+    add_custom_target(MetallicTerrainRegionMaterialsSample DEPENDS ${terrain_region_material_outputs})
+    add_dependencies(MetallicTerrainRegionMaterialsSample MetallicTerrainRegionsSample)
     add_custom_target(MetallicPCGWorld DEPENDS LookDev MetallicTerrainRegionsSample)
     add_custom_target(MetallicTerrainRegionsSmoke
         COMMAND ${CMAKE_COMMAND} -E env METALLIC_SMOKE_TEST_HIDDEN=1

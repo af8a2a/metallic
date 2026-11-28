@@ -24,8 +24,11 @@ TOOLS = Path(__file__).resolve().parents[2] / "Tools"
 sys.path.insert(0, str(TOOLS))
 from BuildTerrainLayerTextures import build_layer_material
 from BuildTerrainMesh import TerrainBuildError
+from BuildTerrainRegionMaterials import build_region_materials
+from BuildTerrainRegions import build_regions
 from BuildTerrainVSMMaterial import build_sample_material
 from BuildTerrainVSMSample import build_sample
+from ExportTerrainMultilayerExample import export_example
 from ImportTerrainLayers import import_terrain_layers
 from TerrainLayerAsset import load_terrain_layer_asset, read_layer_weights
 
@@ -323,6 +326,56 @@ class TerrainLayerAssetTests(unittest.TestCase):
         self.assertEqual(clay_texture.read_bytes(), updated_resources["clay.baseColor"].read_bytes())
         self.assertEqual(original_geometry, {path: fingerprint(path) for path in untouched})
         self.assertEqual(stable_textures, {path: fingerprint(path) for path in weighted_resources.values()})
+
+    def test_region_material_comparison_shares_geometry_and_layer_resources(self):
+        size = 129
+        window = [-3, 7, -3 + size - 1, 7 + size - 1]
+        height = self.root / "height.exr"
+        terrain = self.root / "terrain.gltf"
+        height_field = self.root / "terrain.heightfield.bin"
+        self.write_exr({"Y": np.linspace(0, 1, size * size)}, window, height)
+        self.write_exr({"R": np.ones(size * size)}, window)
+        bake = subprocess.run([
+            sys.executable, "-B", str(TOOLS / "BuildTerrainMesh.py"), str(height), "--output", str(terrain),
+            "--tiles-per-axis", "2", "--horizontal-size", "256", "--flip-z",
+            "--height-field-output", str(height_field),
+        ], capture_output=True, text=True)
+        self.assertEqual(0, bake.returncode, bake.stdout + bake.stderr)
+        directory = self.root / "regions"
+        build_regions(terrain, directory, height_field=height_field)
+        source_scene = directory / "terrain_regions.gltf"
+
+        def fingerprint(path):
+            return hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns
+
+        original_files = {path: fingerprint(path) for path in directory.iterdir()}
+        layer_asset = self.root / "authoring" / "terrain.layers.json"
+        export_example(self.weight_map, layer_asset, terrain)
+        build_region_materials(source_scene, layer_asset)
+        self.assertEqual(original_files, {path: fingerprint(path) for path in original_files})
+
+        variants = []
+        for name in ("two", "four"):
+            path = directory / f"terrain_regions_{name}"
+            scene = json.loads(path.with_suffix(".metallic_scene.json").read_text(encoding="utf-8"))
+            self.assertEqual(source_scene.name, scene["source"])
+            self.assertEqual([0, 1], [material["materialIndex"] for material in scene["materials"]])
+            self.assertEqual(["Terrain Region West", "Terrain Region East"],
+                             [material["sourceName"] for material in scene["materials"]])
+            for material in scene["materials"]:
+                self.assertEqual({"uri": f"asset://{path.name}.material", "root": "."}, material["materialAsset"])
+            instance = json.loads(path.with_suffix(".material").read_text(encoding="utf-8"))
+            variants.append(instance["terrainLayers"])
+
+        two, four = variants
+        self.assertEqual(two["weights"], four["weights"])
+        self.assertEqual("grass", two["defaultLayer"])
+        self.assertEqual(two["layers"], [layer for layer in four["layers"] if layer["channel"] in "RG"])
+        image_path = directory / four["weights"]["uri"].removeprefix("asset://")
+        with Image.open(image_path) as image:
+            for column in (63, 65):  # World X=-2 and X=2 on either side of the boundary.
+                self.assertTrue(all(weight > 25 for weight in image.getpixel((column, 80))))  # World Z=32
+                self.assertEqual((0, 0), image.getpixel((column, 83))[:2])  # World Z=38
 
 
 if __name__ == "__main__":

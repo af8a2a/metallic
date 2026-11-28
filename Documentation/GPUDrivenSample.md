@@ -284,3 +284,16 @@ cmake --build build-ci --target MetallicTerrainRegionStreamingRegression
 回归在 80 页和 1 MiB 的几何页池里往返跨区。栅格和 VSM 都使用保底 LOD，以隔离细节页请求，并检查实际过界前、中、后的深度和可见性覆盖。编辑器样例使用自动 LOD、512 页上限和 64 MiB 页池，为交接时两区的细节页留出页槽。逐帧报告记录目标区、已发布区、GPU 页表锁定页、保底页占用和几何页池的已用字节。后两项计量的是页池内分配，页池预留容量由运行配置决定。报告位于构建目录的 `tests/terrain-region-streaming-regression/run-*/TerrainRegionStreamingAcceptance.json`。
 
 首次通过的 204 帧往返中，双区分别在第 31 和 124 帧就绪并发布，先于第 59 和 154 帧的实际过界。旧区独占分配分别在第 81 和 175 帧完成回收。锁定页数随西区、双区、东区在 32、64、32 之间变化，对应几何页池已用字节为 306,944、611,072、304,128。回到西区后恢复为 306,944 字节。
+
+### 跨区材质采样与成本
+
+`MetallicTerrainRegionMaterialsSample` 为同一份区域 glTF 和 StreamAsset 生成双层与四层场景文档。每个变体的东西两区绑定同一个材质，并使用全局 XZ 映射和同一份线性 RGBA 权重图。两个变体都使用 OpenPBR 的显式地形层求值。双层保留 R/G 对应的岩石和草地，四层再启用 B/A 对应的碎石和雪。
+
+```powershell
+cmake --build build-ci --target MetallicTerrainRegionMaterialsSample MetallicRHITests
+python -B Tools/Perf/TerrainRegionMaterialAcceptance.py --executable build-ci/tests/MetallicRHITests.exe
+```
+
+路线从西区起飞，在同一条材质带上停留于远、近两个机位，再横跨东西区边界。诊断读回底色、切线空间法线和粗糙度，并对照从 GPU 深度重建的世界坐标及纹理采样范围。过界前、中、后三帧均要求两区可见。额外远景扩大权重纹素覆盖，使用底色读回对照共享权重图的滤波结果和固定 mip 0。区域飞行沿用 80 页和 1 MiB 的保底几何设置。`--mode diagnostic` 可单独执行连续性验证。
+
+普通计时在独立进程中以双层、四层交替运行，共用相机、640×360 内部尺寸和预热帧。报告使用固定机位上逐进程的 Deferred GPU 时间中位数，以及 VBuffer 报告的已驻留纹理分配字节。区域发布和释放的几何字节另有记录。`Continuity.json`、`Timing.json` 和原始读回写入 `build/terrain-region-material-validation/run-*/`。

@@ -66,18 +66,23 @@ def _mip_chain(pixels):
 
 @dataclass(frozen=True)
 class _Texture:
+    path: Path
     mips: tuple[np.ndarray, ...]
     transform: np.ndarray
     srgb: bool
+
+    def lod(self, footprint):
+        height, width = self.mips[0].shape[:2]
+        texels_per_uv = np.sqrt(height * width * abs(np.linalg.det(self.transform[:, :2])))
+        return np.clip(np.log2(np.maximum(1e-8, footprint * texels_per_uv)), 0, len(self.mips) - 1)
 
     def sample(self, uv, footprint):
         uv = uv @ self.transform[:, :2].T + self.transform[:, 2]
         if footprint is None:
             sample = repeat_linear(self.mips[0], uv)
         else:
-            height, width, components = self.mips[0].shape
-            texels_per_uv = np.sqrt(height * width * abs(np.linalg.det(self.transform[:, :2])))
-            lod = np.clip(np.log2(np.maximum(1e-8, footprint * texels_per_uv)), 0, len(self.mips) - 1)
+            lod = self.lod(footprint)
+            components = self.mips[0].shape[-1]
             sample = np.zeros((len(uv), components), dtype=np.float64)
             for level, mip in enumerate(self.mips):
                 fraction = 1 - np.abs(lod - level)
@@ -110,7 +115,10 @@ class TerrainLayerReference:
 
     def weights(self, world, footprint=None):
         """Return the normalized layer weights in RGBA channel order."""
-        return self._normalized_weights(self.weight_texture.sample(self._uv(world), footprint))
+        sampled = self.weight_texture.sample(self._uv(world), footprint)
+        unused = [i for i in range(len(RGBA)) if all(layer.channel != i for layer in self.layers)]
+        sampled[..., unused] = 0.0
+        return self._normalized_weights(sampled)
 
     def evaluate(self, mode, world, weights=None, *, footprint=None, omitted_channel=None):
         """Return the filtered reference in the same encoding as the Deferred AOV."""
@@ -160,26 +168,43 @@ def _texture(root, binding, transform, role):
         texels = np.asarray(image.convert("RGBA" if role == "weights" else "RGB"), dtype=np.uint8)
     if role == "roughness":
         texels = texels[..., :1]
-    return _Texture(_mip_chain(texels), np.asarray(transform).reshape(2, 3), color_space == "srgb")
+    return _Texture(path, _mip_chain(texels), np.asarray(transform).reshape(2, 3), color_space == "srgb")
 
 
-def load_terrain_layer_reference(scene: Path):
+def load_terrain_layer_reference(scene: Path, *, scene_document: Path | None = None, channels=RGBA):
     """Load bound texture files and check their UV transforms against authored world scales."""
     extras = json.loads(scene.read_text(encoding="utf-8"))["extras"]
-    world_size = float(extras["metallicTerrainTiles"]["horizontalSize"])
-    metadata = scene.with_suffix(".terrain-layers.json")
+    scene_document = scene_document or scene.with_suffix(".metallic_scene.json")
+    basename = scene_document.name.removesuffix(".metallic_scene.json")
+    metadata = scene_document.with_name(basename + ".terrain-layers.json")
     authored = (json.loads(metadata.read_text(encoding="utf-8")) if metadata.is_file()
                 else extras["metallicTerrainLayers"])
     reference_layers = {layer["name"]: layer for layer in authored["layers"]}
-    entries = json.loads(scene.with_suffix(".metallic_scene.json").read_text(encoding="utf-8"))["materials"]
-    binding, = (entry["materialAsset"] for entry in entries
-                if entry["sourceId"] == "main" and entry["materialIndex"] == 0)
-    root = (scene.parent / binding["root"]).resolve()
+    if "metallicTerrainTiles" in extras:
+        world_size = float(extras["metallicTerrainTiles"]["horizontalSize"])
+        terrain_materials = [0]
+    else:
+        regions = extras["metallicTerrainRegions"]["regions"]
+        sizes = set()
+        terrain_materials = []
+        for region in regions:
+            source = json.loads((scene.parent / region["gltf"]).read_text(encoding="utf-8"))
+            sizes.add(float(source["extras"]["metallicTerrainTiles"]["horizontalSize"]))
+            terrain_materials.extend(range(region["materialOffset"], region["materialOffset"] + region["materialCount"]))
+        if len(sizes) != 1:
+            raise ValueError("Regional terrain sources must agree on global world size")
+        world_size, = sizes
+    entries = json.loads(scene_document.read_text(encoding="utf-8"))["materials"]
+    bindings = {entry["materialIndex"]: entry["materialAsset"] for entry in entries if entry["sourceId"] == "main"}
+    binding = bindings[terrain_materials[0]]
+    if any(bindings[index] != binding for index in terrain_materials):
+        raise ValueError("Terrain regions must share one material asset binding per variant")
+    root = (scene_document.parent / binding["root"]).resolve()
     material = json.loads(_asset_path(root, binding["uri"]).read_text(encoding="utf-8"))["terrainLayers"]
-    if (len(material["layers"]) != 4 or {entry["channel"] for entry in material["layers"]} != set(RGBA)
+    if (len(material["layers"]) != len(channels) or {entry["channel"] for entry in material["layers"]} != set(channels)
             or {entry["name"] for entry in material["layers"]} != reference_layers.keys()
             or material["defaultLayer"] != authored["defaultLayer"]):
-        raise ValueError("Four-layer material names, channels or default layer differ from the authored tile metadata")
+        raise ValueError("Terrain material names, channels or default layer differ from the authored tile metadata")
 
     width, height = authored["weightResolution"]
     transform = [(width - 1) / (2 * width), 0, 0.25 / width, 0, (height - 1) / (2 * height), 0.25 / height]
