@@ -1,0 +1,285 @@
+{
+  "dimensionsMetersXZ": [
+    1000,
+    1000
+  ],
+  "sourceHoudini": {
+    "houdiniVersion": "22.0.368",
+    "license": "licenseCategoryType.Apprentice",
+    "sourceSop": "/obj/AncientRiftValley/OUT_LAYERS",
+    "reopenAndRecookSucceeded": true,
+    "floatLayers": {
+      "height": {
+        "sha256": "db3defa0060a3957b001aecf8a9f4b05a1fb681263101ccdb03a086ce7ca1ffe",
+        "maxAbsDeltaFromAuthoringCook": 0.0
+      },
+      "canyon_sand": {
+        "sha256": "aa6de0fcb93dfc3d19c505eff416432622fc232638666e804366c08895b3d7e1",
+        "maxAbsDeltaFromAuthoringCook": 0.0
+      },
+      "alluvial_gravel": {
+        "sha256": "ae66f66b08067245db3f0ee41ccbab56694009ea61fc1f8703742a3fbdcdff66",
+        "maxAbsDeltaFromAuthoringCook": 0.0
+      },
+      "dry_grass": {
+        "sha256": "9d11c28d134aec8230350776d4661c89a4f43586f0fb38a2160412d6ceffa00e",
+        "maxAbsDeltaFromAuthoringCook": 0.0
+      },
+      "wet_silt": {
+        "sha256": "6b0c0ea204bd4765a52de8b33d3fb096a2b2e3d325b36bb2e6347d0ed765c5fc",
+        "maxAbsDeltaFromAuthoringCook": 0.0
+      },
+      "red_sandstone": {
+        "sha256": "cc5181b81e12b403c4d595af1d3ce45678250ccf7dbe0bf86af33d3654d9de02",
+        "maxAbsDeltaFromAuthoringCook": 0.0
+      },
+      "pale_caprock": {
+        "sha256": "0c5e7613155f8e521d10def365de9698b7e82da2ecef19c7c1aa4d0ed54d7d84",
+        "maxAbsDeltaFromAuthoringCook": 0.0
+      },
+      "talus": {
+        "sha256": "f8557a07d216d7a0fef68e93747679eb7a9b57103d3dd5174283c66511a2f7a3",
+        "maxAbsDeltaFromAuthoringCook": 0.0
+      },
+      "desert_scrub": {
+        "sha256": "d40083f5a0668aa490fb323949bf25862523278b47c1dbd4db6ace1dcf58bd24",
+        "maxAbsDeltaFromAuthoringCook": 0.0
+      }
+    },
+    "viewCameras": [
+      "/obj/Canyon_Entrance",
+      "/obj/Aerial_Overview"
+    ]
+  },
+  "heightMeters": {
+    "min": 20.349681854248047,
+    "max": 413.0623779296875,
+    "mean": 204.95335388183594,
+    "relief": 392.71270751953125
+  },
+  "slopeDegrees": {
+    "p50": 44.348236083984375,
+    "p90": 73.74750518798828,
+    "p95": 77.50052642822266,
+    "p99": 81.9501724243164
+  },
+  "exrSamplesMatchHoudiniWithinCookAndHalfPrecision": true,
+  "exrDeltaFromLatestCook": {
+    "heightMeters": 0.0,
+    "quantizedWeights": {
+      "canyon_sand": 0.0,
+      "alluvial_gravel": 0.0,
+      "dry_grass": 0.0,
+      "wet_silt": 0.0,
+      "red_sandstone": 0.0,
+      "pale_caprock": 0.0,
+      "talus": 0.0,
+      "desert_scrub": 0.0
+    }
+  },
+  "existingMetallicHeightReaderVerified": true,
+  "weightSumMaxAbsoluteError": 0.0004229545593261719,
+  "activeLayerCountByPixelAbove002": {
+    "0": 0,
+    "1": 1068554,
+    "2": 1263755,
+    "3": 1252357,
+    "4": 545293,
+    "5": 66752,
+    "6": 0,
+    "7": 171,
+    "8": 1519
+  },
+  "eightLayerOverlap": {
+    "minimumPerLayerWeight": 0.02,
+    "sampleCount": 1519,
+    "worldBoundsXZ": [
+      -37.109,
+      -203.125,
+      -10.742,
+      -186.523
+    ]
+  },
+  "materialWeights": {
+    "canyon_sand": {
+      "min": 3.695487976074219e-05,
+      "max": 1.0,
+      "mean": 0.03510899469256401,
+      "dominantPixelCount": 114083,
+      "dominantFraction": 0.02717296418326882
+    },
+    "alluvial_gravel": {
+      "min": 0.0,
+      "max": 0.99365234375,
+      "mean": 0.08587316423654556,
+      "dominantPixelCount": 382986,
+      "dominantFraction": 0.09122187232710739
+    },
+    "dry_grass": {
+      "min": 0.0,
+      "max": 0.91845703125,
+      "mean": 0.03453941270709038,
+      "dominantPixelCount": 125878,
+      "dominantFraction": 0.02998236709642552
+    },
+    "wet_silt": {
+      "min": 0.0,
+      "max": 0.99951171875,
+      "mean": 0.019335266202688217,
+      "dominantPixelCount": 86290,
+      "dominantFraction": 0.020553062939914504
+    },
+    "red_sandstone": {
+      "min": 0.0,
+      "max": 1.0,
+      "mean": 0.4676215946674347,
+      "dominantPixelCount": 1879045,
+      "dominantFraction": 0.44756205993662823
+    },
+    "pale_caprock": {
+      "min": 0.0,
+      "max": 0.97412109375,
+      "mean": 0.19436968863010406,
+      "dominantPixelCount": 1034476,
+      "dominantFraction": 0.24639761661642134
+    },
+    "talus": {
+      "min": 0.0,
+      "max": 0.98388671875,
+      "mean": 0.09679824113845825,
+      "dominantPixelCount": 312494,
+      "dominantFraction": 0.07443167053361506
+    },
+    "desert_scrub": {
+      "min": 0.0,
+      "max": 0.95556640625,
+      "mean": 0.06637155264616013,
+      "dominantPixelCount": 263149,
+      "dominantFraction": 0.0626783863666191
+    }
+  },
+  "candidateRegionEdgesChecked": 24,
+  "heightAndAllEightWeightsBitExactAlongEachEdge": true,
+  "files": {
+    "Materials/canyon_sand/BaseColor.png": {
+      "sizeBytes": 890219,
+      "sha256": "445f58d4fa85006c4ecb57992b6e93c7ff5a8a4114f1f168aacb87c5e0edbc6d"
+    },
+    "Materials/canyon_sand/Normal.png": {
+      "sizeBytes": 1270768,
+      "sha256": "96fbeb0d3f85383acc66c1eef6ad1a10489d3cdfcc99f0e6754c7ad078d94e68"
+    },
+    "Materials/canyon_sand/Roughness.png": {
+      "sizeBytes": 313850,
+      "sha256": "fb87ff0f50cbe76bf7907fe4d9e3b574cc73b25787bb39b90ade59ab48274b8d"
+    },
+    "Materials/alluvial_gravel/BaseColor.png": {
+      "sizeBytes": 893667,
+      "sha256": "cace41852341f0617cd5da2e9f8af7a1bc3a8bd5adfd7ec6326efed09106cbe3"
+    },
+    "Materials/alluvial_gravel/Normal.png": {
+      "sizeBytes": 1777725,
+      "sha256": "246341a39bf448032ee1a60e1f970298c34ebe492ec4f2917ebd971ac87f520b"
+    },
+    "Materials/alluvial_gravel/Roughness.png": {
+      "sizeBytes": 374713,
+      "sha256": "75d891ad2fe3f45e87aed76a0a11f4da9ee268f8cd1294ad3f9fb14e72396436"
+    },
+    "Materials/dry_grass/BaseColor.png": {
+      "sizeBytes": 1055728,
+      "sha256": "ab8a0750c6e3088a69d9f2e6685faeea9149e8c12ae01a5cd93240c0d9fedae7"
+    },
+    "Materials/dry_grass/Normal.png": {
+      "sizeBytes": 1641649,
+      "sha256": "ae82d06565f24c2c048dc165c618c5cde119167d1e3614a8aca2fed9a951725a"
+    },
+    "Materials/dry_grass/Roughness.png": {
+      "sizeBytes": 402177,
+      "sha256": "a5fb8fa56b0c942e078d2ba0c9cca1df6223a757fa9161217793421d43c5608d"
+    },
+    "Materials/wet_silt/BaseColor.png": {
+      "sizeBytes": 765416,
+      "sha256": "118793662a95c6e8baec731138f482f54217d2d78a3a7fca2c0e91f4b82746b7"
+    },
+    "Materials/wet_silt/Normal.png": {
+      "sizeBytes": 1256811,
+      "sha256": "9526e86943ffe0baae44f221150efba09fdc188120c175a49133832b5693bfcd"
+    },
+    "Materials/wet_silt/Roughness.png": {
+      "sizeBytes": 337474,
+      "sha256": "424780a73dd0b52ba48b782eee882927c9597bca63dd654c9c8a7d4ee6f43d66"
+    },
+    "Materials/red_sandstone/BaseColor.png": {
+      "sizeBytes": 750015,
+      "sha256": "21892dc65737088f09e2930f43036b9150fc7fa7fc5d8c88719f794f62a235b7"
+    },
+    "Materials/red_sandstone/Normal.png": {
+      "sizeBytes": 1224234,
+      "sha256": "0692080cdc61ad55417b582543bc67f5677a63b57a1d8d3dcbc3fc821d9f4646"
+    },
+    "Materials/red_sandstone/Roughness.png": {
+      "sizeBytes": 204848,
+      "sha256": "df3912ae5c60e9c12582ef601fde6d500fc752de33461164ac80b7de6669ad8d"
+    },
+    "Materials/pale_caprock/BaseColor.png": {
+      "sizeBytes": 851780,
+      "sha256": "e0561f6c1b43330bfd01d71ef92e28709a8b7cf18279a196d74a19bde2a9ea11"
+    },
+    "Materials/pale_caprock/Normal.png": {
+      "sizeBytes": 1449276,
+      "sha256": "7ad431700ce86fa9323f0de85b61e362c2bfb2bfb2c1e8a79ec56dc726c00331"
+    },
+    "Materials/pale_caprock/Roughness.png": {
+      "sizeBytes": 315522,
+      "sha256": "e712d457045402e982459a209fee1fe99a4b68784f041be38affaabccec65d11"
+    },
+    "Materials/talus/BaseColor.png": {
+      "sizeBytes": 887242,
+      "sha256": "2e3f7553a4093fc8938e16bc10afbfa581cb2178f2fb0c8d0451f46b13face15"
+    },
+    "Materials/talus/Normal.png": {
+      "sizeBytes": 1563675,
+      "sha256": "2f6c7867b49bc104a9914c74336399e32253178c8ca407e249b0c876b587388c"
+    },
+    "Materials/talus/Roughness.png": {
+      "sizeBytes": 355209,
+      "sha256": "eeb1bf1b0e39dd51f09d427245ca3424b9752680365dce20326ca7ad3257d8c3"
+    },
+    "Materials/desert_scrub/BaseColor.png": {
+      "sizeBytes": 822690,
+      "sha256": "e57c18ea65bd2281f92fd39fe9d626c42b04d84902a04c0af51eaa9b2d1537c7"
+    },
+    "Materials/desert_scrub/Normal.png": {
+      "sizeBytes": 1185746,
+      "sha256": "19d1993eb7d527858e0d240c125f6cba993e4f396318abb3a88af5ad472dd3ac"
+    },
+    "Materials/desert_scrub/Roughness.png": {
+      "sizeBytes": 324301,
+      "sha256": "f5a11c5b0d90e53991dfe045eac0124dd57007dae4c5a23082cd022daf326f9b"
+    },
+    "AncientRiftValley.hipnc": {
+      "sizeBytes": 341916,
+      "sha256": "0d1db051634107430700017251b47f3b5c3e4ec1776c303ec638abd318a80bce"
+    },
+    "Materials/TerrainMaterialLibrary.hip": {
+      "sizeBytes": 204534,
+      "sha256": "b26c6bf8ea7f3195671bafd55f6d9030b6c7651a05212f923781af190a943334"
+    },
+    "Maps/Height.exr": {
+      "sizeBytes": 15537033,
+      "sha256": "97ae0a5ddcfbd3fb8ffed0c3d42594d7a2238dc330e1809a3af3078e698d0de9"
+    },
+    "Maps/Weights_0.exr": {
+      "sizeBytes": 9045677,
+      "sha256": "dc8b4e4ec30544760630596c9bad612972744a24cb1e434e212d76dcbbe0af6a"
+    },
+    "Maps/Weights_1.exr": {
+      "sizeBytes": 12900805,
+      "sha256": "c7091cba731d3ab16e846aec686ba60ae8315a00af07ab91a3c4cc2917704ab6"
+    },
+    "TerrainAsset.json": {
+      "sizeBytes": 11356,
+      "sha256": "54781db382a7291bd90ce245b2b6d015d4de45b53349b345640c226a14e01aa5"
+    }
+  }
+}

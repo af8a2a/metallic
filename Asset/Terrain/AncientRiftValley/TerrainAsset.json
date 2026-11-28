@@ -1,0 +1,574 @@
+{
+  "type": "AncientRiftValley.DCCSource",
+  "version": 1,
+  "project": "AncientRiftValley.hipnc",
+  "materialLibrary": "Materials/TerrainMaterialLibrary.hip",
+  "coordinateSystem": {
+    "unit": "meter",
+    "up": "+Y",
+    "origin": "world center",
+    "worldBoundsXZ": [
+      -500,
+      -500,
+      500,
+      500
+    ],
+    "heightfieldColumnAxis": "+X",
+    "heightfieldRowAxis": "+Z",
+    "flipZ": false
+  },
+  "sampling": {
+    "resolution": [
+      2049,
+      2049
+    ],
+    "spacingMeters": 0.48828125,
+    "dataWindowInclusive": [
+      0,
+      0,
+      2048,
+      2048
+    ]
+  },
+  "height": {
+    "path": "Maps/Height.exr",
+    "channel": "Y",
+    "sampleType": "float32",
+    "worldScale": 1,
+    "worldOffset": 0
+  },
+  "weightMaps": [
+    {
+      "path": "Maps/Weights_0.exr",
+      "channels": "RGBA",
+      "sampleType": "float16",
+      "colorSpace": "Linear"
+    },
+    {
+      "path": "Maps/Weights_1.exr",
+      "channels": "RGBA",
+      "sampleType": "float16",
+      "colorSpace": "Linear"
+    }
+  ],
+  "weightUV": "u = (x + 500) / 1000, v = (z + 500) / 1000",
+  "defaultLayer": "canyon_sand",
+  "normalConvention": "OpenGL tangent-space +Y",
+  "layers": [
+    {
+      "name": "canyon_sand",
+      "weightMap": 0,
+      "channel": "R",
+      "worldTileSizeMeters": [
+        5,
+        5
+      ],
+      "textures": {
+        "baseColor": {
+          "path": "Materials/canyon_sand/BaseColor.png",
+          "colorSpace": "sRGB"
+        },
+        "normal": {
+          "path": "Materials/canyon_sand/Normal.png",
+          "colorSpace": "Linear"
+        },
+        "roughness": {
+          "path": "Materials/canyon_sand/Roughness.png",
+          "colorSpace": "Linear"
+        }
+      }
+    },
+    {
+      "name": "alluvial_gravel",
+      "weightMap": 0,
+      "channel": "G",
+      "worldTileSizeMeters": [
+        4,
+        4
+      ],
+      "textures": {
+        "baseColor": {
+          "path": "Materials/alluvial_gravel/BaseColor.png",
+          "colorSpace": "sRGB"
+        },
+        "normal": {
+          "path": "Materials/alluvial_gravel/Normal.png",
+          "colorSpace": "Linear"
+        },
+        "roughness": {
+          "path": "Materials/alluvial_gravel/Roughness.png",
+          "colorSpace": "Linear"
+        }
+      }
+    },
+    {
+      "name": "dry_grass",
+      "weightMap": 0,
+      "channel": "B",
+      "worldTileSizeMeters": [
+        5,
+        5
+      ],
+      "textures": {
+        "baseColor": {
+          "path": "Materials/dry_grass/BaseColor.png",
+          "colorSpace": "sRGB"
+        },
+        "normal": {
+          "path": "Materials/dry_grass/Normal.png",
+          "colorSpace": "Linear"
+        },
+        "roughness": {
+          "path": "Materials/dry_grass/Roughness.png",
+          "colorSpace": "Linear"
+        }
+      }
+    },
+    {
+      "name": "wet_silt",
+      "weightMap": 0,
+      "channel": "A",
+      "worldTileSizeMeters": [
+        6,
+        6
+      ],
+      "textures": {
+        "baseColor": {
+          "path": "Materials/wet_silt/BaseColor.png",
+          "colorSpace": "sRGB"
+        },
+        "normal": {
+          "path": "Materials/wet_silt/Normal.png",
+          "colorSpace": "Linear"
+        },
+        "roughness": {
+          "path": "Materials/wet_silt/Roughness.png",
+          "colorSpace": "Linear"
+        }
+      }
+    },
+    {
+      "name": "red_sandstone",
+      "weightMap": 1,
+      "channel": "R",
+      "worldTileSizeMeters": [
+        12,
+        12
+      ],
+      "textures": {
+        "baseColor": {
+          "path": "Materials/red_sandstone/BaseColor.png",
+          "colorSpace": "sRGB"
+        },
+        "normal": {
+          "path": "Materials/red_sandstone/Normal.png",
+          "colorSpace": "Linear"
+        },
+        "roughness": {
+          "path": "Materials/red_sandstone/Roughness.png",
+          "colorSpace": "Linear"
+        }
+      }
+    },
+    {
+      "name": "pale_caprock",
+      "weightMap": 1,
+      "channel": "G",
+      "worldTileSizeMeters": [
+        9,
+        9
+      ],
+      "textures": {
+        "baseColor": {
+          "path": "Materials/pale_caprock/BaseColor.png",
+          "colorSpace": "sRGB"
+        },
+        "normal": {
+          "path": "Materials/pale_caprock/Normal.png",
+          "colorSpace": "Linear"
+        },
+        "roughness": {
+          "path": "Materials/pale_caprock/Roughness.png",
+          "colorSpace": "Linear"
+        }
+      }
+    },
+    {
+      "name": "talus",
+      "weightMap": 1,
+      "channel": "B",
+      "worldTileSizeMeters": [
+        8,
+        8
+      ],
+      "textures": {
+        "baseColor": {
+          "path": "Materials/talus/BaseColor.png",
+          "colorSpace": "sRGB"
+        },
+        "normal": {
+          "path": "Materials/talus/Normal.png",
+          "colorSpace": "Linear"
+        },
+        "roughness": {
+          "path": "Materials/talus/Roughness.png",
+          "colorSpace": "Linear"
+        }
+      }
+    },
+    {
+      "name": "desert_scrub",
+      "weightMap": 1,
+      "channel": "A",
+      "worldTileSizeMeters": [
+        7,
+        7
+      ],
+      "textures": {
+        "baseColor": {
+          "path": "Materials/desert_scrub/BaseColor.png",
+          "colorSpace": "sRGB"
+        },
+        "normal": {
+          "path": "Materials/desert_scrub/Normal.png",
+          "colorSpace": "Linear"
+        },
+        "roughness": {
+          "path": "Materials/desert_scrub/Roughness.png",
+          "colorSpace": "Linear"
+        }
+      }
+    }
+  ],
+  "eightLayerOverlap": {
+    "minimumPerLayerWeight": 0.02,
+    "sampleCount": 1519,
+    "worldBoundsXZ": [
+      -37.109,
+      -203.125,
+      -10.742,
+      -186.523
+    ]
+  },
+  "regionWindows": {
+    "gridXZ": [
+      4,
+      4
+    ],
+    "regionSizeMetersXZ": [
+      250,
+      250
+    ],
+    "samplesXZ": [
+      513,
+      513
+    ],
+    "sharedBorderSamples": 1,
+    "regions": [
+      {
+        "id": "x0_z0",
+        "gridXZ": [
+          0,
+          0
+        ],
+        "sampleWindowInclusive": [
+          0,
+          0,
+          512,
+          512
+        ],
+        "worldBoundsXZ": [
+          -500.0,
+          -500.0,
+          -250.0,
+          -250.0
+        ]
+      },
+      {
+        "id": "x1_z0",
+        "gridXZ": [
+          1,
+          0
+        ],
+        "sampleWindowInclusive": [
+          512,
+          0,
+          1024,
+          512
+        ],
+        "worldBoundsXZ": [
+          -250.0,
+          -500.0,
+          0.0,
+          -250.0
+        ]
+      },
+      {
+        "id": "x2_z0",
+        "gridXZ": [
+          2,
+          0
+        ],
+        "sampleWindowInclusive": [
+          1024,
+          0,
+          1536,
+          512
+        ],
+        "worldBoundsXZ": [
+          0.0,
+          -500.0,
+          250.0,
+          -250.0
+        ]
+      },
+      {
+        "id": "x3_z0",
+        "gridXZ": [
+          3,
+          0
+        ],
+        "sampleWindowInclusive": [
+          1536,
+          0,
+          2048,
+          512
+        ],
+        "worldBoundsXZ": [
+          250.0,
+          -500.0,
+          500.0,
+          -250.0
+        ]
+      },
+      {
+        "id": "x0_z1",
+        "gridXZ": [
+          0,
+          1
+        ],
+        "sampleWindowInclusive": [
+          0,
+          512,
+          512,
+          1024
+        ],
+        "worldBoundsXZ": [
+          -500.0,
+          -250.0,
+          -250.0,
+          0.0
+        ]
+      },
+      {
+        "id": "x1_z1",
+        "gridXZ": [
+          1,
+          1
+        ],
+        "sampleWindowInclusive": [
+          512,
+          512,
+          1024,
+          1024
+        ],
+        "worldBoundsXZ": [
+          -250.0,
+          -250.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "id": "x2_z1",
+        "gridXZ": [
+          2,
+          1
+        ],
+        "sampleWindowInclusive": [
+          1024,
+          512,
+          1536,
+          1024
+        ],
+        "worldBoundsXZ": [
+          0.0,
+          -250.0,
+          250.0,
+          0.0
+        ]
+      },
+      {
+        "id": "x3_z1",
+        "gridXZ": [
+          3,
+          1
+        ],
+        "sampleWindowInclusive": [
+          1536,
+          512,
+          2048,
+          1024
+        ],
+        "worldBoundsXZ": [
+          250.0,
+          -250.0,
+          500.0,
+          0.0
+        ]
+      },
+      {
+        "id": "x0_z2",
+        "gridXZ": [
+          0,
+          2
+        ],
+        "sampleWindowInclusive": [
+          0,
+          1024,
+          512,
+          1536
+        ],
+        "worldBoundsXZ": [
+          -500.0,
+          0.0,
+          -250.0,
+          250.0
+        ]
+      },
+      {
+        "id": "x1_z2",
+        "gridXZ": [
+          1,
+          2
+        ],
+        "sampleWindowInclusive": [
+          512,
+          1024,
+          1024,
+          1536
+        ],
+        "worldBoundsXZ": [
+          -250.0,
+          0.0,
+          0.0,
+          250.0
+        ]
+      },
+      {
+        "id": "x2_z2",
+        "gridXZ": [
+          2,
+          2
+        ],
+        "sampleWindowInclusive": [
+          1024,
+          1024,
+          1536,
+          1536
+        ],
+        "worldBoundsXZ": [
+          0.0,
+          0.0,
+          250.0,
+          250.0
+        ]
+      },
+      {
+        "id": "x3_z2",
+        "gridXZ": [
+          3,
+          2
+        ],
+        "sampleWindowInclusive": [
+          1536,
+          1024,
+          2048,
+          1536
+        ],
+        "worldBoundsXZ": [
+          250.0,
+          0.0,
+          500.0,
+          250.0
+        ]
+      },
+      {
+        "id": "x0_z3",
+        "gridXZ": [
+          0,
+          3
+        ],
+        "sampleWindowInclusive": [
+          0,
+          1536,
+          512,
+          2048
+        ],
+        "worldBoundsXZ": [
+          -500.0,
+          250.0,
+          -250.0,
+          500.0
+        ]
+      },
+      {
+        "id": "x1_z3",
+        "gridXZ": [
+          1,
+          3
+        ],
+        "sampleWindowInclusive": [
+          512,
+          1536,
+          1024,
+          2048
+        ],
+        "worldBoundsXZ": [
+          -250.0,
+          250.0,
+          0.0,
+          500.0
+        ]
+      },
+      {
+        "id": "x2_z3",
+        "gridXZ": [
+          2,
+          3
+        ],
+        "sampleWindowInclusive": [
+          1024,
+          1536,
+          1536,
+          2048
+        ],
+        "worldBoundsXZ": [
+          0.0,
+          250.0,
+          250.0,
+          500.0
+        ]
+      },
+      {
+        "id": "x3_z3",
+        "gridXZ": [
+          3,
+          3
+        ],
+        "sampleWindowInclusive": [
+          1536,
+          1536,
+          2048,
+          2048
+        ],
+        "worldBoundsXZ": [
+          250.0,
+          250.0,
+          500.0,
+          500.0
+        ]
+      }
+    ]
+  }
+}

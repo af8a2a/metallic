@@ -1,0 +1,55 @@
+{
+  "renderer": "Blender 4.5.3 LTS Cycles CUDA",
+  "samples": 72,
+  "heightfieldStride": 1,
+  "layerWorldTileMeters": {
+    "canyon_sand": 5.0,
+    "alluvial_gravel": 4.0,
+    "dry_grass": 5.0,
+    "wet_silt": 6.0,
+    "red_sandstone": 12.0,
+    "pale_caprock": 9.0,
+    "talus": 8.0,
+    "desert_scrub": 7.0
+  },
+  "coordinateOrder": "Metallic X, Y-up, Z",
+  "weightMapping": "World XZ; EXR row 0 = world -Z; channels R, G, B, A",
+  "materialProjection": "World-space triplanar with coherent texture phase variation for red_sandstone and pale_caprock; world XZ for other layers",
+  "cameras": {
+    "CanyonVista": {
+      "eye": [
+        61.0,
+        114.88555737878417,
+        -429.0
+      ],
+      "target": [
+        64.0,
+        92.9330381499023,
+        -124.0
+      ],
+      "lensMillimeters": 25.799999237060547
+    },
+    "WorldOverview": {
+      "eye": [
+        1040.0,
+        1475.0,
+        -1240.0
+      ],
+      "target": [
+        0.0,
+        199.9532928466797,
+        0.0
+      ],
+      "horizontalWidthMeters": 1730.0,
+      "previewOnlyGeometry": [
+        "vertical boundary section",
+        "studio ground"
+      ]
+    }
+  },
+  "cliffPreviewAdjustment": {
+    "normalStrength": 0.4,
+    "baseColorTextureMix": 0.42,
+    "purpose": "Reduce visible tile repetition on broad cliff faces"
+  }
+}
