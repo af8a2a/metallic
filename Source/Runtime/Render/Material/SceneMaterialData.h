@@ -59,12 +59,14 @@ struct TerrainLayerTextureBindings
     SceneMaterialData::TextureInfo baseColor;
     SceneMaterialData::TextureInfo normal;
     SceneMaterialData::TextureInfo roughness;
+    float triplanar[4] = {}; // Inverse world tile size in meters, normal strength, base-color texture mix.
+    float triplanarBaseColor[4] = {}; // Mean RGB in the scene working color space.
 };
 
 struct alignas(16) TerrainLayerMaterialData
 {
     SceneMaterialData::TextureInfo weightMaps[kMaxTerrainWeightMaps];
-    uint32_t settings[4] = {}; // layer count, default layer index, weight map count, reserved
+    uint32_t settings[4] = {}; // layer count, default layer index, weight map count, triplanar layer mask
     uint32_t weightSlots[kMaxTerrainMaterialLayers] = {}; // weightMap * 4 + channel
     TerrainLayerTextureBindings layers[kMaxTerrainMaterialLayers];
 };
@@ -81,8 +83,10 @@ static_assert(offsetof(SceneMaterialData, baseColorTexture) == 176);
 static_assert(offsetof(SceneMaterialData, specular) == 608);
 static_assert(offsetof(SceneMaterialData, terrainLayerBinding) == 720);
 static_assert(std::is_trivially_copyable_v<TerrainLayerMaterialData>);
-static_assert(sizeof(TerrainLayerMaterialData) == 1296);
-static_assert(sizeof(TerrainLayerTextureBindings) == 144);
+static_assert(sizeof(TerrainLayerMaterialData) == 1552);
+static_assert(sizeof(TerrainLayerTextureBindings) == 176);
+static_assert(offsetof(TerrainLayerTextureBindings, triplanar) == 144);
+static_assert(offsetof(TerrainLayerTextureBindings, triplanarBaseColor) == 160);
 static_assert(offsetof(TerrainLayerMaterialData, settings) == 96);
 static_assert(offsetof(TerrainLayerMaterialData, weightSlots) == 112);
 static_assert(offsetof(TerrainLayerMaterialData, layers) == 144);

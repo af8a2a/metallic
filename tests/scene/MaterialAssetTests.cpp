@@ -554,6 +554,10 @@ TEST_F(MaterialAssets, PairedTerrainLayerBindingsValidateAndRoundTrip)
             {"baseColor", "asset://2.png"}, {"normal", "asset://3.png"}, {"roughness", "asset://4.png"},
         });
     }
+    asset.terrainLayers["layers"][4]["triplanar"] = {
+        {"worldTileSize", {12, 9}}, {"normalStrength", 0.4}, {"baseColorTextureMix", 0.42},
+        {"baseColorMeanLinear", {0.3472, 0.1131, 0.0433}},
+    };
     ResolvedMaterialInstance resolved;
     ASSERT_TRUE(library.resolve(asset, resolved, error)) << error;
     const auto resolver = [](std::string_view uri) { return static_cast<int32_t>(uri[8] - '0'); };
@@ -570,6 +574,13 @@ TEST_F(MaterialAssets, PairedTerrainLayerBindingsValidateAndRoundTrip)
     EXPECT_EQ(bindings.layers[0].channel, bindings.layers[4].channel);
     EXPECT_EQ(bindings.layers[0].weightMap, 0u);
     EXPECT_EQ(bindings.layers[4].weightMap, 1u);
+    EXPECT_FALSE(bindings.layers[0].triplanar);
+    ASSERT_TRUE(bindings.layers[4].triplanar);
+    const auto& projection = *bindings.layers[4].triplanar;
+    EXPECT_EQ(projection.worldTileSize, (std::array<float, 2>{12, 9}));
+    EXPECT_FLOAT_EQ(projection.normalStrength, 0.4f);
+    EXPECT_FLOAT_EQ(projection.baseColorTextureMix, 0.42f);
+    EXPECT_EQ(projection.baseColorMeanLinear, (std::array<float, 3>{0.3472f, 0.1131f, 0.0433f}));
 
     MaterialInstance exported;
     ASSERT_TRUE(createMaterialInstance(material, asset.definition, resolved.definition,
@@ -596,6 +607,12 @@ TEST_F(MaterialAssets, PairedTerrainLayerBindingsValidateAndRoundTrip)
     EXPECT_FALSE(library.resolve(invalid, resolved, error));
     invalid = asset;
     invalid.terrainLayers["weightMaps"][1] = {{"uri", "asset://1.png"}, {"transform", {2, 0, 0, 0, 1, 0}}};
+    EXPECT_FALSE(library.resolve(invalid, resolved, error));
+    invalid = asset;
+    invalid.terrainLayers["layers"][4]["triplanar"]["worldTileSize"] = {12, 0};
+    EXPECT_FALSE(library.resolve(invalid, resolved, error));
+    invalid = asset;
+    invalid.terrainLayers["layers"][4]["triplanar"]["baseColorMeanLinear"] = {0.4, 0.1};
     EXPECT_FALSE(library.resolve(invalid, resolved, error));
 }
 

@@ -207,6 +207,14 @@ struct RenderTextureInfo {
     bool operator==(const RenderTextureInfo&) const = default;
 };
 
+struct RenderTerrainTriplanar {
+    std::array<float, 2> worldTileSize;
+    float normalStrength;
+    float baseColorTextureMix;
+    std::array<float, 3> baseColorMeanLinear; // Linear Rec.709.
+    bool operator==(const RenderTerrainTriplanar&) const = default;
+};
+
 struct RenderTerrainMaterialLayer {
     std::string name;
     uint32_t weightMap = 0;
@@ -214,6 +222,7 @@ struct RenderTerrainMaterialLayer {
     RenderTextureInfo baseColor{.colorMetadata = render::ksRGBColorTexture};
     RenderTextureInfo normal;
     RenderTextureInfo roughness;
+    std::optional<RenderTerrainTriplanar> triplanar;
     bool operator==(const RenderTerrainMaterialLayer&) const = default;
 };
 

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <chrono>
@@ -122,7 +123,7 @@ Json terrainLayers(Json value)
     std::set<std::string> names;
     std::set<size_t> slots;
     for (auto& layer : layers) {
-        keys(layer, {"name", "weightMap", "channel", "baseColor", "normal", "roughness"});
+        keys(layer, {"name", "weightMap", "channel", "baseColor", "normal", "roughness", "triplanar"});
         const auto name = layer.at("name").get<std::string>();
         require(!name.empty() && names.insert(name).second, "Terrain layer names must be nonempty and unique");
         require(paired == layer.contains("weightMap"), "A terrain layer requires weightMap only with paired weight maps");
@@ -138,6 +139,18 @@ Json terrainLayers(Json value)
         layer["baseColor"] = terrainTexture(layer.at("baseColor"), true);
         layer["normal"] = terrainTexture(layer.at("normal"), false);
         layer["roughness"] = terrainTexture(layer.at("roughness"), false);
+        if (const auto projection = layer.find("triplanar"); projection != layer.end()) {
+            keys(*projection, {"worldTileSize", "normalStrength", "baseColorTextureMix", "baseColorMeanLinear"});
+            const auto& tileSize = projection->at("worldTileSize");
+            require(tileSize.is_array() && tileSize.size() == 2, "Terrain triplanar worldTileSize requires two dimensions in meters");
+            constexpr double smallestScale = std::numeric_limits<float>::min();
+            for (const auto& extent : tileSize) { number(extent, smallestScale, 1.0 / smallestScale); }
+            number(projection->at("normalStrength"), 0.0, 1.0);
+            number(projection->at("baseColorTextureMix"), 0.0, 1.0);
+            const auto& color = projection->at("baseColorMeanLinear");
+            require(color.is_array() && color.size() == 3, "Terrain triplanar baseColorMeanLinear requires linear Rec.709 RGB");
+            for (const auto& component : color) { number(component, 0.0, 1.0); }
+        }
     }
     require(names.contains(value.at("defaultLayer").get<std::string>()), "Terrain defaultLayer must name a declared layer");
     return value;
@@ -618,7 +631,7 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
             for (const auto& source : resolved.at("layers")) {
                 const auto name = source.at("name").get<std::string>();
                 if (name == defaultLayer) { bindings->defaultLayerIndex = static_cast<uint32_t>(bindings->layers.size()); }
-                bindings->layers.push_back({
+                auto& layer = bindings->layers.emplace_back(scene::RenderTerrainMaterialLayer{
                     .name = name,
                     .weightMap = source.value("weightMap", 0u),
                     .channel = static_cast<uint32_t>(kTerrainChannels.find(source.at("channel").get<std::string>())),
@@ -626,6 +639,14 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
                     .normal = lowerTexture(source.at("normal"), resolver, {}),
                     .roughness = lowerTexture(source.at("roughness"), resolver, {}),
                 });
+                if (const auto projection = source.find("triplanar"); projection != source.end()) {
+                    layer.triplanar = scene::RenderTerrainTriplanar{
+                        .worldTileSize = projection->at("worldTileSize").get<std::array<float, 2>>(),
+                        .normalStrength = projection->at("normalStrength").get<float>(),
+                        .baseColorTextureMix = projection->at("baseColorTextureMix").get<float>(),
+                        .baseColorMeanLinear = projection->at("baseColorMeanLinear").get<std::array<float, 3>>(),
+                    };
+                }
             }
             candidate.terrainLayers = std::move(bindings);
         }
@@ -715,6 +736,14 @@ bool createMaterialInstance(const scene::RenderMaterial& source, std::string def
                     {"roughness", encodeTexture(prefix + "roughness", layer.roughness)},
                 });
                 if (paired) { layers.back()["weightMap"] = layer.weightMap; }
+                if (const auto& projection = layer.triplanar) {
+                    layers.back()["triplanar"] = {
+                        {"worldTileSize", projection->worldTileSize},
+                        {"normalStrength", projection->normalStrength},
+                        {"baseColorTextureMix", projection->baseColorTextureMix},
+                        {"baseColorMeanLinear", projection->baseColorMeanLinear},
+                    };
+                }
             }
             candidate.terrainLayers = {
                 {"defaultLayer", bindings.layers[bindings.defaultLayerIndex].name},

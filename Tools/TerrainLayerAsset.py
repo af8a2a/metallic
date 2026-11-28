@@ -16,6 +16,13 @@ CHANNELS = "RGBA"
 
 
 @dataclass(frozen=True)
+class TerrainTriplanar:
+    normal_strength: float
+    base_color_texture_mix: float
+    base_color_mean_linear: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
 class TerrainLayer:
     name: str
     weight_map: int
@@ -24,6 +31,7 @@ class TerrainLayer:
     base_color: Path
     normal: Path
     roughness: Path
+    triplanar: TerrainTriplanar | None = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +69,18 @@ def _world_tile_size(value: object, layer_name: str) -> tuple[float, float]:
             f"layer '{layer_name}'.worldTileSize must be a positive finite number or a pair [x, z]"
         )
     return float(dimensions[0]), float(dimensions[1])
+
+
+def _triplanar(value: object, layer_name: str) -> TerrainTriplanar:
+    if not isinstance(value, dict) or set(value) != {"normalStrength", "baseColorTextureMix", "baseColorMeanLinear"}:
+        raise TerrainBuildError(f"layer '{layer_name}'.triplanar requires normalStrength, baseColorTextureMix and baseColorMeanLinear")
+    color = value["baseColorMeanLinear"]
+    if not isinstance(color, list) or len(color) != 3 or any(
+        type(component) not in (int, float) or not 0 <= component <= 1
+        for component in (value["normalStrength"], value["baseColorTextureMix"], *color)
+    ):
+        raise TerrainBuildError(f"layer '{layer_name}'.triplanar requires unit normal strength, texture mix and linear Rec.709 RGB")
+    return TerrainTriplanar(float(value["normalStrength"]), float(value["baseColorTextureMix"]), tuple(map(float, color)))
 
 
 def _dcc_terrain_layers(document: dict) -> tuple[dict, dict]:
@@ -171,6 +191,7 @@ def load_terrain_layer_asset(path: Path) -> TerrainLayerAsset:
             base_color=_relative_file(layer.get("baseColor"), path.parent, f"layer '{name}'.baseColor"),
             normal=_relative_file(layer.get("normal"), path.parent, f"layer '{name}'.normal"),
             roughness=_relative_file(layer.get("roughness"), path.parent, f"layer '{name}'.roughness"),
+            triplanar=_triplanar(layer["triplanar"], name) if "triplanar" in layer else None,
         ))
     default_layer = document.get("defaultLayer")
     if default_layer not in [layer.name for layer in imported_layers]:

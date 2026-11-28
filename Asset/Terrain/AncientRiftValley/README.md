@@ -25,4 +25,4 @@
 
 `TerrainAsset.json` 记录材质路径、通道、平铺尺度和 4×4 区域切分窗口。每区 250 m × 250 m，使用含端点的 513² 个样本。可从全局 EXR 按窗口裁切；全部 24 条共享边的高度和八层权重已逐样本比对。`Verification.json` 包含工程重开复算、EXR 和贴图检查结果。
 
-这是 GPUDriven 大场景的 DCC 替换资产。运行中的 Metallic 样例仍指向原资产，当前材质导入器和 GPU 数据布局支持一张权重图、最多四层。
+Metallic 的 **Ancient Rift Valley 4x4 + VSM** 样例使用完整 16 区、两张权重图和八层 OpenPBR 材质。红砂岩和浅色盖层的 `triplanar` 设置随材质导入，中央 2×2 样例保留 XZ 基线。

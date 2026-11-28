@@ -14,6 +14,7 @@ function(add_metallic_ancient_rift_valley_sample manifest output_directory cook_
         set(dimensions 2x2)
         set(first_region 1)
         set(last_region 2)
+        set(material_args --planar-layer-projection)
     endif()
     set(target "MetallicAncientRiftValley${dimensions}")
     set(sample "${output_directory}/ancient_rift_valley_${dimensions}")
@@ -83,7 +84,7 @@ function(add_metallic_ancient_rift_valley_sample manifest output_directory cook_
     add_custom_command(
         OUTPUT ${material_outputs}
         COMMAND "${Python3_EXECUTABLE}" -B "${tools}/BuildTerrainVSMMaterial.py"
-            "${sample}.gltf" --layer-asset "${manifest}"
+            "${sample}.gltf" --layer-asset "${manifest}" ${material_args}
         DEPENDS "${sample}.gltf" ${material_inputs} "${tools}/BuildTerrainVSMMaterial.py"
             "${tools}/ImportTerrainLayers.py" "${tools}/TerrainLayerAsset.py"
             "${tools}/BuildTerrainLayerTextures.py" "${tools}/BuildTerrainMesh.py"

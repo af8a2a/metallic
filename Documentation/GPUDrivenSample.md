@@ -323,3 +323,23 @@ cmake --build build-ci --target MetallicAncientRiftValley4x4Regression
 编辑器样例 **GPUDrivenSample / Ancient Rift Valley 4x4 + VSM** 使用完整的 2049² 源高度场，覆盖 1 km × 1 km。16 个区域独立烘焙，256 个渲染块共享全局边界采样和八层材质。全区保底用于启动与全景验证。普通漫游启用 `geometryRegionSelectionMode="viewAndDirectionalCasters"`，选区包括近眼滞回范围、与视锥相交的接收区，以及能沿太阳或月亮方向向这些接收区投影的候选区域。细节继续由现有页请求驱动。全景机位的远裁剪面为 3500 m，方向光 VSM 从 8 m 半宽开始，使用 9 级 clipmap。
 
 GPU 回归固定在保底 LOD，在同一路线对照全区保底和按需选区，逐帧读取保底页与区域发布状态，在越过 X=250 m 的边界前、中、后对比深度、覆盖和方向光阴影。谷底探针另与纯距离选区对照，用于验证视锥外山脊的投影。分别在原切面、跨界后和全景就绪后对比 VSM 缓存与强制重画。俯视镜头跳转时，刚进入视野的区域要等保底页发布后才出现。回归记录首帧缺失像素和全区完成发布的帧号，并检查就绪后的完整覆盖。结果位于 `build-ci/tests/ancient-rift-valley-4x4/`，中央 2×2 回归仍有独立入口。
+
+#### 陡壁材质
+
+全域样例读取 `TerrainAsset.json` 的层级 `triplanar` 设置。红砂岩和浅色盖层使用 XZ、XY、ZY 三个世界坐标投影，共用 DCC 的 Cycles 三维 fBm 相位和亮度调制。投影按平滑法线的各分量绝对值六次方归一化混合。每个平面的法线以该投影的切线基解码，再纳入八层混合。两张权重图和其余六层仍使用 XZ，中央 2×2 样例保留原来的纯 XZ 材质基线。修改投影设置后可用 `MetallicAncientRiftValley4x4Materials` 重导入材质。
+
+运行时将源坐标从 Blender Z-up 转为 Metallic Y-up，图像 V 轴从底部起算转为顶部起算。三平面切线基从平滑法线和投影轴计算，Cycles 参考使用网格角点的 MikkTSpace 插值。运行时按各平面的投影面积和射线锥选择 mip，程序相位的导数未计入 mip。八层权重继续由 Metallic 联合归一化，然后用 OpenPBR 和现有 VSM 照明渲染。
+
+在 `CanyonVista` 原机位复验材质并测成本时，先构建 `MetallicRHITests` 和 `MetallicAncientRiftValley4x4Sample`，然后用新目录运行。
+
+```powershell
+$out = 'build/ancient-rift-valley-cliff-comparison'
+$runner = 'Tools/Perf/AncientRiftValleyCliffAcceptance.py'
+$exe = 'build-ci/tests/MetallicRHITests.exe'
+python -B $runner prepare --output $out
+python -B $runner diagnostic --output $out --executable $exe
+python -B $runner timing --output $out --executable $exe
+python -B $runner report --output $out
+```
+
+两种投影使用同一个可执行文件、网格、纹理和机位。主视图使用自动 LOD，测量用例给几何留出 512 MiB，让两组可收敛到同一份细节。VSM 固定为已发布区域的完整保底投影体切面，以免原机位的细节阴影工作队列溢出影响采集。诊断先核对深度、可见性和阴影，以及底色、法线和粗糙度。计时按独立进程交替运行，记录 Deferred GPU 时间与地形场景纹理驻留。

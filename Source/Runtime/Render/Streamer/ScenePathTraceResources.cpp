@@ -1010,11 +1010,21 @@ Result<> buildGpuTerrainBindings(const scene::Scene& loadedScene, const std::vec
         for (size_t i = 0; i < authored->layers.size(); ++i) {
             const auto& layer = authored->layers[i];
             binding.weightSlots[i] = 4 * layer.weightMap + layer.channel;
-            binding.layers[i] = {
+            auto& destination = binding.layers[i];
+            destination = {
                 .baseColor = makeTexture(layer.baseColor, "terrain base color"),
                 .normal = makeTexture(layer.normal, "terrain normal", true),
                 .roughness = makeTexture(layer.roughness, "terrain roughness"),
             };
+            if (const auto& projection = layer.triplanar) {
+                binding.settings[3] |= 1u << i;
+                destination.triplanar[0] = 1.0f / projection->worldTileSize[0];
+                destination.triplanar[1] = 1.0f / projection->worldTileSize[1];
+                destination.triplanar[2] = projection->normalStrength;
+                destination.triplanar[3] = projection->baseColorTextureMix;
+                const auto rgb = color::fromLinearRec709(projection->baseColorMeanLinear);
+                std::ranges::copy(rgb, destination.triplanarBaseColor);
+            }
         }
         materials[materialIndex].terrainLayerBinding[0] = static_cast<uint32_t>(offset);
     }

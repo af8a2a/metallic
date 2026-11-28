@@ -15,6 +15,7 @@ import RTXCRMaterialParameters;
 import ScenePathTypes;
 import ScenePathMath;
 import MaterialTextureDecode;
+import TerrainCliffNoise;
 import Lighting;
 import WorkingColor;
 #if METALLIC_REALTIME_DEFERRED
@@ -259,6 +260,91 @@ public struct TerrainLayerSurfaceValues
     public bool enabled;
 };
 
+internal struct TerrainCliffProjection
+{
+    float3 weights;
+    float3 phase;
+    float tint;
+    float worldLod;
+};
+
+internal TerrainCliffProjection terrainCliffProjection(HitInfo hit, RayCone rayCone, float3 rayDirection)
+{
+    TerrainCliffProjection projection;
+    float3 axes = pow(abs(hit.normal), float3(6.0));
+    projection.weights = axes / ((axes.x + axes.z) + axes.y);
+    // Cycles authored the noise and its color channels in X, Z, Y order.
+    projection.phase = Metallic.TerrainCliff.cliffTexturePhase(hit.position.xzy).xzy;
+    projection.tint = Metallic.TerrainCliff.cliffTint(hit.position.xzy);
+    float grazing = sqrt(max(abs(dot(rayDirection, hit.geometryNormal)), 0.000001));
+    projection.worldLod = Metallic.ScenePath.safeLog2(max(abs(rayCone.width), 0.000001) / grazing);
+    return projection;
+}
+
+internal MaterialTextureInfo terrainProjectionTexture(MaterialTextureInfo texture)
+{
+    // Projection coordinates already include the tile scale and phase. Keep the color flags.
+    texture.transform0.xyz = float3(1.0, 0.0, 0.0);
+    texture.transform1.xyz = float3(0.0, 1.0, 0.0);
+    return texture;
+}
+
+internal float3 terrainProjectedNormal(float3 normal, float3 axisU, float3 axisV, float3 sample, float strength)
+{
+    // The source normal node uses the unwarped UV basis. The affine chart's
+    // +U tangent follows constant V on the smooth terrain tangent plane.
+    float handedness = dot(cross(axisU, axisV), normal) < 0.0 ? -1.0 : 1.0;
+    float3 tangent = Metallic.SceneSurface.safeNormalize(cross(axisV, normal) * handedness, axisU);
+    float3 bitangent = cross(normal, tangent) * handedness;
+    float3 decoded = 2.0 * (sample - 0.5);
+    decoded.xy *= strength;
+    decoded.z = lerp(1.0, decoded.z, saturate(strength));
+    return Metallic.SceneSurface.safeNormalize(tangent * decoded.x + bitangent * decoded.y + normal * decoded.z, normal);
+}
+
+internal void accumulateTerrainCliffLayer<TSource : ISceneMaterialTextureSource>(
+    TerrainLayerTextureBindings layer, TerrainCliffProjection projection, float weight, HitInfo hit,
+    ScenePathTracePush push, RayCone rayCone, float3 rayDirection, TextureFootprint footprint,
+    TSource source, inout uint seed, inout TerrainLayerSurfaceValues values)
+{
+    // Order of authored UV charts is XZ, XY, ZY in Metallic's Y-up coordinates.
+    const uint3 normalAxes = uint3(1u, 2u, 0u);
+    const uint3 uAxes = uint3(0u, 0u, 2u);
+    const uint3 vAxes = uint3(2u, 1u, 1u);
+    const float3 basis[3] = {float3(1, 0, 0), float3(0, 1, 0), float3(0, 0, 1)};
+    let colorTexture = terrainProjectionTexture(layer.baseColor);
+    let normalTexture = terrainProjectionTexture(layer.normal);
+    let roughnessTexture = terrainProjectionTexture(layer.roughness);
+    float3 mappedNormal = float3(0.0);
+    for (uint chart = 0u; chart < 3u; ++chart) {
+        uint axis = normalAxes[chart];
+        float contribution = weight * projection.weights[axis];
+        if (contribution == 0.0) { continue; }
+        uint u = uAxes[chart];
+        uint v = vAxes[chart];
+        float2 uv = float2(hit.position[u], hit.position[v]) * layer.triplanar.xy +
+            float2(projection.phase[u], projection.phase[v]);
+        // Source image UVs increase up. The engine reads PNG rows from the top.
+        uv.y = -uv.y;
+        float area = abs(hit.geometryNormal[axis]) * layer.triplanar.x * layer.triplanar.y;
+        footprint.isotropicLod0 = projection.worldLod + 0.5 * Metallic.ScenePath.safeLog2(area);
+        bool sampled;
+        float4 color = source.loadTexture(colorTexture, uv, float4(1.0),
+            push, rayCone, hit, rayDirection, false, seed, footprint, sampled);
+        float3 linearColor = sampled ? materialTextureColor(color.rgb, colorTexture.transform0.w) : float3(1.0);
+        values.baseColor += contribution * lerp(layer.triplanarBaseColor.rgb, linearColor, layer.triplanar.w) * projection.tint;
+        float4 normal = source.loadTexture(normalTexture, uv, float4(0.5, 0.5, 1.0, 1.0),
+            push, rayCone, hit, rayDirection, false, seed, footprint, sampled);
+        mappedNormal += contribution * terrainProjectedNormal(hit.normal, basis[u], basis[v], normal.xyz, layer.triplanar.z);
+        float4 roughness = source.loadTexture(roughnessTexture, uv, float4(1.0),
+            push, rayCone, hit, rayDirection, false, seed, footprint, sampled);
+        values.roughness += contribution * roughness.r;
+    }
+    // Preserve the existing OpenPBR mapped-normal and debug path. Converting
+    // the sum to the hit's basis preserves the world-space blend.
+    values.normalTS += float3(dot(mappedNormal, hit.tangent.xyz), dot(mappedNormal, hit.bitangent), dot(mappedNormal, hit.normal));
+}
+
 public TerrainLayerSurfaceValues evaluateTerrainLayerSurface<TSource : ISceneMaterialTextureSource>(
     ByteAddressBuffer layerMaterials, uint byteOffset, HitInfo hit, ScenePathTracePush push, RayCone rayCone,
     float3 rayDirection, TextureFootprint footprint, TSource source, inout uint seed)
@@ -291,11 +377,22 @@ public TerrainLayerSurfaceValues evaluateTerrainLayerSurface<TSource : ISceneMat
     TerrainLayerSurfaceValues values = {};
     values.enabled = true;
     const float3 neutralNormal = float3(0.0, 0.0, 1.0);
+    TerrainCliffProjection projection = {};
+    bool projectionResolved = false;
     for (uint i = 0u; i < bindings.settings.x; ++i) {
         float weight = layerWeights[i / 4u][i % 4u];
         if (weight == 0.0) { continue; }
         let layer = layerMaterials.Load<TerrainLayerTextureBindings>(
             byteOffset + sizeof(TerrainLayerMaterialHeader) + i * sizeof(TerrainLayerTextureBindings));
+        if ((bindings.settings.w & (1u << i)) != 0u) {
+            if (!projectionResolved) {
+                projection = terrainCliffProjection(hit, rayCone, rayDirection);
+                projectionResolved = true;
+            }
+            accumulateTerrainCliffLayer(layer, projection, weight, hit, push, rayCone, rayDirection,
+                footprint, source, seed, values);
+            continue;
+        }
         float4 colorSample = source.loadTexture(layer.baseColor, hit.texcoord, float4(1.0),
             push, rayCone, hit, rayDirection, false, seed, footprint, sampled);
         values.baseColor += weight * (sampled ? materialTextureColor(colorSample.rgb, layer.baseColor.transform0.w)

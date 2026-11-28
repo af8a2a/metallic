@@ -55,7 +55,8 @@ def encode_weight_pngs(weights: np.ndarray) -> tuple[bytes, ...]:
     return tuple(pngs)
 
 
-def prepare_terrain_layer_import(terrain_path: Path, asset_path: Path, output: Path) -> tuple[dict, dict[str, bytes]]:
+def prepare_terrain_layer_import(terrain_path: Path, asset_path: Path, output: Path, *,
+                                 planar_layer_projection: bool = False) -> tuple[dict, dict[str, bytes]]:
     terrain_path = terrain_path.resolve()
     output = output.resolve()
     terrain = load_terrain_grid(terrain_path)
@@ -101,6 +102,13 @@ def prepare_terrain_layer_import(terrain_path: Path, asset_path: Path, output: P
             "normal": {"path": relative_asset_path(layer.normal, output.parent), "colorSpace": "linear"},
             "roughness": {"path": relative_asset_path(layer.roughness, output.parent), "colorSpace": "linear"},
         })
+        if layer.triplanar is not None and not planar_layer_projection:
+            layers[-1]["triplanar"] = {
+                "worldTileSize": layer.world_tile_size,
+                "normalStrength": layer.triplanar.normal_strength,
+                "baseColorTextureMix": layer.triplanar.base_color_texture_mix,
+                "baseColorMeanLinear": layer.triplanar.base_color_mean_linear,
+            }
     document = {
         "type": "Metallic.ImportedTerrainLayers",
         "version": 2 if multi_map else 1,
@@ -133,13 +141,15 @@ def import_terrain_layers(terrain_path: Path, asset_path: Path, output: Path) ->
         pending_manifest.replace(output)
 
 
-def build_terrain_layer_material(terrain_path: Path, asset_path: Path, output: Path) -> tuple[dict, dict]:
+def build_terrain_layer_material(terrain_path: Path, asset_path: Path, output: Path, *,
+                                 planar_layer_projection: bool = False) -> tuple[dict, dict]:
     output = output.resolve()
     definition = output.with_suffix(".materialdef")
     instance = output.with_suffix(".material")
     if definition == asset_path.resolve():
         raise TerrainBuildError("the material definition must have a separate output path")
-    imported, payloads = prepare_terrain_layer_import(terrain_path, asset_path, instance)
+    imported, payloads = prepare_terrain_layer_import(terrain_path, asset_path, instance,
+                                                      planar_layer_projection=planar_layer_projection)
     multi_map = imported["version"] == 2
     weight_maps = imported["weightMaps"] if multi_map else [imported["weightMap"]]
     weight_bindings = [{"uri": "asset://" + weights["path"], "transform": weights["uvTransform"]}
@@ -163,6 +173,8 @@ def build_terrain_layer_material(terrain_path: Path, asset_path: Path, output: P
     for layer in imported["layers"]:
         bindings = {role: resource(layer[role], layer["uvTransform"], role) for role in roles}
         layers.append({**{key: layer[key] for key in layer_keys}, **bindings})
+        if "triplanar" in layer:
+            layers[-1]["triplanar"] = layer["triplanar"]
     material_def = {"type": "Metallic.MaterialDefinition", "version": 1, "definitionVersion": 1,
                     "implementation": "OpenPBR.TerrainLayers", "defaults": {}}
     material_instance = {
@@ -191,7 +203,8 @@ def build_terrain_layer_material(terrain_path: Path, asset_path: Path, output: P
                      "materialAsset": {"uri": "asset://" + instance.name, "root": "."}}
     metadata = {
         "defaultLayer": imported["defaultLayer"], "weightResolution": imported["terrain"]["sourceResolution"],
-        "layers": [{key: layer[key] for key in (*layer_keys, "worldTileSize")} for layer in imported["layers"]],
+        "layers": [{key: layer[key] for key in (*layer_keys, "worldTileSize", "triplanar") if key in layer}
+                   for layer in imported["layers"]],
     }
     if multi_map:
         metadata.update(version=2, weightMaps=weight_maps)

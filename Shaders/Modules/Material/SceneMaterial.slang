@@ -21,12 +21,14 @@ public struct TerrainLayerTextureBindings
     public MaterialTextureInfo baseColor;
     public MaterialTextureInfo normal;
     public MaterialTextureInfo roughness;
+    public float4 triplanar; // xy: inverse tile size (m), z: normal strength, w: base color texture mix
+    public float4 triplanarBaseColor; // xyz: mean base color in the working color space
 };
 
 public struct TerrainLayerMaterialHeader
 {
     public MaterialTextureInfo weightMaps[2];
-    public uint4 settings; // x: layer count, y: default layer index, z: weight map count
+    public uint4 settings; // x: layer count, y: default layer index, z: weight map count, w: triplanar layer mask
     public uint4 weightSlots[2]; // weightMap * 4 + channel
 };
 

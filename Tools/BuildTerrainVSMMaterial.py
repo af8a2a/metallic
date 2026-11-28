@@ -26,11 +26,12 @@ def material_kind(weight_map: Path | None, layer_asset: Path | None) -> str | No
 
 
 def write_sample_material(grid_path: Path, sample_path: Path, *, weight_map: Path | None,
-                          layer_asset: Path | None) -> None:
+                          layer_asset: Path | None, planar_layer_projection: bool = False) -> None:
     if layer_asset is not None:
         from ImportTerrainLayers import build_terrain_layer_material
 
-        _, metadata = build_terrain_layer_material(grid_path, layer_asset, sample_path)
+        _, metadata = build_terrain_layer_material(grid_path, layer_asset, sample_path,
+                                                   planar_layer_projection=planar_layer_projection)
     else:
         from BuildTerrainLayerTextures import build_layer_material
         from ImportTerrainLayers import load_terrain_grid
@@ -43,14 +44,15 @@ def write_sample_material(grid_path: Path, sample_path: Path, *, weight_map: Pat
 
 
 def build_sample_material(sample_path: Path, *, weight_map: Path | None = None,
-                          layer_asset: Path | None = None) -> None:
+                          layer_asset: Path | None = None, planar_layer_projection: bool = False) -> None:
     kind = material_kind(weight_map, layer_asset)
     if kind is None:
         raise TerrainBuildError("material reimport requires either --weight-map or --layer-asset")
     document = json.loads(sample_path.read_text(encoding="utf-8"))
     if document["materials"][0].get("name") != TERRAIN_MATERIAL_NAMES[kind]:
         raise TerrainBuildError(f"'{sample_path}' does not have the expected {kind} terrain material binding")
-    write_sample_material(sample_path, sample_path, weight_map=weight_map, layer_asset=layer_asset)
+    write_sample_material(sample_path, sample_path, weight_map=weight_map, layer_asset=layer_asset,
+                          planar_layer_projection=planar_layer_projection)
 
 
 def main() -> None:
@@ -59,9 +61,14 @@ def main() -> None:
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument("--layer-asset", type=Path, help="Metallic.TerrainLayers or Ancient Rift Valley DCC source JSON")
     inputs.add_argument("--weight-map", type=Path, help="Legacy linear R OpenEXR rock weights")
+    parser.add_argument("--planar-layer-projection", action="store_true",
+                        help="Import an authored layer asset with the reference planar projection")
     args = parser.parse_args()
+    if args.planar_layer_projection and args.layer_asset is None:
+        parser.error("--planar-layer-projection requires --layer-asset")
     try:
-        build_sample_material(args.sample, weight_map=args.weight_map, layer_asset=args.layer_asset)
+        build_sample_material(args.sample, weight_map=args.weight_map, layer_asset=args.layer_asset,
+                              planar_layer_projection=args.planar_layer_projection)
     except (IndexError, KeyError, OSError, ValueError, TerrainBuildError) as error:
         parser.error(str(error))
 

@@ -155,6 +155,11 @@
         12,
         12
       ],
+      "triplanar": {
+        "normalStrength": 0.4,
+        "baseColorTextureMix": 0.42,
+        "baseColorMeanLinear": [0.3472, 0.1131, 0.0433]
+      },
       "textures": {
         "baseColor": {
           "path": "Materials/red_sandstone/BaseColor.png",
@@ -178,6 +183,11 @@
         9,
         9
       ],
+      "triplanar": {
+        "normalStrength": 0.4,
+        "baseColorTextureMix": 0.42,
+        "baseColorMeanLinear": [0.4044, 0.3536, 0.2571]
+      },
       "textures": {
         "baseColor": {
           "path": "Materials/pale_caprock/BaseColor.png",
