@@ -50,7 +50,8 @@ struct VirtualShadowMapLODContextGPU
     uint32_t changed, statistics, instanceCount, clusterCount;
     uint32_t groupStateCount, viewCount;
     float maxErrorTexels, maxWorldError;
-    uint32_t previousValid, requestsEnabled, reserved0, reserved1;
+    // The triangle map has one entry per 1 << triangleClusterShift padded slots.
+    uint32_t previousValid, requestsEnabled, triangleClusterShift, reserved1;
 };
 
 // Instance flags: resident geometry and protected base geometry, respectively.
@@ -60,6 +61,7 @@ inline constexpr uint32_t kVirtualShadowMapLODInstanceResident = 1;
 inline constexpr uint32_t kVirtualShadowMapLODInstanceProtected = 2;
 inline constexpr uint32_t kVirtualShadowMapLODClusterBase = 1;
 inline constexpr uint32_t kVirtualShadowMapLODStatisticsWords = 32;
+inline constexpr uint32_t kVSMLODStreamClusterShift = 7;
 static_assert(sizeof(VirtualShadowMapLODGroupGPU) == 48);
 static_assert(sizeof(VirtualShadowMapLODNodeGPU) == 32);
 static_assert(sizeof(VirtualShadowMapLODClusterGPU) == 32);

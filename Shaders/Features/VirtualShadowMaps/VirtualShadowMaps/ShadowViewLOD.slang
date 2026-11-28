@@ -223,7 +223,7 @@ bool vsmLODSelected(ShadowPush push, uint triangleIndex, uint view)
     VirtualShadowMapLODContextGPU context = vsmLODContext(handle);
     if (view >= context.viewCount) { return false; }
     StructuredBuffer<uint> triangleClusters = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(context.triangleClusters));
-    uint cluster = triangleClusters[triangleIndex];
+    uint cluster = triangleClusters[triangleIndex >> context.triangleClusterShift];
     if (cluster == 0xffffffffu) { return false; }
     StructuredBuffer<uint> selected = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(context.selected));
     return selected[view * context.clusterCount + cluster] != 0u;
@@ -247,8 +247,12 @@ bool vsmLODSelectedRange(ShadowPush push, uint firstTriangle, uint view, uint sl
     uint end = firstTriangle + min(slotCount, push.triangleCount - firstTriangle);
     uint triangle = firstTriangle;
     while (triangle < end) {
-        uint index = triangleClusters[triangle];
-        if (index == 0xffffffffu) { ++triangle; continue; }
+        uint slot = triangle >> context.triangleClusterShift;
+        uint index = triangleClusters[slot];
+        if (index == 0xffffffffu) {
+            triangle = (slot + 1u) << context.triangleClusterShift;
+            continue;
+        }
         if (selected[view * context.clusterCount + index] != 0u) { return true; }
         VirtualShadowMapLODClusterGPU cluster = clusters[index];
         triangle = cluster.triangleFirst + cluster.triangleCount;

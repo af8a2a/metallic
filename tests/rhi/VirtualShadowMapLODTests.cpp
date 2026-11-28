@@ -923,6 +923,7 @@ struct GPUViewLODMetadata
     std::vector<VirtualShadowMapLODInstanceGPU> instances;
     std::vector<VirtualShadowMapLODClusterGPU> clusters;
     std::vector<uint32_t> triangleClusters;
+    uint32_t triangleCapacity = 0, triangleClusterShift = 0;
 };
 
 struct GPUViewLODFace
@@ -1005,13 +1006,19 @@ void verifyGPUViewLOD(const GPUViewLODCapture& capture, float threshold, float w
     for (uint32_t cluster = 0; cluster < metadata.clusters.size(); ++cluster) {
         const auto& record = metadata.clusters[cluster];
         check(record.triangleFirst == slots, "Candidate upload has a gap or overlaps another cluster");
-        for (uint32_t triangle = 0; triangle < record.triangleCount; ++triangle) {
-            check(metadata.triangleClusters[record.triangleFirst + triangle] == cluster,
+        const uint32_t first = record.triangleFirst >> metadata.triangleClusterShift;
+        const uint32_t count = record.triangleCount >> metadata.triangleClusterShift;
+        check((count << metadata.triangleClusterShift) == record.triangleCount,
+            "LOD cluster range straddles triangle map entries");
+        check(uint64_t(first) + count <= metadata.triangleClusters.size(), "LOD cluster exceeds triangle map");
+        for (uint32_t entry = first; entry < first + count; ++entry) {
+            check(metadata.triangleClusters[entry] == cluster,
                 "Build triangle-to-cluster mapping disagrees with the uploaded candidate");
         }
         slots += record.triangleCount;
     }
-    check(slots == metadata.triangleClusters.size(), "Candidate slots omit geometry from the triangle map");
+    check(slots == metadata.triangleCapacity && (slots >> metadata.triangleClusterShift) == metadata.triangleClusters.size(),
+        "Candidate slots omit geometry from the triangle map");
     std::vector<uint32_t> expectedRequests(capture.pageRequests.size());
     for (const auto& face : capture.faces) {
         check(face.selected.size() == metadata.clusters.size() * face.projections.size(), "GPU selected mask dimensions");
@@ -1240,7 +1247,15 @@ public:
                     capture.metadata.groups = readLODHostBuffer<VirtualShadowMapLODGroupGPU>(*hierarchy.metadataBuffers[0], hierarchy.context.groupStateCount);
                     capture.metadata.instances = readLODHostBuffer<VirtualShadowMapLODInstanceGPU>(*hierarchy.metadataBuffers[4], hierarchy.context.instanceCount);
                     capture.metadata.clusters = readLODHostBuffer<VirtualShadowMapLODClusterGPU>(*hierarchy.metadataBuffers[5], hierarchy.context.clusterCount);
-                    capture.metadata.triangleClusters = readLODHostBuffer<uint32_t>(*hierarchy.metadataBuffers[6], selected->triangleCapacity);
+                    capture.metadata.triangleCapacity = selected->triangleCapacity;
+                    capture.metadata.triangleClusterShift = hierarchy.context.triangleClusterShift;
+                    check(capture.metadata.triangleClusterShift == (streamed ? kVSMLODStreamClusterShift : 0u),
+                        "Streamed and resident LOD must use their respective triangle map strides");
+                    const uint32_t triangleMapEntries = selected->triangleCapacity >> capture.metadata.triangleClusterShift;
+                    auto& triangleMap = *hierarchy.metadataBuffers[6];
+                    check(triangleMapEntries != 0 && triangleMap.desc().size == uint64_t(triangleMapEntries) * sizeof(uint32_t),
+                        "LOD triangle map storage size disagrees with its entry count");
+                    capture.metadata.triangleClusters = readLODHostBuffer<uint32_t>(triangleMap, triangleMapEntries);
                     auto output = device.createTexture({.usage = TextureUsageBits::Storage | TextureUsageBits::TransferSource,
                         .format = Format::R8Unorm, .width = kWidth, .height = kHeight, .layerCount = uint32_t(lights.size())});
                     check(output, "GPU LOD projection output");
@@ -1452,6 +1467,11 @@ public:
                     report["frames"].push_back(std::move(frame)); save(); return actual;
                 };
                 const auto finest = compare("Finest", 0);
+                report[streamed ? "streamTriangleClusterMap" : "residentTriangleClusterMap"] = {
+                    {"triangleCapacity", finest.metadata.triangleCapacity},
+                    {"entryShift", finest.metadata.triangleClusterShift},
+                    {"entryCount", finest.metadata.triangleClusters.size()},
+                    {"bytes", finest.metadata.triangleClusters.size() * sizeof(uint32_t)}};
                 if (!streamed) {
                     // Compare both geometry paths from the same initial pool
                     // state. Reusing an arm invalidated by the LOD mode switch
@@ -1524,7 +1544,7 @@ public:
                     }
                     if (mode == 2) {
                         const uint64_t windowBytes = 16u + uint64_t(settings.maxWorkItems) * 16u +
-                            uint64_t(std::min(uint32_t(forced.metadata.triangleClusters.size()), settings.maxWorkItems)) * 64u;
+                            uint64_t(std::min(forced.metadata.triangleCapacity, settings.maxWorkItems)) * 64u;
                         check(std::has_single_bit(settings.virtualPagesPerAxis) && windowBytes <= (128ull << 20),
                             "Page-window case fell outside the production activation contract");
                     }

@@ -28,7 +28,7 @@ struct VirtualShadowMapLODMetadataCache
 
 namespace {
 
-constexpr uint32_t kStreamTrianglesPerCluster = 128;
+constexpr uint32_t kStreamTrianglesPerCluster = 1u << kVSMLODStreamClusterShift;
 // VirtualShadowMapGeometry.slang borrows this exact stream instance ABI.
 static_assert(sizeof(MeshletStreamGPUInstance) == 96);
 static_assert(offsetof(MeshletStreamGPUInstance, world0) == 16);
@@ -1126,12 +1126,19 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapGPUShadowLOD(
     auto& context = gpu->context;
     context.pageTable = context.pageRequests = context.groupStates = context.selected = context.previous = UINT32_MAX;
     context.changed = context.statistics = UINT32_MAX;
+    const uint32_t triangleClusterShift = stream ? kVSMLODStreamClusterShift : 0u;
+    context.triangleClusterShift = triangleClusterShift;
     std::vector<VirtualShadowMapLODGroupGPU> groups;
     std::vector<VirtualShadowMapLODNodeGPU> nodes;
     std::vector<VirtualShadowMapLODClusterGPU> clusters;
     std::vector<VirtualShadowMapLODInstanceGPU> instances;
-    std::vector<uint32_t> parents, metrics, triangleClusters(result->triangleCapacity, UINT32_MAX);
+    std::vector<uint32_t> parents, metrics;
+    // Every streamed candidate owns 128 padded slots, including protected
+    // casters and unused slots belonging to hidden instances.
+    assert(!stream || result->triangleCapacity % kStreamTrianglesPerCluster == 0);
+    std::vector<uint32_t> triangleClusters(result->triangleCapacity >> triangleClusterShift, UINT32_MAX);
     ContentHash layout;
+    layout.append(triangleClusterShift);
     for (uint32_t instanceIndex = 0; instanceIndex < result->states.size(); ++instanceIndex) {
         auto& state = result->states[instanceIndex];
         assert(state.id == base.states[instanceIndex].id);
@@ -1156,7 +1163,8 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapGPUShadowLOD(
         const auto addCluster = [&](uint32_t group, uint32_t refined, uint32_t count, uint32_t level, uint32_t flags) {
             const uint32_t id = uint32_t(clusters.size());
             clusters.push_back({group, refined, nextTriangle, count, level, instanceIndex, flags, 0});
-            std::fill_n(triangleClusters.begin() + nextTriangle, count, id);
+            assert(!stream || (nextTriangle % kStreamTrianglesPerCluster == 0 && count % kStreamTrianglesPerCluster == 0));
+            std::fill_n(triangleClusters.begin() + (nextTriangle >> triangleClusterShift), count >> triangleClusterShift, id);
             nextTriangle += count;
         };
         const auto* hierarchy = hierarchies[instanceIndex];
